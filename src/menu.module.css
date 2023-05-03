@@ -1,0 +1,21 @@
+.main{
+    background-color: #181818;
+    color: #514d4d;
+    position: fixed;
+    justify-content: center;
+    display: grid;
+    min-height: 4vh;
+    min-width: 100%;
+    grid-template-columns: repeat(5, 1fr);
+    column-gap: 0px;
+    justify-content: center;
+    z-index: 3;
+}
+
+.txt{
+    font-family: "SF Mono";
+    font-size: larger;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}

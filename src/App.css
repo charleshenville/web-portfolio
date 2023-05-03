@@ -1,38 +1,75 @@
+body,
+html {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: #18181800;
+}
+
+canvas{
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: -1;
+}
+
 .App {
   text-align: center;
 }
 
-.App-logo {
-  height: 40vmin;
-  pointer-events: none;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .App-logo {
-    animation: App-logo-spin infinite 20s linear;
-  }
-}
-
 .App-header {
-  background-color: #282c34;
-  min-height: 100vh;
+  z-index: 1;
+  font-family: "SF Mono";
+  background-color: #00000000;
+  /* min-height: 100vh; */
+  position: absolute;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
   font-size: calc(10px + 2vmin);
   color: white;
 }
 
 .App-link {
-  color: #61dafb;
+  color: #4f38ff;
 }
 
-@keyframes App-logo-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+.txt{
+  font-size: calc(130px + 2vmin);
+  justify-self: start;
+  grid-column: 2/3;
+  grid-row: 2;
+}
+.aboutTxt{
+  font-size: 100px;
+  align-self: end;
+  grid-column: 5;
+  grid-row: 3;
+}
+.aboutSubTxt{
+  font-size: 28px;
+  justify-self: end;
+  grid-column: 4/6;
+  text-align: right;
+  
+  grid-row: 4;
+  align-items: start;
+}
+
+.mainGrid{
+
+  display: grid;
+  grid-template-rows: 1fr repeat(6, 2fr) 1fr;
+  grid-template-columns: repeat(6, 2fr);
+  max-height: max-content;
+  
+}
+
+.adjs{
+  font-size: 28px;
+  font-weight: bold;
+  grid-row: 6;
+  grid-column: 2/3;
+  text-align: right;
+  align-self: top;
 }
