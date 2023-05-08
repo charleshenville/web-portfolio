@@ -5,11 +5,12 @@ function MenuBar() {
 
     return (
         <div className={styles.main}>
-            <div></div>
-            <a className={styles.txt}>Home</a>
-            <a className={styles.txt}>Projects</a>
+
+            <a href="/" className={styles.txt}>Home</a>
+            <a href="/projects" className={styles.txt}>Projects</a>
             <a className={styles.txt}>Resume</a>
-            <div></div>
+            <a className={styles.txt}>Page Source</a>
+            <a className={styles.txt}>Contact Me</a>
         </div>
     );
 

@@ -1,6 +1,5 @@
 .main{
     background-color: #181818;
-    color: #514d4d;
     position: fixed;
     justify-content: center;
     display: grid;
@@ -18,4 +17,6 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    text-decoration: none;
+    color: #514d4d;
 }

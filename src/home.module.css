@@ -1,0 +1,72 @@
+.header {
+    z-index: 1;
+    font-family: "SF Mono";
+    background-color: #00000000;
+    /* min-height: 100vh; */
+    position: absolute;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    font-size: calc(10px + 2vmin);
+    color: white;
+}
+
+.txt {
+    font-size: calc(130px + 2vmin);
+    justify-self: start;
+    grid-column: 2/3;
+    grid-row: 2;
+    text-align: right;
+}
+
+.aboutTxt {
+    font-size: 100px;
+    align-self: end;
+    grid-column: 5;
+    grid-row: 3;
+}
+
+.aboutSubTxt {
+    font-size: 28px;
+    justify-self: end;
+    grid-column: 4/6;
+    text-align: right;
+    grid-row: 4;
+    align-items: start;
+    margin-block-start: 0em;
+    margin-block-end: 0em;
+}
+
+.mainGrid {
+    display: grid;
+    grid-template-rows: 1fr repeat(7, 2fr);
+    grid-template-columns: repeat(6, 2fr);
+    max-height: max-content;
+}
+
+.adjs {
+    font-size: 28px;
+    font-weight: bold;
+    grid-row: 6;
+    grid-column: 2/3;
+    text-align: right;
+    align-self: top;
+}
+
+.tmt {
+    grid-row: 7;
+    grid-column: 2/6;
+    text-align: center;
+    align-self: end;
+}
+
+.tmtContent {
+    display: grid;
+    row-gap: 10px;
+    grid-row: 8;
+    grid-column: 2/6;
+    text-align: center;
+    font-size: 40px;
+    max-height: 40px;
+    grid-template-rows: repeat(6, 1fr);
+}
