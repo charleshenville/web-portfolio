@@ -1,6 +1,27 @@
 [
     {
         "id": 0,
+        "name": "OCAD - SunSet Demo",
+        "date": "April 2023",
+        "thumb": "ProjectVids/SSDemoThumb6.png",
+        "vid": "ProjectVids/SunSetVidDemo.mp4"
+    },
+    {
+        "id": 1,
+        "name": "ESPII Arduino Protoype",
+        "date": "Mar 2023",
+        "thumb": "ProjectVids/a112-thumb.png",
+        "vid": "ProjectVids/aps112-video-demo.mp4"
+    },
+    {
+        "id": 2,
+        "name": "OCAD - SunSet Demo",
+        "date": "Apr 2023",
+        "thumb": "ProjectVids/SSDemoThumb6.png",
+        "vid": "ProjectVids/SunSetVidDemo.mp4"
+    },
+    {
+        "id": 3,
         "name": "ESPII Arduino Protoype",
         "date": "Mar 2023",
         "thumb": "ProjectVids/a112-thumb.png",
