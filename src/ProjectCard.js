@@ -1,6 +1,7 @@
 import styles from './projects.module.css';
 import React, { useState } from 'react';
 import ProjectMedia from './ProjectMedia';
+import Other from './Other';
 
 const ProjectCard = ({ items }) => {
 
@@ -15,11 +16,12 @@ const ProjectCard = ({ items }) => {
                     <ProjectMedia isSpot={true} videoUrl={spotItem.vid} thumbnailUrl={spotItem.thumb} />
                     <div className={styles.spotInfo}>
                         <h3>{spotItem.name}</h3>
-                        <div> </div>
                         <p>{spotItem.date}</p>
                     </div>
                 </div>
             </div>
+
+            <Other/>
 
             <div className={styles.cardWrapper}>
                 {items.map((item) => (

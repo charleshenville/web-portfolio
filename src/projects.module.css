@@ -12,8 +12,12 @@
 }
 
 .spotlightTitle {
-    max-width: 100%;
-    margin-top: 10vh;
+    display: flex;
+    width: 70%; 
+    min-width: 640px;
+    justify-content: center;
+    align-content: center;
+    padding-top: 70px;
 }
 
 .cardWrapper {
@@ -47,6 +51,7 @@
     max-height: fit-content;
     width: 70%;
     border-radius: 10px;
+    min-width: 640px;
 
 }
 
@@ -56,11 +61,10 @@
     bottom: 0;
     z-index: 3;
     background-color: rgb(0, 0, 0, 0.5);
-    
     width: 100%;
     color: #FFFFFF;
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     align-items: center;
 }
 

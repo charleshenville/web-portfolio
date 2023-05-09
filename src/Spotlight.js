@@ -1,25 +1,49 @@
+import { useEffect, useRef } from 'react';
 import styles from './projects.module.css';
 
 function Spotlight() {
 
-    window.onload = () => {
-        const paths = document.querySelectorAll(`.${styles.hidden.split(' ')[0]}`);
-        let delay = 0;
-        paths.forEach((path) => {
-            setTimeout(() => {
-                path.classList.remove(styles.hidden);
-                path.style.transition = `opacity 0.5s ease`;
-                path.style.opacity = '1';
-            }, delay);
+    const svgRef = useRef(null);
 
-            delay += 1.5;
+    useEffect(() => {
+        const svg = svgRef.current;
+        const paths = svg.querySelectorAll(`.${styles.hidden.split(' ')[0]}`);
+
+        const observer = new IntersectionObserver(entries => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    let delay = 0;
+                    paths.forEach((path) => {
+                        setTimeout(() => {
+                            path.classList.remove(styles.hidden);
+                            path.style.transition = `opacity 0.5s ease`;
+                            path.style.opacity = '1';
+                        }, delay);
+
+                        delay += 1.5;
+                    });
+                }
+                else {
+                    
+                    paths.forEach((path) => {
+                        path.classList.add(styles.hidden);
+                        path.style.opacity = '0';
+                    });
+                }
+            });
         });
-    };
+
+        observer.observe(svg);
+
+        return () => {
+            observer.unobserve(svg);
+        };
+    }, [svgRef]);
 
     return (
         <div className={styles.spotlightTitle}>
 
-            <svg width="1000" height="200" viewBox="0 0 3204 388" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <svg ref={svgRef} width="1000" height="150" viewBox="0 0 3204 388" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path className={styles.hidden} d="M1042 140.005C1042 138.901 1042.9 138.005 1044 138.005H1060C1061.1 138.005 1062 138.901 1062 140.005V156.005C1062 157.11 1061.1 158.005 1060 158.005H1044C1042.9 158.005 1042 157.11 1042 156.005V140.005Z" fill="white" />
                 <path className={styles.hidden} d="M481 117.003C481 115.898 481.895 115.003 483 115.003H499C500.105 115.003 501 115.898 501 117.003V133.003C501 134.107 500.105 135.003 499 135.003H483C481.895 135.003 481 134.107 481 133.003V117.003Z" fill="white" />
                 <path className={styles.hidden} d="M2760 185.997C2760 184.892 2760.9 183.997 2762 183.997H2778C2779.1 183.997 2780 184.892 2780 185.997V201.997C2780 203.102 2779.1 203.997 2778 203.997H2762C2760.9 203.997 2760 203.102 2760 201.997V185.997Z" fill="white" />

@@ -4,7 +4,6 @@ import DotRender from './DotRender';
 import ProjectCard from './ProjectCard';
 import Spotlight from './Spotlight';
 
-
 import items from './projectitems.json';
 import * as THREE from 'three';
 
