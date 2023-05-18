@@ -8,9 +8,9 @@ function MenuBar() {
 
             <a href="/" className={styles.txt}>Home</a>
             <a href="/projects" className={styles.txt}>Projects</a>
-            <a className={styles.txt}>Resume</a>
-            <a className={styles.txt}>Page Source</a>
-            <a className={styles.txt}>Contact Me</a>
+            <a href="/resume" className={styles.txt}>Resume</a>
+            <a className={styles.txt}>Contact</a>
+            <a className={styles.txt}>Source</a>
         </div>
     );
 

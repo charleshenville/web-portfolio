@@ -1,0 +1,79 @@
+[
+    {
+        "id": "C#",
+        "ext": "cs",
+        "proficiency": "0.5",
+        "subs":[
+            "Unity"
+        ]
+    },
+    {
+        "id": "C++",
+        "ext": "cpp",
+        "proficiency": "0.7",
+        "subs":[
+            "Arduino"
+        ]
+    },
+    {
+        "id": "C",
+        "ext": "c",
+        "proficiency": "0.6",
+        "subs":[
+            "University"
+        ]
+    },
+    {
+        "id": "Java",
+        "ext": "java",
+        "proficiency": "0.5",
+        "subs":[
+            "Swing"
+        ]
+    },
+    {
+        "id": "Python",
+        "ext": "py",
+        "proficiency": "0.5",
+        "subs":[
+            "Flask",
+            "NumPy",
+            "Pandas"
+        ]
+    },
+    {
+        "id": "JavaScript",
+        "ext": "js",
+        "proficiency": "0.8",
+        "subs":[
+            "React",
+            "Three"
+        ]
+    },
+    {
+        "id": "HTML",
+        "ext": "html",
+        "proficiency": "0.6",
+        "subs":[
+            "React"
+        ]
+    },
+    {
+        "id": "CSS",
+        "ext": "css",
+        "proficiency": "0.9",
+        "subs":[
+            "React",
+            "Tailwind"
+        ]
+    },
+    {
+        "id": "SQL",
+        "ext": "sql",
+        "proficiency": "0.2",
+        "subs":[
+            "MySQL"
+        ]
+    }
+
+]

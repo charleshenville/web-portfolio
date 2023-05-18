@@ -1,0 +1,94 @@
+.header {
+    z-index: 1;
+    font-family: "SF Mono";
+    width: 100%;
+    background-color: #00000000;
+    color: white;
+    position: absolute;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-items: center;
+    font-size: calc(10px + 2vmin);
+    align-items: center;
+}
+
+.expBar {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 5fr 1fr;
+    font-size: calc(2vmin);
+
+}
+
+.bar {
+    position: relative;
+    width: 100%;
+    height: 50%;
+    color: #000000;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(90deg, #5A446B 0%, #8F00FF 0.01%, #FFA800 100%);
+    border-radius: 2px;
+}
+.barContainer {
+    position: relative;
+    display: flex;
+    width: 100%;
+    height: 100%;
+    color: #000000;
+    align-items: center;
+}
+
+@keyframes scroll {
+    0% {
+        transform: translateX(0);
+    }
+
+    100% {
+        transform: translateX(-4470px);
+    }
+}
+
+.techSkills {
+    position: relative;
+    max-width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.scroller {
+    display: inline-block;
+    animation: scroll 45s linear infinite;
+    margin-top: 4vh;
+    padding-top: 5%;
+    padding-bottom: 5%;
+    max-width: 100%;
+    position: relative;
+}
+
+.langRow {
+    display: grid;
+    width: 100%;
+    grid-template-columns: 1fr 1fr;
+    font-size: larger;
+    justify-items: right;
+    align-items: center;
+}
+
+.langPadding{
+    padding: 10px;
+}
+
+.subs{
+    width: 100%;
+    height: 100%;
+    font-size: 24px;
+    text-align: left;
+    display: flex;
+    justify-content: center;
+    position: relative;
+    flex-direction: column;
+}
