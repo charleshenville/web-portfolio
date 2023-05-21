@@ -1,7 +1,7 @@
 [
     {
         "id": 0,
-        "name": "OCAD - SunSet Demo",
+        "name": "SunSet Demo",
         "date": "April 2023",
         "thumb": "ProjectVids/SSDemoThumb6.png",
         "vid": "ProjectVids/SunSetVidDemo.mp4"
@@ -9,28 +9,28 @@
     {
         "id": 1,
         "name": "ESPII Arduino Protoype",
-        "date": "Mar 2023",
+        "date": "2023",
         "thumb": "ProjectVids/a112-thumb.png",
         "vid": "ProjectVids/aps112-video-demo.mp4"
     },
     {
         "id": 2,
         "name": "DotRender & Slope Fields",
-        "date": "May 2023",
+        "date": "2023",
         "thumb": "ProjectVids/dtrndr-thumb.png",
         "vid": "ProjectVids/dtrndr-vid-demo.mp4"
     },
     {
         "id": 3,
         "name": "Infinite Sudoku",
-        "date": "Jan 2022",
+        "date": "2022",
         "thumb": "ProjectVids/infsdk-thumb.png",
         "vid": "ProjectVids/infSdk-vid-demo.mp4"
     },
     {
         "id": 4,
         "name": "The Starving Student",
-        "date": "Nov 2022",
+        "date": "2022",
         "thumb": "ProjectVids/tss-thumb.png",
         "vid": "ProjectVids/tss-vid-demo.mp4"
     }

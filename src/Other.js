@@ -41,7 +41,7 @@ function Other() {
     }, [svgRef]);
 
     return (
-        <div className={styles.spotlightTitle}>
+        <div className={styles.otherTitle}>
 
             <svg style={{ paddingLeft: "50px", paddingRight: "50px" }} ref={svgRef} width="2583" height="150" viewBox="0 0 2583 344" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path className={styles.hidden} d="M2494 141.001C2494 139.896 2494.9 139.001 2496 139.001H2512C2513.1 139.001 2514 139.896 2514 141.001V157.001C2514 158.106 2513.1 159.001 2512 159.001H2496C2494.9 159.001 2494 158.106 2494 157.001V141.001Z" fill="white" />

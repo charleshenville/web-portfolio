@@ -1,7 +1,9 @@
 import styles from './projects.module.css';
 import React, { useState } from 'react';
+import Spotlight from './Spotlight';
 import ProjectMedia from './ProjectMedia';
 import Other from './Other';
+import { SpotLight } from 'three';
 
 const ProjectCard = ({ items }) => {
 
@@ -10,18 +12,18 @@ const ProjectCard = ({ items }) => {
     return (
 
         <div className={styles.mainWidth}>
-
+            <Spotlight/>
             <div className={styles.cardSpotPadding}>
                 <div className={styles.cardSpotMain}>
                     <ProjectMedia isSpot={true} videoUrl={spotItem.vid} thumbnailUrl={spotItem.thumb} />
                     <div className={styles.spotInfo}>
-                        <h3>{spotItem.name}</h3>
+                        <p>{spotItem.name}</p>
                         <p>{spotItem.date}</p>
                     </div>
                 </div>
             </div>
 
-            <Other/>
+            <Other />
 
             <div className={styles.cardWrapper}>
                 {items.map((item) => (
@@ -30,8 +32,17 @@ const ProjectCard = ({ items }) => {
                             <div className={styles.cardPadding}>
                                 <div className={styles.cardMain}>
                                     <ProjectMedia isSpot={false} videoUrl={item.vid} thumbnailUrl={item.thumb} />
-                                    <h3>{item.name}</h3>
-                                    <p>{item.date}</p>
+                                    <div className={styles.cardText}>
+                                        <div style={{ minWidth: '80%', textAlign:'left' }}>
+                                            <p>{item.name}</p>
+                                        </div>
+
+                                        <div style={{ justifyContent: 'right', width: '100%', padding: '0', textAlign: 'right' }}>
+                                            <p>{item.date}</p>
+                                        </div>
+
+                                    </div>
+
                                 </div>
                             </div>
                         )

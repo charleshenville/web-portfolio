@@ -3,9 +3,9 @@ import * as THREE from 'three';
 
 function Home() {
 
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    const renderer = new THREE.WebGLRenderer({
+    let scene = new THREE.Scene();
+    let camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    let renderer = new THREE.WebGLRenderer({
         canvas: document.querySelector('#bg'),
     })
     renderer.setPixelRatio(window.devicePixelRatio);
@@ -46,7 +46,6 @@ function Home() {
     scene.add(dodecahedron);
 
     function Animate() {
-        renderer.setSize(window.innerWidth, window.innerHeight);
         renderer.render(scene, camera);
         torus.rotation.x += 0.001;
         torus.rotation.y += 0.0005;
@@ -92,43 +91,56 @@ function Home() {
         }
 
     }
+
+    window.addEventListener('resize', onWindowResize);
+    function onWindowResize() {
+
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+
+    }
+
+
     document.body.onscroll = ScrollHome;
 
     return (
         <div>
             <Animate />
             <header className={styles.header}>
+                <div className={styles.gridContainer}>
+                    <div className={styles.mainGrid}>
+                        <h1 className={styles.txt}>CHARLES HENVILLE</h1>
+                        <h1 className={styles.aboutTxt}>ABOUT</h1>
+                        <p className={styles.aboutSubTxt}>
+                            Hi viewer! I’m Charles Miguel, an 18-year-old computer
+                            engineer at the University of Toronto in Canada.
+                            I’m passionate about all things relating to data,
+                            automation, and more recently, machine learning.
+                            While I am busy with my studies, I enjoy creating
+                            things that I think are cool and sharing them with
+                            people! See my <a href='/projects'>projects</a> to check out what I’ve been
+                            up to!
+                        </p>
+                        <div className={styles.adjs}>
+                            <h1>I'm a Developer.</h1>
+                            <h1>I'm an Engineer.</h1>
+                            <h1>I'm a Creator.</h1>
+                        </div>
 
-                <div className={styles.mainGrid}>
-                    <h1 className={styles.txt}>CHARLES HENVILLE</h1>
-                    <h1 className={styles.aboutTxt}>ABOUT.</h1>
-                    <p className={styles.aboutSubTxt}>
-                        Hi viewer! I’m Charles Miguel, an 18-year-old computer
-                        engineer at the University of Toronto in Canada.
-                        I’m passionate about all things relating to data,
-                        automation, and more recently, machine learning.
-                        While I am busy with my studies, I enjoy creating
-                        things that I think are cool and sharing them with
-                        people! See my <a href='/projects'>projects</a> to check out what I’ve been
-                        up to!
-                    </p>
-                    <div className={styles.adjs}>
-                        <h1>I'm a Developer.</h1>
-                        <h1>I'm an Engineer.</h1>
-                        <h1>I'm a Creator.</h1>
-                    </div>
+                        <div className={styles.tmt}>
+                            <h1>Take me to...</h1>
+                        </div>
+                        <div className={styles.tmtContent}>
+                            <div>Project Spotlight</div>
+                            <div>Skills & Stacks</div>
+                            <div>Career Experience</div>
+                            <div>Page Repository</div>
+                            <div>Contact Information</div>
+                        </div>
 
-                    <div className={styles.tmt}>
-                        <h1>Take me to...</h1>
                     </div>
-                    <div className={styles.tmtContent}>
-                        <div>Project Spotlight</div>
-                        <div>Skills & Stacks</div>
-                        <div>Career Experience</div>
-                        <div>Page Repository</div>
-                        <div>Contact Information</div>
-                    </div>
-
                 </div>
 
             </header>
