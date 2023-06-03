@@ -43,7 +43,7 @@ function Spotlight() {
     return (
         <div className={styles.spotlightTitle}>
 
-            <svg ref={svgRef} width="3161" height="200" viewBox="0 0 3161 365" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <svg ref={svgRef} viewBox="0 0 3161 365" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path className={styles.hidden}  d="M848 140.005C848 138.901 848.895 138.005 850 138.005H866C867.105 138.005 868 138.901 868 140.005V156.005C868 157.11 867.105 158.005 866 158.005H850C848.895 158.005 848 157.11 848 156.005V140.005Z" fill="white" />
                 <path className={styles.hidden}  d="M2763 116.998C2763 115.893 2763.9 114.998 2765 114.998H2781C2782.1 114.998 2783 115.893 2783 116.998V132.998C2783 134.103 2782.1 134.998 2781 134.998H2765C2763.9 134.998 2763 134.103 2763 132.998V116.998Z" fill="white" />
                 <path className={styles.hidden}  d="M644 94.0009C644 92.8963 644.895 92.0009 646 92.0009H662C663.105 92.0009 664 92.8963 664 94.0009V110.001C664 111.105 663.105 112.001 662 112.001H646C644.895 112.001 644 111.105 644 110.001V94.0009Z" fill="white" />

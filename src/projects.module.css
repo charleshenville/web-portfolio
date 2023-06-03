@@ -14,55 +14,68 @@
 
 .spotlightTitle {
     display: flex;
-    width: 85%;
-    min-width: 100px;
+    width: 80%;
     justify-content: center;
     align-content: center;
-    margin-top: 6vh;
     padding: 2vh;
+    margin-top: 8vh;
 }
 
 .otherTitle {
     display: flex;
-    width: 80%;
-    min-width: 100px;
+    width: 70%;
     justify-content: center;
     align-content: center;
     padding: 4vh;
+    margin-top: 2vh;
 }
 
 .cardWrapper {
 
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(640px, 1fr));
-    column-gap: 20px;
+    grid-template-columns: repeat(auto-fit, minmax(min(calc(500px + 10vmin), 100%), 1fr));
+    column-gap: 40px;
+    row-gap: 40px;
     align-items: center;
-    justify-items: center;
-    width: 95%;
+    align-content: center;
+    justify-content: center;
+    width: 100%;
+    padding-left: 7.5%;
+    padding-right: 7.5%;
+    box-sizing: border-box;
+    position: relative;
+    margin-bottom: 4vh;
 
 }
 
 .cardPadding {
-    padding: 20px;
+
+    display: flex;
+    justify-content: center;
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+
 }
 
 .cardSpotPadding {
-    padding: 20px;
     column-span: all;
     width: 100%;
     display: flex;
     justify-content: center;
+    box-sizing: border-box;
+    position: relative;
 }
 
 .cardSpotMain {
 
-    position: relative;
     display: grid;
-    background-color: #514d4d;
+    background-color: #5b5b5b6b;
+    color: white;
     max-height: fit-content;
     width: 85%;
+    height: 100%;
     border-radius: 10px;
-    min-width: 640px;
 
 }
 
@@ -83,11 +96,11 @@
 .cardMain {
 
     display: grid;
-    grid-template-columns: 2;
     background-color: #5b5b5b6b;
     color: white;
     max-height: fit-content;
-    width: 640px;
+    width: 100%;
+    height: 100%;
     border-radius: 10px;
 
 }
@@ -100,7 +113,6 @@
 .mediaContainer {
 
     width: 100%;
-    height: 0;
     padding-top: 56.25%;
     position: relative;
     border-radius: 10px 10px 0px 0px;
@@ -119,8 +131,9 @@
 
 .mainWidth {
     width: 100%;
-    display: grid;
-    justify-items: center;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
 }
 
 @keyframes spin {
@@ -137,12 +150,21 @@
     position: fixed;
     z-index: -7;
     top: -15vh;
-    left: -50vh;
+    left: -70vh;
+    overflow: hidden;
     animation: spin 120s linear infinite;
 }
 
-.cardText{
+.cardText {
     font-size: calc(10px + 1vmin);
+    margin-left: 5%;
+    margin-right: 5%;
+    display: flex;
+    flex-direction: rows;
+}
+
+.cardSpotText {
+    font-size: calc(10px + 1.65vw);
     margin-left: 5%;
     margin-right: 5%;
     display: flex;

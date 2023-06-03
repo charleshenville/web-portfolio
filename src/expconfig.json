@@ -5,7 +5,7 @@
         "company": "Hubio Technology",
         "role": "Software Developer Intern",
         "info": [
-            "Worked full-time on Hubio’s collabor8 product in a collaborative team setting with Git. See https://hubio.com/collabor8 for product information.",
+            "Worked full-time on Hubio’s collabor8 product in a collaborative team setting with Git.",
             "Developed Python scripts (NumPy and Pandas) to transform configuration spreadsheets into source artifacts consumed by the collabor8 product.",
             "Implemented new features, routine maintenance, and bug fixes on the product (Angular)"
         ]
@@ -24,7 +24,7 @@
     {
         "id": 2,
         "year": "2022-2023",
-        "company": "UofT - Engineering Strategies and Practice",
+        "company": "UofT Engineering Strategies and Practice",
         "role": "Team Leader",
         "info": [
             "Led two separate design teams (Sep 22’ - Dec 22’ & Jan 23’ - Apr 23’) of other engineering students by employing sprint structure workflows, Gantt charts, and other project management strategies.",
@@ -35,7 +35,7 @@
     {
         "id": 3,
         "year": "2021-2022",
-        "company": "Senator O'Connor - Yearbook Team",
+        "company": "Senator O'Connor Yearbook Team",
         "role": "Director",
         "info": [
             "Developed leadership skills while regulating the development of a high school yearbook.",

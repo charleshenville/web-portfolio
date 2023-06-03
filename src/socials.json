@@ -1,0 +1,26 @@
+[
+    {
+        "id": 0,
+        "name": "linkedin",
+        "url": "",
+        "handle": "charleshenville"
+    },
+    {
+        "id": 1,
+        "name": "github",
+        "url": "",
+        "handle": "charleshenville"
+    },
+    {
+        "id": 2,
+        "name": "email",
+        "url": "",
+        "handle": "henvillecharles@gmail.com"
+    },
+    {
+        "id": 3,
+        "name": "cell",
+        "url": "",
+        "handle": "6476402442"
+    }
+]

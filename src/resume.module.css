@@ -11,19 +11,13 @@
     justify-items: center;
     font-size: calc(10px + 2vmin);
     align-items: center;
+    overflow-x: hidden;
 }
 
 .expBar {
     width: 100%;
     display: grid;
     grid-template-columns: 1fr 5fr 1fr;
-    align-items: center;
-    font-size: small;
-}
-.expBar2 {
-    width: 100%;
-    display: grid;
-    grid-template-columns: 1fr 12fr 1fr;
     align-items: center;
     font-size: small;
 }
@@ -38,14 +32,10 @@
 }
 
 .barContainer {
-    margin-top: 60vh;
     width: 100%;
     height: 20%;
 }
-.barContainer2 {
-    width: 100%;
-    height: 20%;
-}
+
 @keyframes scroll {
     0% {
         transform: translateX(0);
@@ -61,6 +51,7 @@
     max-width: 100%;
     overflow: hidden;
     white-space: nowrap;
+    height: 100lvh;
 }
 
 .scroller {
@@ -82,11 +73,11 @@
     align-items: center;
 }
 
-.langPadding{
+.langPadding {
     padding: 10px;
 }
 
-.subs{
+.subs {
     width: 100%;
     height: 100%;
     font-size: medium;
@@ -97,34 +88,69 @@
     flex-direction: column;
 }
 
-.praContainer{
+.praContainer {
     text-align: left;
     display: flex;
     justify-content: center;
     box-sizing: border-box;
     position: relative;
-    width: 100vw;
+    width: 100%;
     padding: 2vh;
 }
 
-.praMain{
+.praMain {
     width: 90%;
     border-color: #FFFFFF;
     border-width: 3px;
     border-radius: 10px;
     background-color: #42424265;
     border: 2px solid white;
+    font-size: xx-large;
 }
 
-.praTitle{
+.praMain2 {
+    border-color: #FFFFFF;
+    border-width: 3px;
+    border-radius: 10px;
+    background-color: #42424265;
+    border: 2px solid white;
+    box-sizing: border-box;
+    display: flex;
+    flex: 1 0 auto;
+    flex-direction: column;
+    width: 40%;
+    padding: 10px;
+    font-size: 80%;
+    font-weight: bold;
+}
+
+.praTitle {
     padding-left: 5%;
     padding-right: 5%;
     padding-top: 2%;
     padding-bottom: 2%;
     width: 67%;
+    box-sizing: border-box;
 }
 
-.infoBit{
-    font-size: large;
+.infoBit {
+    font-size: 60%;
     padding: 5%;
+}
+
+.eduContainer {
+    display: flex;
+    justify-content: center;
+    padding: 2vh;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.ampersand{
+    position:fixed;
+    z-index: -10;
+}
+
+.bounds{
+    box-sizing: border-box;
 }

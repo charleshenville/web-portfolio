@@ -112,33 +112,37 @@ function Home() {
                 <div className={styles.gridContainer}>
                     <div className={styles.mainGrid}>
                         <h1 className={styles.txt}>CHARLES HENVILLE</h1>
-                        <h1 className={styles.aboutTxt}>ABOUT</h1>
-                        <p className={styles.aboutSubTxt}>
-                            Hi viewer! I’m Charles Miguel, an 18-year-old computer
-                            engineer at the University of Toronto in Canada.
-                            I’m passionate about all things relating to data,
-                            automation, and more recently, machine learning.
-                            While I am busy with my studies, I enjoy creating
-                            things that I think are cool and sharing them with
-                            people! See my <a href='/projects'>projects</a> to check out what I’ve been
-                            up to!
-                        </p>
+                        <div className={styles.aboutContainer}>
+                            <h1 className={styles.aboutTxt}>ABOUT</h1>
+                            <p className={styles.aboutSubTxt}>
+                                Hi viewer! I’m Charles Miguel, an 18-year-old computer
+                                engineer at the University of Toronto in Canada.
+                                I’m passionate about all things relating to data,
+                                automation, and more recently, machine learning.
+                                While I am busy with my studies, I enjoy creating
+                                things that I think are cool and sharing them with
+                                people! See my <a href='/projects'>projects</a> to check out what I’ve been
+                                up to!
+                            </p>
+                        </div>
                         <div className={styles.adjs}>
-                            <h1>I'm a Developer.</h1>
-                            <h1>I'm an Engineer.</h1>
-                            <h1>I'm a Creator.</h1>
+                            <h1 style={{margin:'2%'}}>I'm a Developer.</h1>
+                            <h1 style={{margin:'2%'}}>I'm an Engineer.</h1>
+                            <h1 style={{margin:'2%'}}>I'm a Creator.</h1>
+                        </div>
+                        <div className={styles.directory}>
+                            <div className={styles.tmt}>
+                                <h1>Take me to...</h1>
+                            </div>
+                            <div className={styles.tmtContent}>
+                                <div>Project Spotlight</div>
+                                <div>Skills & Stacks</div>
+                                <div>Career Experience</div>
+                                <div>Page Repository</div>
+                                <div>Contact Information</div>
+                            </div>
                         </div>
 
-                        <div className={styles.tmt}>
-                            <h1>Take me to...</h1>
-                        </div>
-                        <div className={styles.tmtContent}>
-                            <div>Project Spotlight</div>
-                            <div>Skills & Stacks</div>
-                            <div>Career Experience</div>
-                            <div>Page Repository</div>
-                            <div>Contact Information</div>
-                        </div>
 
                     </div>
                 </div>

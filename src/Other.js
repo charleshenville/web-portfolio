@@ -43,7 +43,7 @@ function Other() {
     return (
         <div className={styles.otherTitle}>
 
-            <svg style={{ paddingLeft: "50px", paddingRight: "50px" }} ref={svgRef} width="2583" height="150" viewBox="0 0 2583 344" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <svg ref={svgRef} viewBox="0 0 2583 344" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path className={styles.hidden} d="M2494 141.001C2494 139.896 2494.9 139.001 2496 139.001H2512C2513.1 139.001 2514 139.896 2514 141.001V157.001C2514 158.106 2513.1 159.001 2512 159.001H2496C2494.9 159.001 2494 158.106 2494 157.001V141.001Z" fill="white" />
                 <path className={styles.hidden} d="M801 187.001C801 185.897 801.895 185.001 803 185.001H819C820.105 185.001 821 185.897 821 187.001V203.002C821 204.106 820.105 205.002 819 205.002H803C801.895 205.002 801 204.106 801 203.002V187.001Z" fill="white" />
                 <path className={styles.hidden} d="M2303 164.002C2303 162.898 2303.9 162.002 2305 162.002H2321C2322.1 162.002 2323 162.898 2323 164.002V180.003C2323 181.107 2322.1 182.003 2321 182.003H2305C2303.9 182.003 2303 181.107 2303 180.003V164.002Z" fill="white" />
