@@ -4,35 +4,40 @@
         "name": "SunSet Demo",
         "date": "April 2023",
         "thumb": "ProjectVids/SSDemoThumb6.png",
-        "vid": "ProjectVids/SunSetVidDemo.mp4"
+        "vid": "ProjectVids/SunSetVidDemo.mp4",
+        "repo": "https://github.com/charleshenville/ocad-interactive-arduino-reactjs"
     },
     {
         "id": 1,
         "name": "ESPII Arduino Protoype",
         "date": "2023",
         "thumb": "ProjectVids/a112-thumb.png",
-        "vid": "ProjectVids/aps112-video-demo.mp4"
+        "vid": "ProjectVids/aps112-video-demo.mp4",
+        "repo": "https://github.com/charleshenville/aps112-prototyping"
     },
     {
         "id": 2,
         "name": "DotRender & Slope Fields",
         "date": "2023",
         "thumb": "ProjectVids/dtrndr-thumb.png",
-        "vid": "ProjectVids/dtrndr-vid-demo.mp4"
+        "vid": "ProjectVids/dtrndr-vid-demo.mp4",
+        "repo": "https://github.com/charleshenville/dot-render"
     },
     {
         "id": 3,
         "name": "Infinite Sudoku",
         "date": "2022",
         "thumb": "ProjectVids/infsdk-thumb.png",
-        "vid": "ProjectVids/infSdk-vid-demo.mp4"
+        "vid": "ProjectVids/infSdk-vid-demo.mp4",
+        "repo": "https://github.com/charleshenville/infinite-sudoku"
     },
     {
         "id": 4,
         "name": "The Starving Student",
         "date": "2022",
         "thumb": "ProjectVids/tss-thumb.png",
-        "vid": "ProjectVids/tss-vid-demo.mp4"
+        "vid": "ProjectVids/tss-vid-demo.mp4",
+        "repo": "https://github.com/charleshenville/TheStarvingStudent"
     }
     
 ]

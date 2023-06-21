@@ -1,5 +1,5 @@
 import styles from './projects.module.css';
-import React, { useState } from 'react';
+import React, { useRef, useEffect } from 'react';
 import Spotlight from './Spotlight';
 import ProjectMedia from './ProjectMedia';
 import Other from './Other';
@@ -8,6 +8,36 @@ const ProjectCard = ({ items }) => {
 
     const spotItem = items.find(item => item.id === 0);
 
+    const observe = styles.observe
+    const observer = useRef(null);
+    useEffect(() => {
+        observer.current = new IntersectionObserver((entries) => {
+            entries.forEach((entry) => {
+                if (entry.isIntersecting) {
+                    // Element is intersecting with the viewport
+                    entry.target.classList.add(observe);
+                    entry.target.style.filter = 'blur(0)';
+                    entry.target.style.transition = 'filter 1s ease-out';
+
+                }
+                else {
+                    entry.target.classList.remove(observe);
+                    entry.target.style.filter = 'blur(5px)';
+                }
+            });
+        });
+
+        const elements = document.querySelectorAll(`.${observe}`);
+        elements.forEach((element) => {
+            observer.current.observe(element);
+        });
+
+        // Cleanup the observer when the component unmounts
+        return () => {
+            observer.current.disconnect();
+        };
+    }, []);
+
     return (
 
         <div className={styles.mainWidth}>
@@ -15,7 +45,8 @@ const ProjectCard = ({ items }) => {
                 <Spotlight />
             </div>
 
-            <div className={styles.cardSpotPadding}>
+            <a className={observe} style={{textDecoration:'none'}} href={spotItem.repo} target="blank">
+                <div className={styles.cardSpotPadding}>
                 <div className={styles.cardSpotMain}>
                     <ProjectMedia isSpot={false} videoUrl={spotItem.vid} thumbnailUrl={spotItem.thumb} />
                     <div className={styles.cardSpotText}>
@@ -30,6 +61,8 @@ const ProjectCard = ({ items }) => {
                     </div>
                 </div>
             </div>
+            </a>
+            
 
             <div style={{ width: '100%', display: 'flex', justifyContent: 'center', alignContent: 'center' }}>
                 <Other />
@@ -39,7 +72,8 @@ const ProjectCard = ({ items }) => {
                 {items.map((item) => (
                     (item.id) == 0 ? (null) :
                         (
-                            <div className={styles.cardPadding}>
+                            <a className={observe} style={{textDecoration:'none'}} href={item.repo} target="blank">
+                                <div className={styles.cardPadding}>
                                 <div className={styles.cardMain}>
                                     <ProjectMedia isSpot={false} videoUrl={item.vid} thumbnailUrl={item.thumb} />
                                     <div className={styles.cardText}>
@@ -55,6 +89,8 @@ const ProjectCard = ({ items }) => {
 
                                 </div>
                             </div>
+                            </a>
+                            
                         )
 
                 ))}

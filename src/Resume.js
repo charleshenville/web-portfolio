@@ -1,5 +1,5 @@
 import styles from './resume.module.css';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import TechSkills from './TechSkills';
 import Languages from './Languages';
 import Aster from './Aster';
@@ -19,8 +19,8 @@ function Resume() {
 
         yam = window.pageYOffset;
         setToTop(-1 * 0.12 * yam + 500);
-        if (yam > window.innerHeight) {
-            setAmpOpacity(min(2 * (yam - window.innerHeight) / window.innerHeight, 1));
+        if (yam >= 0.5 * window.innerHeight) {
+            setAmpOpacity(min((yam - 0.4 * window.innerHeight) / window.innerHeight, 1));
         }
         else {
             setAmpOpacity(0);
@@ -28,6 +28,37 @@ function Resume() {
     };
 
     document.body.onscroll = handleScroll;
+
+    const observe = styles.observe
+
+    const observer = useRef(null);
+    useEffect(() => {
+        observer.current = new IntersectionObserver((entries) => {
+            entries.forEach((entry) => {
+                if (entry.isIntersecting) {
+                    // Element is intersecting with the viewport
+                    entry.target.classList.add(observe);
+                    entry.target.style.filter = 'blur(0)';
+                    entry.target.style.transition = 'filter 1s ease-out';
+
+                }
+                else {
+                    entry.target.classList.remove(observe);
+                    entry.target.style.filter = 'blur(5px)';
+                }
+            });
+        });
+
+        const elements = document.querySelectorAll(`.${observe}`);
+        elements.forEach((element) => {
+            observer.current.observe(element);
+        });
+
+        // Cleanup the observer when the component unmounts
+        return () => {
+            observer.current.disconnect();
+        };
+    }, []);
 
     const ampersand = {
         zIndex: '-1',
@@ -45,15 +76,18 @@ function Resume() {
 
                 <TechSkills />
                 <Aster />
-                <div className={styles.barContainer}>
-                    <div className={styles.expBar}>
+                <div className={observe} style={{width: '100%'}}>
+                    <div className={styles.barContainer}>
+                        <div className={styles.expBar}>
 
-                        <div style={{ display: 'flex', justifyContent: 'right', textAlign: 'right', padding: '20px' }}><p>Less Capable</p></div>
-                        <div className={styles.bar}></div>
-                        <div style={{ display: 'flex', justifyContent: 'left', textAlign: 'left', padding: '20px' }}><p>More Capable</p></div>
+                            <div style={{ display: 'flex', justifyContent: 'right', textAlign: 'right', padding: '20px' }}><p>Less Capable</p></div>
+                            <div className={styles.bar}></div>
+                            <div style={{ display: 'flex', justifyContent: 'left', textAlign: 'left', padding: '20px' }}><p>More Capable</p></div>
 
+                        </div>
                     </div>
                 </div>
+
                 <div style={{ display: 'flex', justifyContent: 'right' }}>
                     <div id='amp' style={ampersand}>
                         <svg viewBox="0 0 1865 2427" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -62,12 +96,11 @@ function Resume() {
                     </div>
                 </div>
 
-
                 <Languages />
 
                 <div style={{ width: '100%' }}>
-                    <div style={{ width: '100%', display: 'flex', justifyContent: 'center' }}>
-                        <div style={{ width: '90%', padding: '8%'}}>
+                    <div className={observe} style={{ width: '100%', display: 'flex', justifyContent: 'center' }}>
+                        <div style={{ width: '90%', padding: '8%' }}>
                             <svg viewBox="0 0 1835 287" fill="none" xmlns="http://www.w3.org/2000/svg">
                                 <path d="M0.148607 2.32942H84.1116C131.963 2.32942 161.387 17.9927 161.387 43.4556C161.387 68.5973 130.477 84.2606 80.8422 84.2606H54.6874V118.238H0.148607V2.32942ZM54.6874 24.74V61.85H70.2911C95.2571 61.85 106.254 56.1469 106.254 43.295C106.254 30.443 95.2571 24.74 70.2911 24.74H54.6874Z" fill="white" />
                                 <path d="M255.01 24.5793V56.8699H275.22C294.836 56.8699 307.171 50.5242 307.171 40.4836C307.171 30.684 294.985 24.5793 275.072 24.5793H255.01ZM271.208 77.6739H255.01V118.238H200.471V2.32942H282.799C332.88 2.32942 362.898 16.6272 362.898 40.564C362.898 55.424 348.781 68.035 326.341 73.3364L368.546 118.238H307.319L271.208 77.6739Z" fill="white" />
@@ -95,36 +128,39 @@ function Resume() {
 
                     {exps.map((item) => (
 
-                        <div className={styles.praContainer}>
-                            <div className={styles.praMain}>
-                                <div style={{ display: 'flex', flexDirection: 'row', justifyContent: 'center', alignContent: 'center' }}>
-                                    <div className={styles.praTitle}>
-                                        <p style={{ fontWeight: 'bold' }}>{item.company}</p>
-                                        <p style={{ fontSize: 'x-large' }}>{item.role} ({item.year})</p>
-                                    </div>
-                                    <div style={{ display: 'flex', justifyContent: 'right', alignContent: 'center', width: '33%' }}>
-                                        <PracticalGraphic id={item.id} />
-                                    </div>
-
-                                </div>
-
-                                <div style={{ backgroundColor: 'white', height: '2px', width: '100%' }} />
-                                <div className={styles.infoBit}>
-                                    {item.info.map((i) => (
-
-                                        <div style={{ display: 'flex', flexDirection: 'row', width: '100%' }}>
-                                            <p >●</p>
-                                            <p style={{ paddingLeft: '6px', maxWidth: '90%' }}>{i}</p>
+                        <div className={observe}>
+                            <div className={styles.praContainer}>
+                                <div className={styles.praMain}>
+                                    <div style={{ display: 'flex', flexDirection: 'row', justifyContent: 'center', alignContent: 'center' }}>
+                                        <div className={styles.praTitle}>
+                                            <p style={{ fontWeight: 'bold' }}>{item.company}</p>
+                                            <p style={{ fontSize: 'x-large' }}>{item.role} ({item.year})</p>
+                                        </div>
+                                        <div style={{ display: 'flex', justifyContent: 'right', alignContent: 'center', width: '33%' }}>
+                                            <PracticalGraphic id={item.id} />
                                         </div>
 
-                                    ))}
+                                    </div>
+
+                                    <div style={{ backgroundColor: 'white', height: '2px', width: '100%' }} />
+                                    <div className={styles.infoBit}>
+                                        {item.info.map((i) => (
+
+                                            <div style={{ display: 'flex', flexDirection: 'row', width: '100%' }}>
+                                                <p >●</p>
+                                                <p style={{ paddingLeft: '6px', maxWidth: '90%' }}>{i}</p>
+                                            </div>
+
+                                        ))}
+                                    </div>
                                 </div>
                             </div>
                         </div>
+
                     ))}
                     <div className={styles.eduContainer}>
-                        <div style={{ width: '90%', display: 'flex', flexDirection: 'row' }}>
-                            <div style={{ display: 'flex', paddingRight: '5%', width: '30%' }}>
+                        <div className={observe} style={{ width: '90%', display: 'flex', flexDirection: 'row' }}>
+                            <div style={{ display: 'flex', paddingRight: '5%', width: '30%', height: '100%' }}>
                                 <svg viewBox="0 0 572 361" fill="none" xmlns="http://www.w3.org/2000/svg">
                                     <path d="M164.164 65.0929V81.8197H15.4342V0H164.164V16.7268H72.6498V33.0567H158.395V48.366H72.6498V65.0929H164.164Z" fill="white" />
                                     <path d="M199.865 0H279.062C341.579 0 374.941 13.9485 374.941 40.0877C374.941 67.5877 342.202 81.8197 279.062 81.8197H199.865V0ZM257.08 16.7268V65.0929H270.332C302.603 65.0929 316.635 57.6083 316.635 40.4846C316.635 24.4382 301.668 16.7268 270.332 16.7268H257.08Z" fill="white" />

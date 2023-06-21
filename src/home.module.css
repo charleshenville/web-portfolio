@@ -23,7 +23,53 @@
     position: relative;
 }
 
-.aboutContainer{
+.projLink {
+    text-decoration: none;
+    color: white;
+    background-color: rgba(255, 255, 255, 0.189);
+    transition: opacity 0.3s ease-in-out;
+    opacity: 0.8;
+    width: fit-content;
+}
+
+.projLink:hover {
+
+    transition: opacity 0.3s ease-in-out;
+    opacity: 1;
+}
+
+@keyframes consume {
+    0% {
+        width: 0%;
+    }
+
+    100% {
+        width: 100%;
+    }
+}
+
+.projLink2 {
+    text-decoration: none;
+    color: rgb(205, 205, 205);
+    width: fit-content;
+    height: fit-content;
+}
+
+.projLink3 {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+
+}
+
+.projLink3:hover {
+    background: linear-gradient(90deg, #ffffff30 100%, #00000000 0%);
+    animation: consume 0.3s linear;
+
+}
+
+
+.aboutContainer {
     text-align: right;
     height: 100vh;
     padding-top: 4vh;
@@ -60,7 +106,7 @@
     font-weight: bold;
     width: 55vw;
     text-align: right;
-    height: 200vh;
+    height: 150vh;
     display: flex;
     flex-direction: column;
     justify-content: center;
@@ -68,7 +114,7 @@
 
 }
 
-.directory{
+.directory {
 
     height: 100vh;
     display: flex;
@@ -85,14 +131,56 @@
 
 .tmtContent {
 
-    display: grid;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-direction: column;
     row-gap: 10px;
     text-align: center;
     font-size: calc(5px + 2vw);
-    grid-template-rows: repeat(6, 1fr);
 }
 
-.gridContainer{
-    width:100%;
-    height:100%;
+.gridContainer {
+    width: 100%;
+    height: 100%;
+}
+
+.highlight {
+    background-color: #965eff2b;
+    width: fit-content;
+    height: fit-content;
+}
+
+.buttonContainer {
+    position: relative;
+    display: inline-block;
+}
+
+.highlighter {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 0;
+    height: 100%;
+    background-color: rgba(255, 255, 255, 0.275);
+    transition: width 0.3s ease;
+    z-index: -1;
+}
+
+.buttonContainer:hover .highlighter {
+    width: 100%;
+}
+
+.buttonText {
+    color: rgb(174, 174, 174);
+    transition: color 0.3s ease;
+}
+
+.buttonText:hover{
+    color: rgb(255, 255, 255);
+}
+
+.observe{
+    filter: blur(0);
+    transition: filter 1s ease-out;
 }

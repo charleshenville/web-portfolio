@@ -2,79 +2,92 @@
     {
         "id": "C#",
         "ext": "cs",
-        "proficiency": "0.5",
+        "proficiency": 0.5,
         "subs":[
             "Unity"
-        ]
+        ],
+        "repo":"https://github.com/charleshenville/dot-render"
     },
     {
         "id": "C++",
         "ext": "cpp",
-        "proficiency": "0.7",
+        "proficiency": 0.7,
         "subs":[
             "Arduino"
-        ]
+        ],
+        "repo":"https://github.com/charleshenville/ocad-interactive-arduino-reactjs/blob/main/sketches/interactive_sketch/interactive_sketch.ino"
     },
     {
         "id": "C",
         "ext": "c",
-        "proficiency": "0.6",
+        "proficiency": 0.6,
         "subs":[
-            "University"
-        ]
+            "Standard Libraries"
+        ],
+        "repo":"https://github.com/charleshenville/reversi-ai"
     },
     {
         "id": "Java",
         "ext": "java",
-        "proficiency": "0.5",
+        "proficiency": 0.5,
         "subs":[
             "Swing"
-        ]
+        ],
+        "repo":"https://github.com/charleshenville/infinite-sudoku"
     },
     {
         "id": "Python",
         "ext": "py",
-        "proficiency": "0.5",
+        "proficiency": 0.7,
         "subs":[
             "Flask",
             "NumPy",
-            "Pandas"
-        ]
+            "Pandas",
+            "Pyodb",
+            "Tkinter"
+        ],
+        "repo":"https://github.com/charleshenville/cds-idea-generator"
     },
     {
         "id": "JavaScript",
         "ext": "js",
-        "proficiency": "0.8",
+        "proficiency": 0.8,
         "subs":[
             "React",
             "Three"
-        ]
+        ],
+        "repo":"https://github.com/charleshenville/web-portfolio"
     },
     {
         "id": "HTML",
         "ext": "html",
-        "proficiency": "0.6",
+        "proficiency": 0.6,
         "subs":[
-            "React"
-        ]
+            "With React"
+        ],
+        "repo":"https://github.com/charleshenville/web-portfolio"
     },
     {
         "id": "CSS",
         "ext": "css",
-        "proficiency": "0.9",
+        "proficiency": 0.9,
         "subs":[
-            "React",
+            "With React",
             "Tailwind",
             "Figma"
-        ]
+        ],
+        "repo":"https://github.com/charleshenville/web-portfolio"
     },
     {
         "id": "SQL",
         "ext": "sql",
-        "proficiency": "0.2",
+        "proficiency": 0.3,
         "subs":[
-            "MySQL"
-        ]
+            "MySQL",
+            "SQL Server",
+            "PostgreSQL"
+        ],
+        "repo":"https://github.com/charleshenville/web-portfolio"
     }
 
 ]

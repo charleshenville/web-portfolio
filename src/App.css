@@ -14,6 +14,17 @@ canvas {
   width: 100%;
 }
 
+@font-face {
+  font-family: 'SF Mono';
+  src: url('../public/fonts/SFMono-Regular.otf') format('opentype');
+  font-weight: normal;
+}
+@font-face {
+  font-family: 'SF Mono';
+  src: url('../public/fonts/SFMono-Bold.otf') format('opentype');
+  font-weight: bold;
+}
+
 .App {
   text-align: center;
 }

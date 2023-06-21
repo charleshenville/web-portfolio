@@ -65,16 +65,27 @@
 }
 
 .langRow {
-    display: grid;
+    display: flex;
+    flex-direction: row;
     width: 100%;
-    grid-template-columns: 1fr 1fr;
     font-size: larger;
     justify-items: right;
     align-items: center;
+    color: #ffffff9c;
+    transition: color 0.3s ease;
+    cursor: pointer;
+    box-sizing: border-box;
+}
+
+.langRow:hover {
+
+    color: #FFFFFF;
+
 }
 
 .langPadding {
     padding: 10px;
+    box-sizing: border-box;
 }
 
 .subs {
@@ -143,6 +154,8 @@
     justify-content: center;
     padding: 2vh;
     width: 100%;
+    margin-top: 40vh;
+    margin-bottom: 32vh;
     box-sizing: border-box;
 }
 
@@ -153,4 +166,40 @@
 
 .bounds{
     box-sizing: border-box;
+}
+
+.buttonContainer {
+    position: relative;
+    display: inline-block;
+    padding-left: 10px;
+    padding-right: 10px;
+}
+
+.highlighter {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 0;
+    height: 100%;
+    opacity: 0.75;
+    transition: width 0.3s ease;
+    z-index: -1;
+}
+
+.buttonContainer:hover .highlighter {
+    width: 100%;
+}
+
+.buttonText {
+    color: rgba(255, 255, 255, 0.702);
+    transition: color 0.3s ease;
+}
+
+.buttonText:hover{
+    color: rgb(255, 255, 255);
+}
+
+.observe{
+    filter: blur(0);
+    transition: filter 1s ease-out;
 }

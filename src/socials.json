@@ -2,25 +2,25 @@
     {
         "id": 0,
         "name": "linkedin",
-        "url": "",
+        "url": "http://linkedin.com/in/charleshenville",
         "handle": "charleshenville"
     },
     {
         "id": 1,
         "name": "github",
-        "url": "",
+        "url": "https://github.com/charleshenville",
         "handle": "charleshenville"
     },
     {
         "id": 2,
         "name": "email",
-        "url": "",
+        "url": "mailto:henvillecharles@gmail.com",
         "handle": "henvillecharles@gmail.com"
     },
     {
         "id": 3,
         "name": "cell",
-        "url": "",
+        "url": "tel:647-640-2442",
         "handle": "6476402442"
     }
 ]
