@@ -1,5 +1,5 @@
 .main{
-    background-color: #181818;
+    background-color: #131313;
     position: fixed;
     justify-content: center;
     display: grid;
@@ -19,6 +19,8 @@
     align-items: center;
     justify-content: center;
     text-decoration: none;
+    margin-top: 1vh;
+    margin-bottom: 1vh;
     transition: color 0.3s ease-in-out;
     color: #514d4d;
 }

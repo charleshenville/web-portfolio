@@ -1,16 +1,16 @@
 import styles from './contact.module.css';
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
+import emailjs from "@emailjs/browser";
 import SocialAspect from './SocialAspect';
 import items from './socials.json'
 import * as THREE from 'three';
-import { useEffect, useRef } from 'react';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader'
 
 function Contact() {
 
+    const [notifText, setNotifText] = useState("Let's Get In Touch.");
+
     const start = Date.now();
-    const [isVisible, setVisible] = useState(false);
-    const [opacity, setOpacity] = useState(0);
 
     let filter = document.getElementById('filter');
 
@@ -23,7 +23,7 @@ function Contact() {
     renderer.setSize(window.innerWidth, window.innerHeight);
     camera.rotateY(-3.14 / 2.3)
 
-    const material = new THREE.MeshPhysicalMaterial({ color: 0xFFFFFF })
+    const material = new THREE.MeshPhysicalMaterial({ color: 0xFFFFFF }) // use for b&w
     const materialC = new THREE.PointsMaterial({ size: 0.003, vertexColors: true })
 
     const loader = new PLYLoader()
@@ -36,11 +36,11 @@ function Contact() {
             scene.add(mesh)
         },
         (xhr) => {
-            if(xhr.loaded==xhr.total){
+            if (xhr.loaded == xhr.total) {
                 MakeTrasnparent();
             }
-            console.log((xhr.loaded / xhr.total) * 100 + '% loaded')
-            
+            //console.log((xhr.loaded / xhr.total) * 100 + '% loaded')
+
         },
         (error) => {
             console.log(error)
@@ -50,7 +50,7 @@ function Contact() {
 
     function MakeTrasnparent() {
 
-        console.log("here")
+        //console.log("here")
         var target = document.getElementById('filter');
         target.classList.add(styles.transparent);
 
@@ -88,6 +88,49 @@ function Contact() {
         requestAnimationFrame(Animate);
 
     }
+
+    const formRef = useRef();
+
+    const sendEmail = (e) => {
+        e.preventDefault();
+
+        // Check if form is valid
+        const form = formRef.current;
+        const firstName = form.firstname.value.trim();
+        const lastName = form.lastname.value.trim();
+        const email = form.email.value.trim();
+        const message = form.usermessage.value.trim();
+
+        if (firstName === '' || lastName === '' || email === '' || message === '') {
+            setNotifText('Please fill in all form fields.');
+            return;
+        }
+
+        if (!email.includes('@')) {
+            setNotifText('Please enter a valid email address.');
+            return;
+        }
+
+        emailjs
+            .sendForm(
+                "service_khx2ntp",
+                "template_adla74a",
+                formRef.current,
+                "K2gA7Qym2vSMS9Ifv"
+            )
+            .then(
+                (result) => {
+                    console.log(result.text);
+                    console.log("message sent");
+                    setNotifText("Message sent, Thank you!")
+                },
+                (error) => {
+                    console.log(error.text);
+                    setNotifText("Couldn't fulfill your request, try again later...")
+                }
+            );
+    };
+
     return (
         <div style={{ width: '100%', minHeight: '100svh', display: 'flex', flexWrap: 'wrap', alignItems: 'center', paddingTop: '8svh', paddingBottom: '8svh', boxSizing: 'border-box' }}>
 
@@ -96,10 +139,10 @@ function Contact() {
             <header className={styles.header}>
 
                 <div className={styles.title}>
-                    <p style={{ marginTop: '0px' }}>Let's Get In Touch.</p>
+                    <p style={{ marginTop: '0px' }}>{notifText}</p>
                 </div>
 
-                <form style={{ width: '100%', display: 'flex', justifyContent: 'center' }} action="/submit" method="POST">
+                <form style={{ width: '100%', display: 'flex', justifyContent: 'center' }} ref={formRef} onSubmit={sendEmail}>
                     <div className={styles.contactFormContainer}>
                         <div className={styles.contactFormSubs}>
                             <input className={styles.textStyles} maxlength="30" type="text" id="first" name="firstname" placeholder="First Name" />

@@ -20,9 +20,10 @@
     display: flex;
     text-align: center;
     justify-content: center;
-    font-size: x-large;
+    font-size: xx-large;
     padding-bottom: 4vh;
     box-sizing: border-box;
+    font-weight: 500;
 }
 
 .contactFormContainer {

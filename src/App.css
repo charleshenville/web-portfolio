@@ -24,6 +24,11 @@ canvas {
   src: url('../public/fonts/SFMono-Bold.otf') format('opentype');
   font-weight: bold;
 }
+@font-face {
+  font-family: 'SF Mono';
+  src: url('../public/fonts/SFMono-Semibold.otf') format('opentype');
+  font-weight: 500;
+}
 
 .App {
   text-align: center;

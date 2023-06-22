@@ -14,15 +14,16 @@ const ProjectCard = ({ items }) => {
         observer.current = new IntersectionObserver((entries) => {
             entries.forEach((entry) => {
                 if (entry.isIntersecting) {
-                    // Element is intersecting with the viewport
                     entry.target.classList.add(observe);
-                    entry.target.style.filter = 'blur(0)';
-                    entry.target.style.transition = 'filter 1s ease-out';
-
+                    // entry.target.style.filter = 'blur(0)';
+                    // entry.target.style.transition = 'filter 1s ease-out';
+                    entry.target.style.opacity = '1';
+                    entry.target.style.transition = 'opacity 1s ease-out';
                 }
                 else {
                     entry.target.classList.remove(observe);
-                    entry.target.style.filter = 'blur(5px)';
+                    // entry.target.style.filter = 'blur(5px)';
+                    entry.target.style.opacity = '0';
                 }
             });
         });

@@ -190,6 +190,8 @@
 }
 
 .observe{
-    filter: blur(0);
-    transition: filter 1s ease-out;
+    /* filter: blur(0);
+    transition: filter 1s ease-out; */
+    opacity: 1;
+    transition: opacity 1s ease-out
 }

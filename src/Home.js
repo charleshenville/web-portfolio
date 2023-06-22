@@ -19,7 +19,11 @@ function Home() {
 
     const mainTorusGeometry = new THREE.TorusGeometry(12, 7, 10, 40);
     const torus = new THREE.Mesh(mainTorusGeometry, materials);
-    let torusX = 0.016 * window.innerHeight;
+    let torusX = 0.01 * window.innerWidth;
+
+    torus.rotation.x = 1.7;
+    torus.rotation.y = 1.1;
+    torus.rotation.z = 0.5;
 
     torus.position.x = torusX;
     scene.add(torus);
@@ -49,9 +53,9 @@ function Home() {
 
     function Animate() {
         renderer.render(scene, camera);
-        torus.rotation.x += 0.001;
-        torus.rotation.y += 0.0005;
-        torus.rotation.z += 0.00025;
+        torus.rotation.x += 0.00065;
+        torus.rotation.y += 0.000125;
+        torus.rotation.z += 0.0004;
 
         icosahedron.rotation.x += 0.001;
         icosahedron.rotation.y += 0.0008;
@@ -66,15 +70,14 @@ function Home() {
 
         const toTop = document.body.getBoundingClientRect().top;
         // const toTop = -window.pageYOffset;
-        const ht = window.innerHeight
 
         if ((0.05 * toTop + torusX) >= -torusX) {
             torus.position.x = 0.05 * toTop + torusX;
             torus.position.y = 0.01 * toTop;
         }
-        else if ((0.07 * toTop + torusX) <= -torusX - 37) {
+        else if ((0.07 * toTop + torusX) <= -torusX - 20000/window.innerWidth - 12) {
 
-            torus.position.x = 0.07 * toTop + torusX + 37;
+            torus.position.x = 0.07 * toTop + torusX + 20000/window.innerWidth + 12;
         }
 
         icosahedron.position.y = icosY - 0.07 * toTop;
@@ -87,7 +90,7 @@ function Home() {
 
         camera.aspect = window.innerWidth / window.innerHeight;
 
-        torusX = 0.016 * window.innerHeight;
+        torusX = 0.01 * window.innerWidth
         torus.position.x = torusX;
         icosY = -0.163 * window.innerHeight;
         icosahedron.position.y = icosY;
@@ -149,7 +152,7 @@ function Home() {
                             <div className={observe}>
                                 <h1 className={styles.aboutTxt}>ABOUT</h1>
                                 <p className={styles.aboutSubTxt}>
-                                    Hi viewer! I’m Charles Miguel, an 18-year-old computer
+                                    Hi, viewer! I’m Charles Miguel, an 18-year-old computer
                                     engineer at the University of Toronto in Canada.
                                     I’m passionate about all things relating to data,
                                     automation, and more recently, machine learning.
