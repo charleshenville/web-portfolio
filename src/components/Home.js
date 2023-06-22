@@ -75,9 +75,9 @@ function Home() {
             torus.position.x = 0.05 * toTop + torusX;
             torus.position.y = 0.01 * toTop;
         }
-        else if ((0.07 * toTop + torusX) <= -torusX - 20000/window.innerWidth - 12) {
+        else if ((0.07 * toTop + torusX) <= -torusX - 20000/window.innerWidth - 15) {
 
-            torus.position.x = 0.07 * toTop + torusX + 20000/window.innerWidth + 12;
+            torus.position.x = 0.07 * toTop + torusX + 20000/window.innerWidth + 15;
         }
 
         icosahedron.position.y = icosY - 0.07 * toTop;

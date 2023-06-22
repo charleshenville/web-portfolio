@@ -1,10 +1,10 @@
 import './App.css';
-import MenuBar from './MenuBar';
+import MenuBar from './components/MenuBar';
 import { Routes, Route } from 'react-router-dom';
-import Home from './Home';
-import Projects from './Projects';
-import Resume from './Resume';
-import Contact from './Contact';
+import Home from './components/Home';
+import Projects from './components/Projects';
+import Resume from './components/Resume';
+import Contact from './components/Contact';
 
 function App() {
 
