@@ -5,6 +5,9 @@ import { useEffect, useRef } from 'react';
 
 function Home() {
 
+    const ogHeight = window.innerHeight;
+    const ogWidth = window.innerWidth;
+
     let scene = new THREE.Scene();
     let camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
     let renderer = new THREE.WebGLRenderer({
@@ -90,12 +93,19 @@ function Home() {
 
         camera.aspect = window.innerWidth / window.innerHeight;
 
-        torusX = 0.01 * window.innerWidth
-        torus.position.x = torusX;
-        icosY = -0.163 * window.innerHeight;
-        icosahedron.position.y = icosY;
-        ddcX = -0.23 * window.innerHeight;
-        dodecahedron.position.x = ddcX;
+        console.log(ogWidth)
+        console.log(ogHeight)
+
+
+        if(ogHeight>900 && ogWidth>400){
+            torusX = 0.01 * window.innerWidth
+            torus.position.x = torusX;
+            icosY = -0.163 * window.innerHeight;
+            icosahedron.position.y = icosY;
+            ddcX = -0.23 * window.innerHeight;
+            dodecahedron.position.x = ddcX;
+        }
+        
 
         camera.updateProjectionMatrix();
         renderer.setPixelRatio(window.devicePixelRatio);
