@@ -1,4 +1,5 @@
 import './App.css';
+import E404 from './components/E404';
 import MenuBar from './components/MenuBar';
 import { Routes, Route } from 'react-router-dom';
 import Home from './components/Home';
@@ -17,7 +18,7 @@ function App() {
           <Route path='/projects' element={<Projects />} />
           <Route path='/resume' element={<Resume />} />
           <Route path='/contact' element={<Contact />} />
-          <Route path="*" element={<Home />} />
+          <Route path="*" element={<E404 />} />
       </Routes>
     </div>
 
