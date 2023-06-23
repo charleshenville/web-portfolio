@@ -105,6 +105,14 @@ function Home() {
             ddcX = -0.23 * window.innerHeight;
             dodecahedron.position.x = ddcX;
         }
+        else{
+            torusX = 0.01 * window.outerWidth
+            torus.position.x = torusX;
+            icosY = -0.163 * window.outerHeight;
+            icosahedron.position.y = icosY;
+            ddcX = -0.23 * window.outerHeight;
+            dodecahedron.position.x = ddcX;
+        }
         
 
         camera.updateProjectionMatrix();
