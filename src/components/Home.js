@@ -8,6 +8,12 @@ function Home() {
     const ogHeight = window.innerHeight;
     const ogWidth = window.innerWidth;
 
+    const navigateAndReload = (path) => {
+        window.location.href = path;
+        window.scrollTo(0,0);
+        window.location.reload();
+    };
+
     let scene = new THREE.Scene();
     let camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
     let renderer = new THREE.WebGLRenderer({
@@ -166,7 +172,7 @@ function Home() {
                                     automation, and more recently, machine learning.
                                     While I am busy with my studies, I enjoy creating
                                     things that I think are cool and sharing them with
-                                    people! See my <a className={styles.projLink} href='/projects'>projects</a> to check out what I’ve been
+                                    people! See my <a className={styles.projLink} href='/#/projects'onClick={() => navigateAndReload('/#/projects')}>projects</a> to check out what I’ve been
                                     up to!
                                 </p>
                             </div>
@@ -185,19 +191,19 @@ function Home() {
                                 </div>
                                 <div className={styles.tmtContent}>
 
-                                    <a className={styles.projLink2} href='/#/projects'>
+                                    <a className={styles.projLink2} href='/#/projects' onClick={() => navigateAndReload('/#/projects')}>
                                         <div className={styles.buttonContainer}>
                                             <div className={styles.highlighter}></div>
                                             <div className={styles.buttonText}>Project Spotlight</div>
                                         </div>
                                     </a>
-                                    <a className={styles.projLink2} href='/#/resume'>
+                                    <a className={styles.projLink2} href='/#/resume' onClick={() => navigateAndReload('/#/resume')}>
                                         <div className={styles.buttonContainer}>
                                             <div className={styles.highlighter}></div>
                                             <div className={styles.buttonText}>Skills & Stacks</div>
                                         </div>
                                     </a>
-                                    <a className={styles.projLink2} href='/#/resume'>
+                                    <a className={styles.projLink2} href='/#/resume' onClick={() => navigateAndReload('/#/resume')}>
                                         <div className={styles.buttonContainer}>
                                             <div className={styles.highlighter}></div>
                                             <div className={styles.buttonText}>Career Experience</div>
@@ -209,7 +215,7 @@ function Home() {
                                             <div className={styles.buttonText}>Page Repository</div>
                                         </div>
                                     </a>
-                                    <a className={styles.projLink2} href='/#/contact'>
+                                    <a className={styles.projLink2} href='/#/contact' onClick={() => navigateAndReload('/#/contact')}>
                                         <div className={styles.buttonContainer}>
                                             <div className={styles.highlighter}></div>
                                             <div className={styles.buttonText}>Contact Information</div>
