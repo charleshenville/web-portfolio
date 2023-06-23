@@ -185,19 +185,19 @@ function Home() {
                                 </div>
                                 <div className={styles.tmtContent}>
 
-                                    <a className={styles.projLink2} href='/projects'>
+                                    <a className={styles.projLink2} href='/#/projects'>
                                         <div className={styles.buttonContainer}>
                                             <div className={styles.highlighter}></div>
                                             <div className={styles.buttonText}>Project Spotlight</div>
                                         </div>
                                     </a>
-                                    <a className={styles.projLink2} href='/resume'>
+                                    <a className={styles.projLink2} href='/#/resume'>
                                         <div className={styles.buttonContainer}>
                                             <div className={styles.highlighter}></div>
                                             <div className={styles.buttonText}>Skills & Stacks</div>
                                         </div>
                                     </a>
-                                    <a className={styles.projLink2} href='/resume'>
+                                    <a className={styles.projLink2} href='/#/resume'>
                                         <div className={styles.buttonContainer}>
                                             <div className={styles.highlighter}></div>
                                             <div className={styles.buttonText}>Career Experience</div>
@@ -209,7 +209,7 @@ function Home() {
                                             <div className={styles.buttonText}>Page Repository</div>
                                         </div>
                                     </a>
-                                    <a className={styles.projLink2} href='/contact'>
+                                    <a className={styles.projLink2} href='/#/contact'>
                                         <div className={styles.buttonContainer}>
                                             <div className={styles.highlighter}></div>
                                             <div className={styles.buttonText}>Contact Information</div>
