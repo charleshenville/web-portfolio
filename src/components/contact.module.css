@@ -94,16 +94,32 @@
     font-family: "SF Mono";
     font-size: large;
     color: rgb(255, 255, 255);
-    background-color: rgba(52, 52, 52, 0.509);
+    background-color: rgba(52, 52, 52, 0.5);
     border: 1px solid rgb(255, 255, 255);
     border-radius: 5px;
     width: 50%;
     height: 100%;
+    transition: background-color 0.2s ease-in-out;
 }
 
 .submit:hover {
 
     cursor: pointer;
+    background-color: rgba(114, 114, 114, 0.5);
+
+}
+
+.submit:active {
+
+    background-color: rgba(41, 41, 41, 0.5);
+}
+
+.submit:disabled {
+
+    color:#878787;
+    background-color: rgba(69, 69, 69, 0.5);
+    cursor: not-allowed;
+
 }
 
 .socialsContainer {

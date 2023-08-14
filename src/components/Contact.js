@@ -16,9 +16,11 @@ function Contact() {
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
-    const renderer = new THREE.WebGLRenderer({
-        canvas: document.querySelector('#bg'),
-    })
+    const renderer = new THREE.WebGLRenderer(
+        {
+            canvas: document.querySelector('#bg'),
+        }
+    )
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(window.innerWidth, window.innerHeight);
     camera.rotateY(-3.14 / 2.3)
@@ -94,6 +96,9 @@ function Contact() {
     const sendEmail = (e) => {
         e.preventDefault();
 
+        const inputElement = document.getElementById('submits');
+        inputElement.disabled = true;
+
         // Check if form is valid
         const form = formRef.current;
         const firstName = form.firstname.value.trim();
@@ -103,12 +108,14 @@ function Contact() {
 
         if (firstName === '' || lastName === '' || email === '' || message === '') {
             setNotifText('Please fill in all form fields.');
-            return;
+            inputElement.disabled = false;
+            return null;
         }
 
-        if (!email.includes('@')) {
+        if (!email.includes('@') || !email.includes('.')) {
             setNotifText('Please enter a valid email address.');
-            return;
+            inputElement.disabled = false;
+            return null;
         }
 
         emailjs
@@ -120,13 +127,23 @@ function Contact() {
             )
             .then(
                 (result) => {
+
                     console.log(result.text);
                     console.log("message sent");
                     setNotifText("Message sent, Thank you!")
+                    setTimeout(() => {
+                        inputElement.disabled = false;
+                    }, 10000);
+
                 },
                 (error) => {
+
                     console.log(error.text);
-                    setNotifText("Couldn't fulfill your request, try again later...")
+                    setNotifText("Something went wrong. Try again later!")
+                    setTimeout(() => {
+                        inputElement.disabled = false;
+                    }, 30000);
+
                 }
             );
     };
@@ -145,18 +162,18 @@ function Contact() {
                 <form style={{ width: '100%', display: 'flex', justifyContent: 'center' }} ref={formRef} onSubmit={sendEmail}>
                     <div className={styles.contactFormContainer}>
                         <div className={styles.contactFormSubs}>
+
                             <input className={styles.textStyles} maxlength="30" type="text" id="first" name="firstname" placeholder="First Name" />
                             <input className={styles.textStyles} maxlength="30" type="text" id="last" name="lastname" placeholder="Last Name" />
                             <input className={styles.textStyles} maxlength="30" type="text" id="email" name="email" placeholder='Email Address' />
 
                         </div>
-
-
                         <div className={styles.contactFormSubs}>
+
                             <div className={styles.messageContainer} style={{ gridRow: 'span 2', display: 'flex', alignContent: 'top' }} >
                                 <textarea className={styles.message} maxlength="300" type="text" id="message" name="usermessage" placeholder="Message" />
                             </div>
-                            <input className={styles.submit} maxlength="30" type="submit" value="Submit" />
+                            <input id='submits' className={styles.submit} maxlength="30" type="submit" value="Submit" />
 
                         </div>
                     </div>
