@@ -166,7 +166,7 @@ function Home() {
                             <div className={observe}>
                                 <h1 className={styles.aboutTxt}>ABOUT</h1>
                                 <p className={styles.aboutSubTxt}>
-                                    Hi, viewer! I’m Charles Miguel, an 18-year-old computer
+                                    Hi, viewer! I’m Charles Miguel, a 19-year-old computer
                                     engineer at the University of Toronto in Canada.
                                     I’m passionate about all things relating to data,
                                     automation, and more recently, machine learning.
