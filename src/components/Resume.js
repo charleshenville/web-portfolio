@@ -5,6 +5,7 @@ import Languages from './Languages';
 import Aster from './Aster';
 import exps from './expconfig.json';
 import PracticalGraphic from './PracticalGraphic';
+import Footer from './Footer';
 
 function Resume() {
 
@@ -187,7 +188,9 @@ function Resume() {
                     </div>
                 </div>
 
-
+                <div style={{width:'100%', display:'flex', justifyContent:'center'}} className={observe}>
+                    <Footer/>
+                </div>
             </header>
 
         </div>

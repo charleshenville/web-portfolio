@@ -2,6 +2,7 @@ import styles from './home.module.css';
 import * as THREE from 'three';
 import React, { useState } from 'react';
 import { useEffect, useRef } from 'react';
+import Footer from './Footer';
 
 function Home() {
 
@@ -229,8 +230,11 @@ function Home() {
 
                     </div>
                 </div>
-
+                <div style={{width:'100%', display:'flex', justifyContent:'center'}} className={observe}>
+                    <Footer/>
+                </div>
             </header>
+            
         </div>
     );
 }

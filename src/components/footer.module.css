@@ -1,0 +1,23 @@
+.master {
+
+    display: flex;
+    flex-direction: row;
+    width: calc(200px);
+    justify-content: center;
+    font-weight: normal;
+    font-size: x-small;
+    column-gap: 20%;
+    background-color: #ffffff18;
+    border-radius: 4px;
+    margin-bottom: 2vh;
+    align-items: center;
+    color: white;
+
+}
+
+.svg{
+
+    width: 10%;
+    height: 20%;
+
+}
