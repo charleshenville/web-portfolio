@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { useEffect, useRef } from 'react';
 import styles from './projects.module.css';
