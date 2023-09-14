@@ -54,23 +54,27 @@
     font-family: "SF Mono";
     font-size: large;
     color: white;
-    background-color: rgba(0, 0, 0, 0.6);
+    background-color: rgba(0, 0, 0, 0.25);
     border: 1px solid white;
     box-sizing: border-box;
     border-radius: 5px;
     padding: 3%;
+    backdrop-filter: blur(1px);
+    -webkit-backdrop-filter: blur(1px);
 }
 
 .messageContainer {
     font-family: "SF Mono";
     font-size: medium;
     color: white;
-    background-color: rgba(0, 0, 0, 0.6);
+    background-color: rgba(0, 0, 0, 0.25);
     border: 1px solid white;
     border-radius: 5px;
     box-sizing: border-box;
     display: flex;
     align-items: flex-start;
+    backdrop-filter: blur(1px);
+    -webkit-backdrop-filter: blur(1px);
 }
 
 .message {
@@ -94,12 +98,14 @@
     font-family: "SF Mono";
     font-size: large;
     color: rgb(255, 255, 255);
-    background-color: rgba(52, 52, 52, 0.5);
+    background-color: rgba(52, 52, 52, 0.25);
     border: 1px solid rgb(255, 255, 255);
     border-radius: 5px;
     width: 50%;
     height: 100%;
     transition: background-color 0.2s ease-in-out;
+    backdrop-filter: blur(1px);
+    -webkit-backdrop-filter: blur(1px);
 }
 
 .submit:hover {

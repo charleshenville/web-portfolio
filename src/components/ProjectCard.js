@@ -47,10 +47,11 @@ const ProjectCard = ({ items }) => {
                 <Spotlight />
             </div>
 
-            <a className={observe} style={{ textDecoration: 'none' }} href={spotItem.repo} target="blank">
+            <a style={{ textDecoration: 'none' }} href={spotItem.repo} target="blank">
                 <div className={styles.cardSpotPadding}>
                     <div className={styles.cardSpotMain}>
-                        <ProjectMedia isSpot={false} videoUrl={spotItem.vid} thumbnailUrl={spotItem.thumb} />
+                        <div className={observe}>
+                            <ProjectMedia isSpot={false} videoUrl={spotItem.vid} thumbnailUrl={spotItem.thumb} />
                         <div className={styles.cardSpotText}>
                             <div style={{ minWidth: '50%', textAlign: 'left' }}>
                                 <p>{spotItem.name}</p>
@@ -61,6 +62,8 @@ const ProjectCard = ({ items }) => {
                             </div>
 
                         </div>
+                        </div>
+                        
                     </div>
                 </div>
             </a>
@@ -74,20 +77,23 @@ const ProjectCard = ({ items }) => {
                 {items.map((item) => (
                     (item.id) == 0 ? (null) :
                         (
-                            <a className={observe} style={{ textDecoration: 'none' }} href={item.repo} target="blank">
+                            <a style={{ textDecoration: 'none' }} href={item.repo} target="blank">
                                 <div className={styles.cardPadding}>
                                     <div className={styles.cardMain}>
-                                        <ProjectMedia isSpot={false} videoUrl={item.vid} thumbnailUrl={item.thumb} />
-                                        <div className={styles.cardText}>
-                                            <div style={{ minWidth: '80%', textAlign: 'left' }}>
-                                                <p>{item.name}</p>
-                                            </div>
+                                        <div className={observe}>
+                                            <ProjectMedia isSpot={false} videoUrl={item.vid} thumbnailUrl={item.thumb} />
+                                            <div className={styles.cardText}>
+                                                <div style={{ minWidth: '80%', textAlign: 'left' }}>
+                                                    <p>{item.name}</p>
+                                                </div>
 
-                                            <div style={{ justifyContent: 'right', width: '100%', padding: '0', textAlign: 'right' }}>
-                                                <p>{item.date}</p>
-                                            </div>
+                                                <div style={{ justifyContent: 'right', width: '100%', padding: '0', textAlign: 'right' }}>
+                                                    <p>{item.date}</p>
+                                                </div>
 
+                                            </div>
                                         </div>
+
 
                                     </div>
                                 </div>
