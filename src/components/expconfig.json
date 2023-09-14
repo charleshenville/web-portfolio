@@ -1,13 +1,14 @@
 [
     {
         "id": 0,
-        "year": "2022",
+        "year": "2023",
         "company": "Hubio Technology",
-        "role": "Software Developer Intern",
+        "role": "Data Engineer - Internship",
         "info": [
-            "Worked full-time on Hubio’s collabor8 product in a collaborative team setting with Git.",
-            "Developed Python scripts (NumPy and Pandas) to transform configuration spreadsheets into source artifacts consumed by the collabor8 product.",
-            "Implemented new features, routine maintenance, and bug fixes on the product (Angular)"
+            "Created utility scripts [Python] to automatically compare remote databases over multiple frameworks [SQL Server, PostgreSQL, AWS Athena/S3,] flagging and visualizing discrepancies through generated tables.",
+            "Developed automated parsers [Python] to correctly format client-provided data into artifacts consumable by ETL Processes. This was done with 10 distinct, custom configurations corresponding to the many original forms of the client data.",
+            "Planned, Created, and Modified a Custom Data Visualization/Profiling application [Python] with a variety of libraries.",
+            "!Highlighted outliers and invalid records in client datasets from [AWS S3], based on client and industry standards: Implemented a prediction model to analyze past datasets to predict the profile of those in the future."
         ]
     },
     {
@@ -28,8 +29,8 @@
         "role": "Team Leader",
         "info": [
             "Led two separate design teams (Sep 22’ - Dec 22’ & Jan 23’ - Apr 23’) of other engineering students by employing sprint structure workflows, Gantt charts, and other project management strategies.",
-            "Developed unique strategies (involving Python and Excel) to generate solutions to client problems, with the assistance of a thorough understanding and research of the underlying client need.",
-            "Developed a fully-functional prototype with an interactive UI component using Arduino (C++) to present to the client and public; illustrating the team’s solution to their issue."
+            "Developed unique strategies involving [Python, Excel] to generate solutions to client problems, with the assistance of a thorough understanding and research of the underlying client need.",
+            "Developed a fully-functional prototype with an interactive UI component using Arduino [C, C++] to present to the client and public; illustrating the team’s solution to their issue."
         ]
     },
     {
@@ -40,7 +41,7 @@
         "info": [
             "Developed leadership skills while regulating the development of a high school yearbook.",
             "Ensured that the team met a client-imposed deadline by employing project management methods.",
-            "Leveraged three years of previous experience to assist incoming members in using the design software - hosted in-person and online tutorials every other week.",
+            "Leveraged three years of previous experience to assist incoming members in using the design software [Photoshop, Figma] - hosted in-person and online tutorials every other week.",
             "Reviewed and edited the designs of other students to provide constructive feedback.",
             "Took creative initiative when designing the yearbook."
         ]

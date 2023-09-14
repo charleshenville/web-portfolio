@@ -9,6 +9,14 @@
     },
     {
         "id": 1,
+        "name": "kimathi.ca",
+        "date": "2023",
+        "thumb": "ProjectVids/kim-ca-thumb.png",
+        "vid": "ProjectVids/kim-ca-mov.mp4",
+        "repo": "https://kimathi.ca"
+    },
+    {
+        "id": 2,
         "name": "ESPII Arduino Protoype",
         "date": "2023",
         "thumb": "ProjectVids/a112-thumb.png",
@@ -16,7 +24,7 @@
         "repo": "https://github.com/charleshenville/aps112-prototyping"
     },
     {
-        "id": 2,
+        "id": 3,
         "name": "DotRender & Slope Fields",
         "date": "2023",
         "thumb": "ProjectVids/dtrndr-thumb.png",
@@ -24,7 +32,7 @@
         "repo": "https://github.com/charleshenville/dot-render"
     },
     {
-        "id": 3,
+        "id": 4,
         "name": "Infinite Sudoku",
         "date": "2022",
         "thumb": "ProjectVids/infsdk-thumb.png",
@@ -32,7 +40,7 @@
         "repo": "https://github.com/charleshenville/infinite-sudoku"
     },
     {
-        "id": 4,
+        "id": 5,
         "name": "The Starving Student",
         "date": "2022",
         "thumb": "ProjectVids/tss-thumb.png",

@@ -19,7 +19,7 @@ function Resume() {
     function handleScroll() {
 
         yam = window.pageYOffset;
-        setToTop(-1 * 0.12 * yam + 500);
+        setToTop(-1 * 0.12 * yam + 400);
         if (yam >= 0.5 * window.innerHeight) {
             setAmpOpacity(min((yam - 0.4 * window.innerHeight) / window.innerHeight, 1));
         }
@@ -39,13 +39,13 @@ function Resume() {
                 if (entry.isIntersecting) {
                     // Element is intersecting with the viewport
                     entry.target.classList.add(observe);
-                    entry.target.style.filter = 'blur(0)';
-                    entry.target.style.transition = 'filter 1s ease-out';
+                    entry.target.style.opacity = '1';
+                    entry.target.style.transition = 'opacity 0.5s ease-out';
 
                 }
                 else {
                     entry.target.classList.remove(observe);
-                    entry.target.style.filter = 'blur(5px)';
+                    entry.target.style.opacity = '0';
                 }
             });
         });
@@ -63,11 +63,15 @@ function Resume() {
 
     const ampersand = {
         zIndex: '-1',
-        position: 'fixed',
         top: toTop,
-        opacity: ampOpacity,
+        position: 'fixed',
         display: 'flex',
-        height: '130vh'
+        justifyContent: 'right',
+        opacity: ampOpacity,
+        height: '130vh',
+        width: '100%',
+        height: '100%'
+
     };
 
     return (
@@ -77,7 +81,7 @@ function Resume() {
 
                 <TechSkills />
                 <Aster />
-                <div className={observe} style={{width: '100%'}}>
+                <div className={observe} style={{ width: '100%' }}>
                     <div className={styles.barContainer}>
                         <div className={styles.expBar}>
 
@@ -89,7 +93,7 @@ function Resume() {
                     </div>
                 </div>
 
-                <div style={{ display: 'flex', justifyContent: 'right' }}>
+                <div style={{display: 'flex', justifyContent: 'right' }}>
                     <div id='amp' style={ampersand}>
                         <svg viewBox="0 0 1865 2427" fill="none" xmlns="http://www.w3.org/2000/svg">
                             <path d="M415.706 1965.66C221.916 1876.44 96.7949 1749.66 40.3433 1585.32C-16.1083 1420.99 -12.2833 1269.2 51.8182 1129.97C104.772 1014.95 178.71 929.507 273.632 873.64C368.555 817.772 499.415 779.498 666.213 758.818L717.789 752.692C691.087 664.935 677.527 581.657 677.108 502.857C676.689 424.057 692.605 349.632 724.854 279.584C788.956 140.352 885.641 53.3285 1014.91 18.5136C1144.57 -17.1661 1283.81 -0.751928 1432.61 67.7561C1568.44 130.29 1661.96 222.083 1713.17 343.135C1765.65 463.722 1763.23 586.28 1705.89 710.81C1654.14 823.234 1585.31 902.122 1499.42 947.476C1414.4 993.228 1306.68 1022.24 1176.25 1034.51L1293.39 1494.06C1345.24 1463.43 1391.53 1425.52 1432.25 1380.33C1473.84 1335.55 1508.6 1283.95 1536.54 1225.54L1864.86 1376.7C1806.32 1490.19 1724.69 1594.62 1619.96 1690C1561.62 1743.84 1482.79 1796.64 1383.47 1848.39L1538.95 2426.2L1089.95 2219.48L1032.24 1996.39C940.744 2026.59 860.744 2043.21 792.237 2046.26C670.121 2051.87 544.611 2025.01 415.706 1965.66ZM799.857 1076.61C679.019 1095.39 592.711 1121.16 540.931 1153.92C490.017 1187.07 451.62 1231.76 425.74 1287.97C396.676 1351.1 395.521 1420.79 422.277 1497.04C449.898 1573.69 503.938 1630.54 584.395 1667.58C644.955 1695.46 708.424 1707.91 774.803 1704.94C842.445 1701.49 901.099 1690.24 950.765 1671.18L799.857 1076.61ZM1070.82 423.145C1054.9 457.737 1050.29 499.634 1056.99 548.838C1061.02 581.086 1074.26 641.157 1096.7 729.05C1165.33 716.627 1216.67 703.053 1250.71 688.33C1315.46 661.546 1360.38 620.913 1385.47 566.431C1403.78 526.651 1407.13 485.22 1395.51 442.138C1383.89 399.056 1351.69 365.367 1298.92 341.071C1266.04 325.935 1231.15 320.876 1194.24 325.893C1138.64 332.786 1097.5 365.204 1070.82 423.145Z" fill="#202020" />
@@ -131,7 +135,9 @@ function Resume() {
 
                         <div className={observe}>
                             <div className={styles.praContainer}>
+                                
                                 <div className={styles.praMain}>
+                                    <div className={styles.bkdr}/>
                                     <div style={{ display: 'flex', flexDirection: 'row', justifyContent: 'center', alignContent: 'center' }}>
                                         <div className={styles.praTitle}>
                                             <p style={{ fontWeight: 'bold' }}>{item.company}</p>
@@ -145,14 +151,25 @@ function Resume() {
 
                                     <div style={{ backgroundColor: 'white', height: '2px', width: '100%' }} />
                                     <div className={styles.infoBit}>
-                                        {item.info.map((i) => (
+                                        {item.info.map((i) => {
 
-                                            <div style={{ display: 'flex', flexDirection: 'row', width: '100%' }}>
-                                                <p >●</p>
-                                                <p style={{ paddingLeft: '6px', maxWidth: '90%' }}>{i}</p>
-                                            </div>
+                                            const infB = i.startsWith('!') ? i.slice(1) : i;
+                                            const pad = i.startsWith('!') ? '50px' : '0px';
+                                            const pt = i.startsWith('!') ? '○' : '●';
+                                            return (<div style={{ display: 'flex', flexDirection: 'row', width: '100%' }}>
+                                                <p style={{ paddingLeft: pad }}>{pt}</p>
+                                                <p style={{ paddingLeft: '6px', maxWidth: '90%' }}>
+                                                    {infB.split(/\[(.*?)\]/g).map((part, index) => {
+                                                        if (index % 2 === 1) {
+                                                            return <strong style={{ color: '#FFC850' }} key={index}>{part}</strong>;
+                                                        } else {
+                                                            return part;
+                                                        }
+                                                    })}
+                                                </p>
+                                            </div>);
 
-                                        ))}
+                                        })}
                                     </div>
                                 </div>
                             </div>
@@ -188,8 +205,9 @@ function Resume() {
                     </div>
                 </div>
 
-                <div style={{width:'100%', display:'flex', justifyContent:'center'}} className={observe}>
-                    <Footer/>
+
+                <div style={{ width: '100%', display: 'flex', justifyContent: 'center' }} className={observe}>
+                    <Footer />
                 </div>
             </header>
 
