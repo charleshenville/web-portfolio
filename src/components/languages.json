@@ -81,13 +81,24 @@
     {
         "id": "SQL",
         "ext": "sql",
-        "proficiency": 0.3,
+        "proficiency": 0.5,
         "subs":[
             "MySQL",
             "SQL Server",
             "PostgreSQL"
         ],
         "repo":"https://github.com/charleshenville/web-portfolio"
+    },
+    {
+        "id": "Verilog",
+        "ext": "v",
+        "proficiency": 0.8,
+        "subs":[
+            "SystemVerilog",
+            "DE1-SoC FPGA (Altera)",
+            "ModelSim"
+        ],
+        "repo":"https://github.com/charleshenville/verilog-gpu"
     }
 
 ]

@@ -8,7 +8,7 @@ function Footer() {
 
         <div className={styles.master}>
             <p>cmhenville.tech</p>
-            <p>v1.3.0</p>
+            <p>v1.3.1</p>
             {/* <div className={styles.svg}>
                 <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
                     viewBox="0 0 2732.000000 1118.000000"

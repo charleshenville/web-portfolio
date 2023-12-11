@@ -47,7 +47,7 @@ const ProjectCard = ({ items }) => {
                 <Spotlight />
             </div>
 
-            <a style={{ textDecoration: 'none' }} href={spotItem.repo} target="blank">
+            <a style={{ textDecoration: 'none', display: 'flex', justifyContent:'center' }} href={spotItem.repo} target="blank">
                 <div className={styles.cardSpotPadding}>
                     <div className={styles.cardSpotMain}>
                         <div className={observe}>

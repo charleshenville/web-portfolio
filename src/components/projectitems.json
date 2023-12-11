@@ -1,14 +1,22 @@
 [
     {
         "id": 0,
+        "name": "FPGA Mesh Renderer",
+        "date": "December 2023",
+        "thumb": "ProjectVids/veri-thumb.jpg",
+        "vid": "ProjectVids/veri-renderer.mp4",
+        "repo": "https://github.com/charleshenville/verilog-gpu/blob/main/src/gpu.v"
+    },
+    {
+        "id": 1,
         "name": "SunSet Demo",
-        "date": "April 2023",
+        "date": "2023",
         "thumb": "ProjectVids/SSDemoThumb6.png",
         "vid": "ProjectVids/SunSetVidDemo.mp4",
         "repo": "https://github.com/charleshenville/ocad-interactive-arduino-reactjs"
     },
     {
-        "id": 1,
+        "id": 2,
         "name": "kimathi.ca",
         "date": "2023",
         "thumb": "ProjectVids/kim-ca-thumb.png",
@@ -16,7 +24,7 @@
         "repo": "https://kimathi.ca"
     },
     {
-        "id": 2,
+        "id": 3,
         "name": "ESPII Arduino Protoype",
         "date": "2023",
         "thumb": "ProjectVids/a112-thumb.png",
@@ -24,7 +32,7 @@
         "repo": "https://github.com/charleshenville/aps112-prototyping"
     },
     {
-        "id": 3,
+        "id": 4,
         "name": "DotRender & Slope Fields",
         "date": "2023",
         "thumb": "ProjectVids/dtrndr-thumb.png",
@@ -32,7 +40,7 @@
         "repo": "https://github.com/charleshenville/dot-render"
     },
     {
-        "id": 4,
+        "id": 5,
         "name": "Infinite Sudoku",
         "date": "2022",
         "thumb": "ProjectVids/infsdk-thumb.png",
@@ -40,7 +48,7 @@
         "repo": "https://github.com/charleshenville/infinite-sudoku"
     },
     {
-        "id": 5,
+        "id": 6,
         "name": "The Starving Student",
         "date": "2022",
         "thumb": "ProjectVids/tss-thumb.png",

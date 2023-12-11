@@ -90,7 +90,7 @@
 
 .cardSpotPadding {
     column-span: all;
-    width: 100%;
+    width: 75%;
     display: flex;
     justify-content: center;
     box-sizing: border-box;
@@ -200,7 +200,7 @@
 }
 
 .cardSpotText {
-    font-size: calc(10px + 1.65vw);
+    font-size: calc(10px + 1.2vw);
     margin-left: 5%;
     margin-right: 5%;
     display: flex;
