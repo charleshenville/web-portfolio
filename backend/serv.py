@@ -46,7 +46,9 @@ def post_new_like():
     if fingerprint in distinguished_fingerprints['fingerprint'].values:
         project_ids = distinguished_fingerprints.loc[distinguished_fingerprints['fingerprint'] == fingerprint, 'project_ids'].values[0]
         project_ids = json.loads(project_ids)
-        project_ids.append(project_id)
+        project_ids.append(int(project_id))
+        print(project_ids)
+
         distinguished_fingerprints.loc[distinguished_fingerprints['fingerprint'] == fingerprint, 'project_ids'] = json.dumps(project_ids)
     else:
         distinguished_fingerprints = distinguished_fingerprints.append({'fingerprint': fingerprint, 'project_ids': json.dumps([project_id])}, ignore_index=True)
