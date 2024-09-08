@@ -17,12 +17,12 @@ distinguished_fingerprints = pd.DataFrame({})
 def init_tables():
     global like_table, distinguished_fingerprints
     if os.path.exists('./cache/likeTable.csv'):
-        like_table = pd.read_csv('likeTable.csv')
+        like_table = pd.read_csv('./cache/likeTable.csv')
     else:
         like_table = pd.DataFrame(columns=['project_id', 'likes'])
 
     if os.path.exists('./cache/distinguishedFingerprints.csv'):
-        distinguished_fingerprints = pd.read_csv('distinguishedFingerprints.csv')
+        distinguished_fingerprints = pd.read_csv('./cache/distinguishedFingerprints.csv')
     else:    
         distinguished_fingerprints = pd.DataFrame(columns=['fingerprint', 'project_ids'])
 
