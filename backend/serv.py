@@ -67,7 +67,7 @@ def post_new_like():
 @app.route('/initPageLoad', methods=['GET'])
 def init_page_load():
     global distinguished_fingerprints
-    fingerprint = request.args.get('fingerprint') + str(request.remote_addr)
+    fingerprint = request.args.get('fingerprint') + '-' + str(request.remote_addr)
     if fingerprint in distinguished_fingerprints['fingerprint'].values:
         project_ids = distinguished_fingerprints.loc[distinguished_fingerprints['fingerprint'] == fingerprint, 'project_ids'].values[0]
         project_ids = json.loads(project_ids)
