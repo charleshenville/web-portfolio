@@ -39,7 +39,7 @@ def get_glob_like_struct():
 @app.route('/postNewLike', methods=['GET'])
 def post_new_like():
     global like_table, distinguished_fingerprints, last_write
-    project_id = request.args.get('project_id')
+    project_id = int(request.args.get('project_id'))
 
     fingerprint = request.args.get('fingerprint') + str(request.remote_addr)
 
@@ -51,12 +51,12 @@ def post_new_like():
 
         distinguished_fingerprints.loc[distinguished_fingerprints['fingerprint'] == fingerprint, 'project_ids'] = json.dumps(project_ids)
     else:
-        distinguished_fingerprints = distinguished_fingerprints.append({'fingerprint': fingerprint, 'project_ids': json.dumps([project_id])}, ignore_index=True)
+        distinguished_fingerprints = distinguished_fingerprints.append({'fingerprint': fingerprint, 'project_ids': json.dumps([int(project_id)])}, ignore_index=True)
     
-    if project_id in like_table['project_id'].values:
+    if int(project_id) in like_table['project_id'].values:
         like_table.loc[like_table['project_id'] == project_id, 'likes'] += 1
     else:
-        like_table = like_table.append({'project_id': project_id, 'likes': 1}, ignore_index=True)
+        like_table = like_table.append({'project_id': int(project_id), 'likes': 1}, ignore_index=True)
 
     if time.time() - last_write > WRITE_AFTER_TIME:
         write_like_table()
