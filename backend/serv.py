@@ -37,7 +37,7 @@ def get_glob_like_struct():
 
 @app.route('/postNewLike', methods=['GET'])
 def post_new_like():
-    global like_table
+    global like_table, distinguished_fingerprints
     project_id = request.args.get('project_id')
 
     fingerprint = request.args.get('fingerprint') + str(request.remote_addr)
