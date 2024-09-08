@@ -41,7 +41,7 @@ def post_new_like():
     global like_table, distinguished_fingerprints, last_write
     project_id = int(request.args.get('project_id'))
 
-    fingerprint = request.args.get('fingerprint') + str(request.remote_addr)
+    fingerprint = request.args.get('fingerprint') + '-' + str(request.remote_addr)
 
     if fingerprint in distinguished_fingerprints['fingerprint'].values:
         project_ids = distinguished_fingerprints.loc[distinguished_fingerprints['fingerprint'] == fingerprint, 'project_ids'].values[0]
