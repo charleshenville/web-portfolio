@@ -27,7 +27,8 @@ def init_tables():
         distinguished_fingerprints = pd.DataFrame(columns=['fingerprint', 'project_ids'])
 
 def write_like_table():
-    global like_table
+    global like_table, distinguished_fingerprints
+    distinguished_fingerprints.to_csv('./cache/distinguishedFingerprints.csv', index=False)
     like_table.to_csv('./cache/likeTable.csv', index=False)
 
 @app.route('/getGlobLikeStruct', methods=['GET'])
