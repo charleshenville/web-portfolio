@@ -1,8 +1,6 @@
 from flask import Flask, request, render_template, jsonify
-from flask_socketio import SocketIO, emit
 from flask_cors import CORS
 import pandas as pd
-import numpy as np
 import time
 import json
 import os
