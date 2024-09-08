@@ -38,10 +38,46 @@
 
 }
 
+.cardSpotWrapper {
+
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(calc(350px + 10vmin), 100%), 1fr));
+    column-gap: 40px;
+    row-gap: 40px;
+    align-items: center;
+    align-content: center;
+    justify-content: center;
+    width: 100%;
+    padding-left: 7.5%;
+    padding-right: 7.5%;
+    box-sizing: border-box;
+    position: relative;
+    margin-bottom: 4vh;
+
+}
+.likeButtonCtr{
+    display: flex;
+    /* min-width: 20%; */
+    flex-direction: row;
+    height: 100%;
+    transition: color 0.2s ease;
+    justify-content: center;
+    align-items: center;
+    box-sizing: border-box;
+    padding-right: 10px;
+}
+.likeButton{
+    height: 19px;
+    width: 20px;
+    transition: color 0.2s ease;
+    cursor: pointer;
+    padding-right: 2px;
+    box-sizing: border-box;
+}
 .cardWrapper {
 
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(calc(500px + 10vmin), 100%), 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(calc(250px + 10vmin), 100%), 1fr));
     column-gap: 40px;
     row-gap: 40px;
     align-items: center;
@@ -193,9 +229,10 @@
 
 .cardText {
     font-size: calc(10px + 1vmin);
-    margin-left: 5%;
-    margin-right: 5%;
     display: flex;
+    width: 100%;
+    min-height: calc(10px + 1vmin);
+    box-sizing: border-box;
     flex-direction: rows;
 }
 

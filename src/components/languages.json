@@ -11,7 +11,7 @@
     {
         "id": "C++",
         "ext": "cpp",
-        "proficiency": 0.7,
+        "proficiency": 0.8,
         "subs":[
             "Arduino"
         ],
@@ -20,7 +20,7 @@
     {
         "id": "C",
         "ext": "c",
-        "proficiency": 0.6,
+        "proficiency": 0.8,
         "subs":[
             "Standard Libraries"
         ],
@@ -38,7 +38,7 @@
     {
         "id": "Python",
         "ext": "py",
-        "proficiency": 0.7,
+        "proficiency": 0.9,
         "subs":[
             "Flask",
             "NumPy",
@@ -61,7 +61,7 @@
     {
         "id": "HTML",
         "ext": "html",
-        "proficiency": 0.6,
+        "proficiency": 0.9,
         "subs":[
             "With React"
         ],
@@ -81,7 +81,7 @@
     {
         "id": "SQL",
         "ext": "sql",
-        "proficiency": 0.5,
+        "proficiency": 0.8,
         "subs":[
             "MySQL",
             "SQL Server",
@@ -99,6 +99,16 @@
             "ModelSim"
         ],
         "repo":"https://github.com/charleshenville/verilog-gpu"
+    }, 
+    {
+        "id": "Assembly",
+        "ext": "s",
+        "proficiency": 0.5,
+        "subs":[
+            "NOISII",
+            "RISC-V"
+        ],
+        "repo":"https://github.com/charleshenville/niosii-asm"
     }
 
 ]

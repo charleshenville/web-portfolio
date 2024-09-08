@@ -2,26 +2,33 @@
     {
         "id": 0,
         "name": "FPGA Mesh Renderer",
-        "date": "December 2023",
+        "date": "2023",
         "thumb": "ProjectVids/veri-thumb.jpg",
         "vid": "ProjectVids/veri-renderer.mp4",
-        "repo": "https://github.com/charleshenville/verilog-gpu/blob/main/src/gpu.v"
+        "repo": "https://github.com/charleshenville/verilog-gpu/blob/main/src/gpu.v",
+        "desc": "A 3D mesh renderer implemented in Verilog for an FPGA. The renderer is capable of rendering 3D models with textures and lighting. The project was developed as part of a course project for ECE243 at the University of Toronto.",
+        "isFeatured": true
+    
     },
     {
         "id": 1,
-        "name": "SunSet Demo",
+        "name": "OCAD \"SunSet\" GradEx Demo",
         "date": "2023",
         "thumb": "ProjectVids/SSDemoThumb6.png",
         "vid": "ProjectVids/SunSetVidDemo.mp4",
-        "repo": "https://github.com/charleshenville/ocad-interactive-arduino-reactjs"
+        "repo": "https://github.com/charleshenville/ocad-interactive-arduino-reactjs",
+        "desc": "A demo of a sunset simulation using an Arduino and a ReactJS frontend. The project was developed as part of a course project for OCAD University's Digital Futures program.",
+        "isFeatured": false
     },
     {
         "id": 2,
-        "name": "kimathi.ca",
+        "name": "Kimathi's Portfolio",
         "date": "2023",
         "thumb": "ProjectVids/kim-ca-thumb.png",
         "vid": "ProjectVids/kim-ca-mov.mp4",
-        "repo": "https://kimathi.ca"
+        "repo": "https://kimathi.ca",
+        "desc": "A personal website developed using ReactJS. The website is a showcase of Kimathi Bwomono's projects and skills.",
+        "isFeatured": false
     },
     {
         "id": 3,
@@ -29,7 +36,9 @@
         "date": "2023",
         "thumb": "ProjectVids/a112-thumb.png",
         "vid": "ProjectVids/aps112-video-demo.mp4",
-        "repo": "https://github.com/charleshenville/aps112-prototyping"
+        "repo": "https://github.com/charleshenville/aps112-prototyping",
+        "desc": "A prototype of an ESP32-based IoT device developed for the course APS112 at the University of Toronto. The device is meant to be used as an alternative means of communication for non-verbal individuals with ASD.",
+        "isFeatured": false
     },
     {
         "id": 4,
@@ -37,7 +46,9 @@
         "date": "2023",
         "thumb": "ProjectVids/dtrndr-thumb.png",
         "vid": "ProjectVids/dtrndr-vid-demo.mp4",
-        "repo": "https://github.com/charleshenville/dot-render"
+        "repo": "https://github.com/charleshenville/dot-render",
+        "desc": "A simple 2D renderer developed in C# with the Unity Game Engine. The renderer is capable of rendering 2D Graphics based off of Dynamic Slope/Scalar Fields.",
+        "isFeatured": false
     },
     {
         "id": 5,
@@ -45,7 +56,9 @@
         "date": "2022",
         "thumb": "ProjectVids/infsdk-thumb.png",
         "vid": "ProjectVids/InfSdk-vid-demo.mp4",
-        "repo": "https://github.com/charleshenville/infinite-sudoku"
+        "repo": "https://github.com/charleshenville/infinite-sudoku",
+        "desc": "A Sudoku game developed in Java with Java Swing. The game features an infinite number of puzzles generated using a backtracking algorithm.",
+        "isFeatured": true
     },
     {
         "id": 6,
@@ -53,7 +66,9 @@
         "date": "2022",
         "thumb": "ProjectVids/tss-thumb.png",
         "vid": "ProjectVids/tss-vid-demo.mp4",
-        "repo": "https://github.com/charleshenville/TheStarvingStudent"
+        "repo": "https://github.com/charleshenville/TheStarvingStudent",
+        "desc": "A hackathon project developed at NewHacks 2022. The project is a web application that helps students find places to eat around the UofT campus.",
+        "isFeatured": false
     }
     
 ]
