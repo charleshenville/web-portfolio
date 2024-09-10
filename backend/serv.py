@@ -80,9 +80,11 @@ init_tables()
 
 if __name__ == '__main__':
     ssl_context = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
-    
+
     cert_path = os.environ.get('SSL_CERT_PATH')
     key_path = os.environ.get('SSL_KEY_PATH')
+
+    print(cert_path, key_path)
     
     if cert_path and key_path:
         ssl_context.load_cert_chain(cert_path, key_path)
