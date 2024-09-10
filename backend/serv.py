@@ -4,6 +4,7 @@ import pandas as pd
 import time
 import json
 import os
+import ssl
 
 app = Flask(__name__)
 CORS(app)
@@ -77,5 +78,15 @@ def init_page_load():
 
 init_tables()
 
-# if __name__ == '__main__':
-#     app.run(host='0.0.0.0', port=8080)
+if __name__ == '__main__':
+    ssl_context = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
+    
+    cert_path = os.environ.get('SSL_CERT_PATH')
+    key_path = os.environ.get('SSL_KEY_PATH')
+    
+    if cert_path and key_path:
+        ssl_context.load_cert_chain(cert_path, key_path)
+        app.run(host='0.0.0.0', port=8080, ssl_context=ssl_context)
+    else:
+        # Fall back to HTTP for development
+        app.run(host='0.0.0.0', port=8080)
