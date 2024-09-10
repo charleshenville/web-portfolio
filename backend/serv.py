@@ -16,20 +16,20 @@ distinguished_fingerprints = pd.DataFrame({})
 
 def init_tables():
     global like_table, distinguished_fingerprints
-    if os.path.exists('./cache/likeTable.csv'):
-        like_table = pd.read_csv('./cache/likeTable.csv')
+    if os.path.exists(os.path.join(os.path.dirname(__file__), 'cache', 'likeTable.csv')):
+        like_table = pd.read_csv(os.path.join(os.path.dirname(__file__), 'cache', 'likeTable.csv'))
     else:
         like_table = pd.DataFrame(columns=['project_id', 'likes'])
 
-    if os.path.exists('./cache/distinguishedFingerprints.csv'):
-        distinguished_fingerprints = pd.read_csv('./cache/distinguishedFingerprints.csv')
+    if os.path.exists(os.path.join(os.path.dirname(__file__), 'cache', 'distinguishedFingerprints.csv')):
+        distinguished_fingerprints = pd.read_csv(os.path.join(os.path.dirname(__file__), 'cache', 'distinguishedFingerprints.csv'))
     else:    
         distinguished_fingerprints = pd.DataFrame(columns=['fingerprint', 'project_ids'])
 
 def write_like_table():
     global like_table, distinguished_fingerprints
-    distinguished_fingerprints.to_csv('./cache/distinguishedFingerprints.csv', index=False)
-    like_table.to_csv('./cache/likeTable.csv', index=False)
+    distinguished_fingerprints.to_csv(os.path.join(os.path.dirname(__file__), 'cache', 'distinguishedFingerprints.csv'), index=False)
+    like_table.to_csv(os.path.join(os.path.dirname(__file__), 'cache', 'likeTable.csv'), index=False)
 
 @app.route('/getGlobLikeStruct', methods=['GET'])
 def get_glob_like_struct():
@@ -75,6 +75,7 @@ def init_page_load():
     else:
         return json.dumps([])
 
-if __name__ == '__main__':
-    init_tables()
-    app.run(host='0.0.0.0', port=8080)
+init_tables()
+
+# if __name__ == '__main__':
+#     app.run(host='0.0.0.0', port=8080)
