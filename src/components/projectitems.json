@@ -1,5 +1,38 @@
 [
     {
+        "id": 7,
+        "name": "UTCCA: Project Alpha",
+        "date": "2024",
+        "thumb": "ProjectVids/utcca-pa-thumb.jpg",
+        "vid": "ProjectVids/utcca-pa-vid.mp4",
+        "repo": "https://utcca.org/gallery",
+        "desc": "A 3D mesh renderer implemented in Verilog for an FPGA. The renderer is capable of rendering 3D models with textures and lighting. The project was developed as part of a course project for ECE243 at the University of Toronto.",
+        "isFeatured": true
+    
+    },
+    {
+        "id": 8,
+        "name": "Embedded Physics Engine",
+        "date": "2024",
+        "thumb": "ProjectVids/epe-thumb.png",
+        "vid": "ProjectVids/epe-vid.mp4",
+        "repo": "https://github.com/charleshenville/embedded-physics-engine",
+        "desc": "A physics engine in embedded C",
+        "isFeatured": true
+    
+    },
+    {
+        "id": 9,
+        "name": "HappyPlant: IoT Plant Monitor",
+        "date": "2024",
+        "thumb": "ProjectVids/hpl-thumb2.jpg",
+        "vid": "ProjectVids/hpl-vid.mp4",
+        "repo": "https://github.com/charleshenville/happy-plant",
+        "desc": "A Hackthon project developed at UTRA Hacks 2024. The project is an IoT plant monitor that measures soil moisture, light, and temperature.",
+        "isFeatured": false
+    
+    },
+    {
         "id": 0,
         "name": "FPGA Mesh Renderer",
         "date": "2023",

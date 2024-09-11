@@ -60,7 +60,7 @@ function Languages() {
 
     return (
 
-        <div style={{ display: 'flex', flexDirection: 'column' }}>
+        <div className={styles.langCTR}>
             {items.map((item) => (
 
                 <div className={styles.langPadding}>
@@ -68,10 +68,10 @@ function Languages() {
                         <div style={{ backgroundColor: getGradientColor(item.proficiency) }} className={styles.highlighter}></div>
                         <a className={observe} style={{textDecoration: 'none'}} title={item.id} target='blank' href={item.repo}>
                             <div className={styles.langRow}>
-                                <p style={{ paddingRight: "10px" }}>.{item.ext}</p>
+                                <p style={{ paddingRight: "10px" }}>{item.id}</p>
                                 <div className={styles.subs}>
                                     {item.subs.map((sub) => (
-                                        <p style={{ margin: "5px", paddingRight: "5px" }}>&gt;{sub}</p>
+                                        <p style={{ margin: "5px", paddingRight: "5px" }}>{sub}</p>
                                     ))}
                                 </div>
                             </div>

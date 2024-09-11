@@ -38,7 +38,7 @@
     {
         "id": "Python",
         "ext": "py",
-        "proficiency": 0.9,
+        "proficiency": 1,
         "subs":[
             "Flask",
             "NumPy",
@@ -103,10 +103,20 @@
     {
         "id": "Assembly",
         "ext": "s",
-        "proficiency": 0.5,
+        "proficiency": 0.6,
         "subs":[
             "NOISII",
             "RISC-V"
+        ],
+        "repo":"https://github.com/charleshenville/niosii-asm"
+    }, 
+    {
+        "id": "Rust",
+        "ext": "rs",
+        "proficiency": 0.2,
+        "subs":[
+            "Cargo",
+            "Polars"
         ],
         "repo":"https://github.com/charleshenville/niosii-asm"
     }

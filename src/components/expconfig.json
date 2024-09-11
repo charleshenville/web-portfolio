@@ -1,22 +1,63 @@
 [
+    
+    {
+        "id": 6,
+        "year": "06/24 - Present",
+        "company": "University of Toronto Creative Computing Association",
+        "role": "Founder and Director",
+        "info": [
+            "[C, Python, JavaScript, ESP32, C++, PCB Design]",
+            "Founded a student association with 20+ members to develop skills within the student body through creative projects.",
+            "Lead the development of the association’s website (http://utcca.org) and an interactive display involving a WebGL/three.js React-based game simulation and a custom ESP32 enabled device to interact with the simulation through BLE and a Flask Interface.",
+            "Lead the planning of Unity Game Development workshops for the community."
+        ]
+    },
+    {
+        "id": 4,
+        "pyear": "10/23 - 6/24",
+        "year": "10/23 - Present",
+        "company": "aUToronto",
+        "prole": "Vehicle Interface Developer",
+        "role": "Vehicle Interface and Electrical Lead",
+        "info": [
+            "[Python, ROS, C++, Git, Ubuntu Linux, CAN bus, V2X, PCB Design]",
+            "Leader in the development of an autonomous vehicle participating in GM/SAE’s AutoDrive challenge, specializing in Embedded Software and integrating/transforming control signals from diverse sensor arrays and ROS pipelines.",
+            "Led development of C++ and Python ROS Nodes meant to inform other systems of vehicle and sensor states.",
+            "Designed/Reviewed 4+ PCBs and developed C++ firmware to drive traffic & safety lights and sensor power based on the autonomy status of the Vehicle through a custom PCB. This directly dictated passing of safety inspections and the competition victories that followed."
+        ]
+    },
+    {
+        "id": 5,
+        "year": "05/24 - 08/24",
+        "company": "Toronto Police Service",
+        "role": "Network and Data Acquisition Intern",
+        "info": [
+            "[Python, Drupal, Docker, SQL, CISCO Device Configuration]",
+            "Engineered a standalone Windows application with Python/SQL to facilitate inventory consolidation within ITS, resulting in data representing $50 Million+ worth of inventory being consolidated into a single CMDB.",
+            "Facilitated the migration of a legacy Drupal Portal to a centralized, modern CMS.",
+            "Remotely configured 10+ Network Devices (Switches/Routers) to be commissioned at 5+ Police Divisions."
+        ]
+    },
     {
         "id": 0,
-        "year": "2023",
+        "year": "06/23 - 09/23",
         "company": "Hubio Technology",
-        "role": "Data Engineer - Internship",
+        "role": "Data Engineering Intern",
         "info": [
-            "Created utility scripts [Python] to automatically compare remote databases over multiple frameworks [SQL Server, PostgreSQL, AWS Athena/S3,] flagging and visualizing discrepancies through generated tables.",
-            "Developed automated parsers [Python] to correctly format client-provided data into artifacts consumable by ETL Processes. This was done with 10 distinct, custom configurations corresponding to the many original forms of the client data.",
-            "Planned, Created, and Modified a Custom Data Visualization/Profiling application [Python] with a variety of libraries.",
-            "!Highlighted outliers and invalid records in client datasets from [AWS S3], based on client and industry standards: Implemented a prediction model to analyze past datasets to predict the profile of those in the future."
+            "[Python, SQL, Git, GitHub, PostgreSQL, Microsoft SQL Server, AWS]",
+            "Engineered efficient Python utility scripts for automatic and holistic comparison between remote SQL databases and AWS s3 Buckets, flagging and visualizing discrepancies in tables with upwards of several million records/entries.",
+            "Developed automated Python parsers for client data formatting, accommodating over ten distinct configurations.",
+            "Designed and modified a Custom Data Visualization/Profiling application in Python with Matplotlib, NumPy, Pandas, and SQL, cumulatively highlighting 1000+ outlier and invalid records in client-provided AWS s3 datasets.",
+            "Implemented a predictive model using PyTorch and Scikit-Learn to profile and analyze legacy datasets for forecasting potential outlier frequency and future distributions."
         ]
     },
     {
         "id": 1,
-        "year": "2021-2022",
+        "year": "07/21 - 07/22",
         "company": "Loblaw Companies Limited",
         "role": "Deli Clerk",
         "info": [
+            "[Customer Service, Inventory Management, Process Optimization]",
             "Collaborated with team members to efficiently provide high levels of customer service during high-demand influxes.",
             "Performed periodic checks on inventory and equipment maintenance to ensure food safety.",
             "Developed strategies and routines to ensure the cleanliness and security of the deli workspace at all times."
@@ -24,21 +65,23 @@
     },
     {
         "id": 2,
-        "year": "2022-2023",
+        "year": "09/22 - 04/23",
         "company": "UofT Engineering Strategies and Practice",
         "role": "Team Leader",
         "info": [
-            "Led two separate design teams (Sep 22’ - Dec 22’ & Jan 23’ - Apr 23’) of other engineering students by employing sprint structure workflows, Gantt charts, and other project management strategies.",
+            "[Python, Excel, Arduino, C, C++]",
+            "Led two separate design teams of other engineering students by employing sprint structure workflows, Gantt charts, and other project management strategies.",
             "Developed unique strategies involving [Python, Excel] to generate solutions to client problems, with the assistance of a thorough understanding and research of the underlying client need.",
             "Developed a fully-functional prototype with an interactive UI component using Arduino [C, C++] to present to the client and public; illustrating the team’s solution to their issue."
         ]
     },
     {
         "id": 3,
-        "year": "2021-2022",
+        "year": "09/18 - 06/22",
         "company": "Senator O'Connor Yearbook Team",
         "role": "Director",
         "info": [
+            "[Photoshop, Figma]",
             "Developed leadership skills while regulating the development of a high school yearbook.",
             "Ensured that the team met a client-imposed deadline by employing project management methods.",
             "Leveraged three years of previous experience to assist incoming members in using the design software [Photoshop, Figma] - hosted in-person and online tutorials every other week.",

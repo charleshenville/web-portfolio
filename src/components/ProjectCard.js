@@ -21,7 +21,7 @@ const ProjectCard = ({ items }) => {
     const observe = styles.observe
     const observer = useRef(null);
 
-    const host = "http://samuraimain.ddns.net:8080";
+    const host = "https://samuraimain.ddns.net:8080";
 
     const fetchLikeCounts = async () => {
         try {
