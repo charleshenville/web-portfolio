@@ -241,7 +241,7 @@
     display: flex;
     justify-content: center;
     padding: 2vh;
-    width: 80%;
+    width: 70%;
     margin-top: 40vh;
     margin-bottom: 20vh;
     box-sizing: border-box;
@@ -250,7 +250,7 @@
     transition: width 0.3s ease;
 }
 .downloadContainer:hover{
-    width: 90%;
+    width: 100%;
 }
 
 .resumeRotation2{
@@ -295,7 +295,7 @@
     justify-self: center;
     align-items: center;
     justify-content: center;
-    width: 35%;
+    width: 30%;
     height: 100%;
 }
 @media (max-width: 550px) {
