@@ -166,7 +166,7 @@ function Home() {
 
                         <div className={observe}>
                             <h1 className={styles.txt} style={{ fontFamily: fonts[0] }}>
-                                CHARLES HENVILLE
+                                charles henville
                             </h1>
                         </div>
 

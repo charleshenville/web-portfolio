@@ -246,12 +246,16 @@
     margin-bottom: 20vh;
     box-sizing: border-box;
     cursor: pointer;
+    min-height: 10vh;
     transition: width 0.3s ease;
 }
 .downloadContainer:hover{
     width: 90%;
 }
 
+.resumeRotation2{
+    transform-origin: 50% 50%;
+}
 .resumeRotation{
     animation: rotation 60s infinite linear;
     transform-origin: 50% 50%;

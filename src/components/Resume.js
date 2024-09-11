@@ -17,6 +17,9 @@ function Resume() {
         link.click();
     };
 
+    const userAgent = navigator.userAgent;
+    const isSafari = userAgent.includes('Safari') && !userAgent.includes('Chrome');
+
     function min(x, y) {
         if (x > y) { return (y); }
         return (x);
@@ -96,10 +99,10 @@ function Resume() {
                     {/* <h2 style={{ width: '66.666%', height: '300px' }}>Download My Shortened Resumé Here or Scroll For Some More Detail...</h2> */}
                     <div className={styles.downloadSuperContainer}>
                         <div onClick={handleDownload} className={styles.downloadContainer}>
-                            <svg viewBox="0 0 360 360" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <svg height="360" width="360" viewBox="0 0 360 360" fill="none" xmlns="http://www.w3.org/2000/svg">
                                 <circle cx="180" cy="180" r="180" fill="black" fill-opacity="0.5" />
 
-                                <g className={styles.resumeRotation}>
+                                <g className={isSafari? styles.resumeRotation2: styles.resumeRotation}>
 
                                     <path d="M186.971 329.503L182.819 329.557C178.814 329.609 176.737 327.249 176.676 322.564C176.614 317.809 178.609 315.376 182.634 315.324L186.786 315.269L186.971 329.503ZM184.891 327.705L184.753 317.121L182.884 317.145C180.03 317.183 178.724 318.877 178.771 322.517C178.818 326.087 180.188 327.766 183.022 327.729L184.891 327.705Z" fill="white" />
                                     <path d="M158.26 319.754C158.724 315.836 160.984 313.751 164.238 314.139C167.491 314.527 169.2 317.085 168.735 321.003L168.469 323.246C168.004 327.164 165.744 329.249 162.49 328.861C159.237 328.473 157.528 325.915 157.993 321.997L158.26 319.754ZM164.017 316C162.004 315.76 160.647 317.168 160.31 320.008L160.047 322.232C159.709 325.073 160.698 326.76 162.711 327C164.724 327.24 166.081 325.832 166.418 322.992L166.681 320.768C167.019 317.927 166.03 316.24 164.017 316Z" fill="white" />
