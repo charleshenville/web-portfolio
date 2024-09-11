@@ -3,15 +3,18 @@ import * as THREE from 'three';
 import React, { useState } from 'react';
 import { useEffect, useRef } from 'react';
 import Footer from './Footer';
+import ScrollPrompt from './ScrollPrompt';
 
 function Home() {
 
     const ogHeight = window.innerHeight;
     const ogWidth = window.innerWidth;
 
+    const fonts = ['SF Mono', 'Helvetica'];
+
     const navigateAndReload = (path) => {
         window.location.href = path;
-        window.scrollTo(0,0);
+        window.scrollTo(0, 0);
         window.location.reload();
     };
 
@@ -24,10 +27,10 @@ function Home() {
     renderer.setSize(window.innerWidth, window.innerHeight);
     camera.position.setZ(30);
 
-    const materials = new THREE.MeshBasicMaterial({ color: 0xD9D9D9, wireframe: true });
+    const materials = new THREE.MeshBasicMaterial({ color: 0x999999, wireframe: true });
     const lines = new THREE.LineBasicMaterial({ color: 0xD9D9D9, linewidth: 2 });
 
-    const mainTorusGeometry = new THREE.TorusGeometry(12, 7, 10, 40);
+    const mainTorusGeometry = new THREE.TorusGeometry(12, 11, 24, 100);
     const torus = new THREE.Mesh(mainTorusGeometry, materials);
     let torusX = 0.01 * window.innerWidth;
 
@@ -61,6 +64,8 @@ function Home() {
     dodecahedron.position.z = ddcZ;
     scene.add(dodecahedron);
 
+    let lU = Date.now();
+
     function Animate() {
         renderer.render(scene, camera);
         torus.rotation.x += 0.00065;
@@ -85,9 +90,9 @@ function Home() {
             torus.position.x = 0.05 * toTop + torusX;
             torus.position.y = 0.01 * toTop;
         }
-        else if ((0.07 * toTop + torusX) <= -torusX - 20000/window.innerWidth - 15) {
+        else if ((0.07 * toTop + torusX) <= -torusX - 20000 / window.innerWidth - 15) {
 
-            torus.position.x = 0.07 * toTop + torusX + 20000/window.innerWidth + 15;
+            torus.position.x = 0.07 * toTop + torusX + 20000 / window.innerWidth + 15;
         }
 
         icosahedron.position.y = icosY - 0.07 * toTop;
@@ -110,7 +115,7 @@ function Home() {
         icosahedron.position.y = icosY;
         ddcX = -0.23 * window.innerHeight;
         dodecahedron.position.x = ddcX;
-        
+
 
         camera.updateProjectionMatrix();
         renderer.setPixelRatio(window.devicePixelRatio);
@@ -160,22 +165,27 @@ function Home() {
                     <div className={styles.mainGrid}>
 
                         <div className={observe}>
-                            <h1 className={styles.txt}>CHARLES HENVILLE</h1>
+                            <h1 className={styles.txt} style={{ fontFamily: fonts[0] }}>
+                                CHARLES HENVILLE
+                            </h1>
                         </div>
 
+                        <ScrollPrompt/>
+
                         <div className={styles.aboutContainer}>
+                            <img className={styles.bwImage} style={{position:'relative', top:'15px', right:'15px', maxHeight:'50svw', padding: '5%', boxSizing:'border-box'}} alt="my headshot" src="assets/headshot.jpg"/>
                             <div className={observe}>
-                                <h1 className={styles.aboutTxt}>ABOUT</h1>
-                                <p className={styles.aboutSubTxt}>
-                                    Hi, viewer! I’m Charles Miguel, a 19 year-old computer
+                                <div className={styles.aboutTxt}>about</div>
+                                <div className={styles.aboutSubTxt}>
+                                    Hello! I’m Charles, a 20 year-old computer
                                     engineer at the University of Toronto in Canada.
                                     I’m passionate about all things relating to data,
-                                    automation, and more recently, machine learning.
+                                    automation, design, and more recently, machine learning.
                                     While I am busy with my studies, I enjoy creating
                                     things that I think are cool and sharing them with
-                                    people! See my <a className={styles.projLink} href='/#/projects'onClick={() => navigateAndReload('/#/projects')}>projects</a> to check out what I’ve been
+                                    people! See my <a className={styles.projLink} href='/#/projects' onClick={() => navigateAndReload('/#/projects')}>projects</a> to check out what I’ve been
                                     up to!
-                                </p>
+                                </div>
                             </div>
                         </div>
 
@@ -230,11 +240,11 @@ function Home() {
 
                     </div>
                 </div>
-                <div style={{width:'100%', display:'flex', justifyContent:'center'}} className={observe}>
-                    <Footer/>
+                <div style={{ width: '100%', display: 'flex', justifyContent: 'center' }} className={observe}>
+                    <Footer />
                 </div>
             </header>
-            
+
         </div>
     );
 }

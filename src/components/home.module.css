@@ -12,7 +12,7 @@
 }
 
 .txt {
-    font-size: calc(5px + 10vw);
+    font-size: calc(5px + 13vw);
     text-align: left;
     height: 100vh;
     margin: 0;
@@ -73,18 +73,23 @@
     text-align: right;
     height: 100vh;
     padding-top: 4vh;
-    padding-right: 4vw;
+    max-height: 100svh;
     display: flex;
-    align-items: flex-end;
-    flex-direction: column;
+    align-content: center;
+    align-items: center;
+    flex-direction: row;
     justify-content: center;
     position: relative;
 }
 
+.bwImage {
+    filter: grayscale(50%);
+    transition: filter 0.3s ease; /* Adds a smooth transition effect */
+}
+
 .aboutTxt {
     font-size: calc(5px + 7vw);
-    align-self: end;
-    margin-bottom: 2%;
+    font-weight: bold;
 }
 
 .aboutSubTxt {

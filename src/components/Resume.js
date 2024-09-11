@@ -6,6 +6,7 @@ import Aster from './Aster';
 import exps from './expconfig.json';
 import PracticalGraphic from './PracticalGraphic';
 import Footer from './Footer';
+import ScrollPrompt from './ScrollPrompt';
 
 function Resume() {
 
@@ -90,6 +91,7 @@ function Resume() {
                     <TechSkills />
                     <Aster />
                 </div>
+                {/* <ScrollPrompt/> */}
                 <div className={styles.downloadHyperContainer}>
                     {/* <h2 style={{ width: '66.666%', height: '300px' }}>Download My Shortened Resumé Here or Scroll For Some More Detail...</h2> */}
                     <div className={styles.downloadSuperContainer}>
