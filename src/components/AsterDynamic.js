@@ -23,23 +23,126 @@ function AsterDynamic({
     const currentObjectRef = useRef();
     const lightsArrayRef = useRef([]);
     const animationIdRef = useRef();
+    const isInitializedRef = useRef(false);
 
+    // Initialize scene only once
     useEffect(() => {
-        var existingElement = document.getElementById('aster');
-        if (existingElement) {
-            // Cook the existing one
-            existingElement.remove();
+        if (!isInitializedRef.current) {
+            initializeScene();
+            isInitializedRef.current = true;
         }
-        initializeScene();
 
         return () => {
-            if (animationIdRef.current) {
-                cancelAnimationFrame(animationIdRef.current);
-            }
+            cleanup();
         };
-    }, [characters, cameraPos, objectPos, objectRot, objectScale, lights, uploadedFile, fileType, autoRotate]);
+    }, []);
+
+    // Update characters when they change
+    useEffect(() => {
+        if (isInitializedRef.current && effectRef.current) {
+            updateCharacters();
+        }
+    }, [characters]);
+
+    // Update camera position when it changes
+    useEffect(() => {
+        if (isInitializedRef.current) {
+            updateCameraPosition();
+        }
+    }, [cameraPos]);
+
+    // Update object transform when position, rotation, or scale changes
+    useEffect(() => {
+        if (isInitializedRef.current) {
+            updateObjectTransform();
+        }
+    }, [objectPos, objectRot, objectScale]);
+
+    // Update lights when they change
+    useEffect(() => {
+        if (isInitializedRef.current) {
+            setupLights();
+        }
+    }, [lights]);
+
+    // Update object when file changes
+    useEffect(() => {
+        if (isInitializedRef.current) {
+            loadObject();
+        }
+    }, [uploadedFile, fileType]);
+
+    const cleanup = () => {
+        if (animationIdRef.current) {
+            cancelAnimationFrame(animationIdRef.current);
+        }
+
+        // Clean up lights
+        lightsArrayRef.current.forEach(light => {
+            if (light.dispose) light.dispose();
+        });
+        lightsArrayRef.current = [];
+
+        // Clean up current object
+        if (currentObjectRef.current) {
+            disposeObject(currentObjectRef.current);
+        }
+
+        // Clean up renderer and effect
+        if (rendererRef.current) {
+            rendererRef.current.dispose();
+        }
+
+        if (effectRef.current && effectRef.current.domElement) {
+            const asterElement = document.getElementById('aster');
+            if (asterElement) {
+                asterElement.remove();
+            }
+        }
+
+        // Clean up export buttons
+        const exportButtons = document.getElementById('export-buttons');
+        if (exportButtons) {
+            exportButtons.remove();
+        }
+
+        // Remove resize listener
+        window.removeEventListener('resize', onWindowResize);
+    };
+
+    const disposeObject = (obj) => {
+        if (!obj) return;
+        
+        if (obj.geometry) {
+            obj.geometry.dispose();
+        }
+        
+        if (obj.material) {
+            if (Array.isArray(obj.material)) {
+                obj.material.forEach(material => {
+                    if (material.dispose) material.dispose();
+                });
+            } else if (obj.material.dispose) {
+                obj.material.dispose();
+            }
+        }
+        
+        if (obj.children) {
+            obj.children.forEach(child => disposeObject(child));
+        }
+        
+        if (obj.parent) {
+            obj.parent.remove(obj);
+        }
+    };
 
     const initializeScene = () => {
+        // Remove existing element if it exists
+        const existingElement = document.getElementById('aster');
+        if (existingElement) {
+            existingElement.remove();
+        }
+
         let scene = new THREE.Scene();
         let camera = new THREE.PerspectiveCamera(75, (window.innerWidth * 0.6) / window.innerHeight, 0.1, 1000);
         let renderer = new THREE.WebGLRenderer();
@@ -66,22 +169,16 @@ function AsterDynamic({
         effectRef.current = effect;
 
         const asterParentElem = document.getElementById('asterParent');
-        asterParentElem.appendChild(effect.domElement);
-        // document.body.appendChild(effect.domElement);
+        if (asterParentElem) {
+            asterParentElem.appendChild(effect.domElement);
+        }
 
         // Add export buttons
         addExportButtons();
 
-        // Setup initial lights
+        // Setup initial state
         setupLights();
-
-        // Load initial object (default asterisk or uploaded file)
         loadObject();
-
-        // Setup camera
-        camera.position.set(cameraPos.x, cameraPos.y, cameraPos.z)
-        const origin = new THREE.Vector3(0,0,0);
-        camera.lookAt(origin)
         updateCameraPosition();
 
         // Setup resize handler
@@ -91,12 +188,40 @@ function AsterDynamic({
         animate();
     };
 
+    const updateCharacters = () => {
+        if (!effectRef.current || !rendererRef.current) return;
+        
+        // Create new effect with updated characters
+        const oldEffect = effectRef.current;
+        const newEffect = new AsciiEffect(rendererRef.current, characters, { invert: true });
+        newEffect.setSize((window.innerWidth * 0.6), window.innerHeight);
+        newEffect.domElement.id = 'aster';
+        newEffect.domElement.style.color = '#ffffff';
+        newEffect.domElement.style.backgroundColor = 'black';
+        newEffect.domElement.style.width = '100%';
+        newEffect.domElement.style.height = '100%';
+        newEffect.domElement.style.left = '0';
+        newEffect.domElement.style.position = 'relative';
+        newEffect.domElement.style.zIndex = '0';
+        newEffect.domElement.style.overflow = 'hidden';
+
+        // Replace the old element with the new one
+        const asterParentElem = document.getElementById('asterParent');
+        if (asterParentElem && oldEffect.domElement) {
+            asterParentElem.removeChild(oldEffect.domElement);
+            asterParentElem.appendChild(newEffect.domElement);
+        }
+
+        effectRef.current = newEffect;
+    };
+
     const setupLights = () => {
         if (!sceneRef.current) return;
 
         // Remove existing lights
         lightsArrayRef.current.forEach(light => {
             sceneRef.current.remove(light);
+            if (light.dispose) light.dispose();
         });
         lightsArrayRef.current = [];
 
@@ -112,6 +237,8 @@ function AsterDynamic({
     const updateCameraPosition = () => {
         if (cameraRef.current) {
             cameraRef.current.position.set(cameraPos.x, cameraPos.y, cameraPos.z);
+            const origin = new THREE.Vector3(0, 0, 0);
+            cameraRef.current.lookAt(origin);
         }
     };
 
@@ -119,11 +246,7 @@ function AsterDynamic({
         if (currentObjectRef.current) {
             currentObjectRef.current.position.set(objectPos.x, objectPos.y, objectPos.z);
             currentObjectRef.current.rotation.set(objectRot.x, objectRot.y, objectRot.z);
-            currentObjectRef.current.scale.set(
-                objectScale.x, 
-                objectScale.y, 
-                objectScale.z
-            );
+            currentObjectRef.current.scale.set(objectScale.x, objectScale.y, objectScale.z);
         }
     };
 
@@ -133,6 +256,8 @@ function AsterDynamic({
         // Remove existing object
         if (currentObjectRef.current) {
             sceneRef.current.remove(currentObjectRef.current);
+            disposeObject(currentObjectRef.current);
+            currentObjectRef.current = null;
         }
 
         if (uploadedFile && fileType) {
@@ -140,7 +265,6 @@ function AsterDynamic({
                 const loader = new GLTFLoader();
                 loader.load(uploadedFile, (gltf) => {
                     currentObjectRef.current = gltf.scene;
-                    currentObjectRef.current.scale.set(objectScale.x, objectScale.y, objectScale.z);
                     updateObjectTransform();
                     sceneRef.current.add(currentObjectRef.current);
                 }, undefined, (error) => {
@@ -186,8 +310,7 @@ function AsterDynamic({
             const loader = new GLTFLoader();
             loader.load('assets/asterisk.gltf', (gltf) => {
                 currentObjectRef.current = gltf.scene;
-                currentObjectRef.current.scale.set(objectScale.x, objectScale.y, objectScale.z);
-                currentObjectRef.current.rotation.x = 3.1415 / 2;
+                currentObjectRef.current.rotation.x = Math.PI / 2;
                 updateObjectTransform();
                 sceneRef.current.add(currentObjectRef.current);
             }, undefined, (error) => {
