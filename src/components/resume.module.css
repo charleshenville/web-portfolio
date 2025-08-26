@@ -117,7 +117,7 @@
     border-radius: 10px;
     background-color: rgba(255, 255, 255, 0.08);
 
-    border: 2px solid white;
+    border: 1px solid white;
     font-size: xx-large;
     position: relative;
     backdrop-filter: blur(8px);
@@ -133,7 +133,7 @@
     border-radius: 10px;
 
     background-color: rgba(255, 255, 255, 0.08);
-    border: 2px solid white;
+    border: 1px solid white;
     box-sizing: border-box;
     display: flex;
     flex: 1 0 auto;

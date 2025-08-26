@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { AsciiEffect } from './AsciiEffect.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 
-function Aster() {
+function AsterDynamic() {
 
     var existingElement = document.getElementById('aster');
     if (!existingElement) {
@@ -19,9 +19,9 @@ function Aster() {
         pointLight1.position.set(500, 500, 500);
         scene.add(pointLight1);
 
-        const pointLight2 = new THREE.PointLight(0xFFFFFF);
-        pointLight2.position.set(-500, -500, -500);
-        scene.add(pointLight2);
+        // const pointLight2 = new THREE.PointLight(0xFFFFFF);
+        // pointLight2.position.set(-500, -500, -500);
+        // scene.add(pointLight2);
 
         let effect;
         function asciiart() {
@@ -87,4 +87,4 @@ function Aster() {
 
 }
 
-export default Aster;
+export default AsterDynamic;

@@ -6,6 +6,7 @@ import Home from './components/Home';
 import Projects from './components/Projects';
 import Resume from './components/Resume';
 import Contact from './components/Contact';
+import AsciiTool from './components/AsciiTool';
 
 function App() {
 
@@ -18,6 +19,7 @@ function App() {
           <Route path='/projects' element={<Projects />} />
           <Route path='/resume' element={<Resume />} />
           <Route path='/contact' element={<Contact />} />
+          <Route path='/asciitool' element={<AsciiTool/>} />
           <Route path="*" element={<E404 />} />
       </Routes>
     </div>

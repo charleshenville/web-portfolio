@@ -83,7 +83,7 @@
 }
 
 .bwImage {
-    filter: grayscale(50%);
+    filter: grayscale(10%);
     transition: filter 0.3s ease; /* Adds a smooth transition effect */
 }
 
