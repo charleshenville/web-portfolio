@@ -1,90 +1,331 @@
 import * as THREE from 'three';
 import { AsciiEffect } from './AsciiEffect.js';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { SVGLoader } from 'three/examples/jsm/loaders/SVGLoader.js';
+import React, { useEffect, useRef } from 'react';
 
-function AsterDynamic() {
+function AsterDynamic({ 
+    characters = ' .:-=+*#%@',
+    cameraPos = { x: 0, y: 0, z: 5 },
+    objectPos = { x: 0, y: 0, z: 0 },
+    objectRot = { x: Math.PI/2, y: 0, z: 0 },
+    objectScale = { x: 1, y: 1, z: 1 },
+    lights = [{ id: 1, x: 500, y: 500, z: 500, color: '#ffffff', intensity: 1 }],
+    autoRotate = false,
+    rotationSpeed = { y: 0.001, z: 0.0004 },
+    uploadedFile = null,
+    fileType = null
+}) {
+    const sceneRef = useRef();
+    const rendererRef = useRef();
+    const cameraRef = useRef();
+    const effectRef = useRef();
+    const currentObjectRef = useRef();
+    const lightsArrayRef = useRef([]);
+    const animationIdRef = useRef();
 
-    var existingElement = document.getElementById('aster');
-    if (!existingElement) {
-        let scene = new THREE.Scene();
-        let camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-        // let renderer = new THREE.WebGLRenderer({
-        //     canvas: document.querySelector('#re'),
-        // });
-
-        let renderer = new THREE.WebGLRenderer();
-        renderer.setSize(window.innerWidth, window.innerHeight);
-
-        const pointLight1 = new THREE.PointLight(0xFFFFFF);
-        pointLight1.position.set(500, 500, 500);
-        scene.add(pointLight1);
-
-        // const pointLight2 = new THREE.PointLight(0xFFFFFF);
-        // pointLight2.position.set(-500, -500, -500);
-        // scene.add(pointLight2);
-
-        let effect;
-        function asciiart() {
-
-            effect = new AsciiEffect(renderer, ' .:-=+*#%@', { invert: true });
-            effect.setSize(window.innerWidth, window.innerHeight);
-            effect.domElement.id = 'aster';
-            effect.domElement.style.color = '#999999';
-            effect.domElement.style.backgroundColor = 'black';
-            effect.domElement.style.width = '100%';
-            effect.domElement.style.height = '100%';
-            effect.domElement.style.top = '4vh';
-            effect.domElement.style.left = '0';
-            effect.domElement.style.position = 'relative';
-            effect.domElement.style.zIndex = '0';
-            effect.domElement.style.overflow = 'hidden';
-
-            document.body.appendChild(effect.domElement);
-
+    useEffect(() => {
+        var existingElement = document.getElementById('aster');
+        if (existingElement) {
+            // Cook the existing one
+            existingElement.remove();
         }
-        asciiart();
+        initializeScene();
 
-        const loader = new GLTFLoader();
-        let ast;
-        loader.load('assets/asterisk.gltf', (gltf) => {
-
-            ast = gltf.scene;
-            ast.scale.set(150, 150, 150);
-            ast.position.x = 0;
-            ast.position.y = 0;
-            ast.position.z = 0;
-            ast.rotation.x = 3.1415 / 2;
-            scene.add(ast)
-
-            animateAST();
-            function animateAST() {
-                ast.rotation.y += 0.001;
-                ast.rotation.z += 0.0004;
-
-                requestAnimationFrame(animateAST);
+        return () => {
+            if (animationIdRef.current) {
+                cancelAnimationFrame(animationIdRef.current);
             }
-        })
+        };
+    }, [characters, cameraPos, objectPos, objectRot, objectScale, lights, uploadedFile, fileType, autoRotate]);
 
+    const initializeScene = () => {
+        let scene = new THREE.Scene();
+        let camera = new THREE.PerspectiveCamera(75, (window.innerWidth * 0.6) / window.innerHeight, 0.1, 1000);
+        let renderer = new THREE.WebGLRenderer();
+        renderer.setSize((window.innerWidth * 0.6), window.innerHeight);
+
+        // Store references
+        sceneRef.current = scene;
+        cameraRef.current = camera;
+        rendererRef.current = renderer;
+
+        // Setup ASCII effect
+        let effect = new AsciiEffect(renderer, characters, { invert: true });
+        effect.setSize((window.innerWidth * 0.6), window.innerHeight);
+        effect.domElement.id = 'aster';
+        effect.domElement.style.color = '#ffffff';
+        effect.domElement.style.backgroundColor = 'black';
+        effect.domElement.style.width = '100%';
+        effect.domElement.style.height = '100%';
+        effect.domElement.style.left = '0';
+        effect.domElement.style.position = 'relative';
+        effect.domElement.style.zIndex = '0';
+        effect.domElement.style.overflow = 'hidden';
+
+        effectRef.current = effect;
+
+        const asterParentElem = document.getElementById('asterParent');
+        asterParentElem.appendChild(effect.domElement);
+        // document.body.appendChild(effect.domElement);
+
+        // Add export buttons
+        addExportButtons();
+
+        // Setup initial lights
+        setupLights();
+
+        // Load initial object (default asterisk or uploaded file)
+        loadObject();
+
+        // Setup camera
+        camera.position.set(cameraPos.x, cameraPos.y, cameraPos.z)
+        const origin = new THREE.Vector3(0,0,0);
+        camera.lookAt(origin)
+        updateCameraPosition();
+
+        // Setup resize handler
         window.addEventListener('resize', onWindowResize);
-        camera.position.setZ(30);
 
+        // Start animation
         animate();
-        function animate() {
-            effect.render(scene, camera);
-            requestAnimationFrame(animate);
+    };
+
+    const setupLights = () => {
+        if (!sceneRef.current) return;
+
+        // Remove existing lights
+        lightsArrayRef.current.forEach(light => {
+            sceneRef.current.remove(light);
+        });
+        lightsArrayRef.current = [];
+
+        // Add new lights
+        lights.forEach(lightData => {
+            const pointLight = new THREE.PointLight(lightData.color, lightData.intensity);
+            pointLight.position.set(lightData.x, lightData.y, lightData.z);
+            sceneRef.current.add(pointLight);
+            lightsArrayRef.current.push(pointLight);
+        });
+    };
+
+    const updateCameraPosition = () => {
+        if (cameraRef.current) {
+            cameraRef.current.position.set(cameraPos.x, cameraPos.y, cameraPos.z);
+        }
+    };
+
+    const updateObjectTransform = () => {
+        if (currentObjectRef.current) {
+            currentObjectRef.current.position.set(objectPos.x, objectPos.y, objectPos.z);
+            currentObjectRef.current.rotation.set(objectRot.x, objectRot.y, objectRot.z);
+            currentObjectRef.current.scale.set(
+                objectScale.x, 
+                objectScale.y, 
+                objectScale.z
+            );
+        }
+    };
+
+    const loadObject = () => {
+        if (!sceneRef.current) return;
+
+        // Remove existing object
+        if (currentObjectRef.current) {
+            sceneRef.current.remove(currentObjectRef.current);
         }
 
-        function onWindowResize() {
+        if (uploadedFile && fileType) {
+            if (fileType === 'gltf') {
+                const loader = new GLTFLoader();
+                loader.load(uploadedFile, (gltf) => {
+                    currentObjectRef.current = gltf.scene;
+                    currentObjectRef.current.scale.set(objectScale.x, objectScale.y, objectScale.z);
+                    updateObjectTransform();
+                    sceneRef.current.add(currentObjectRef.current);
+                }, undefined, (error) => {
+                    console.error('Error loading GLTF:', error);
+                    loadDefaultObject();
+                });
+            } else if (fileType === 'svg') {
+                const loader = new SVGLoader();
+                loader.load(uploadedFile, (data) => {
+                    const paths = data.paths;
+                    const group = new THREE.Group();
+                    
+                    for (let i = 0; i < paths.length; i++) {
+                        const path = paths[i];
+                        const material = new THREE.MeshBasicMaterial({
+                            color: path.color,
+                            side: THREE.DoubleSide,
+                            depthWrite: false
+                        });
 
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            // renderer.setPixelRatio(window.devicePixelRatio);
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            effect.setSize(window.innerWidth, window.innerHeight);
+                        const shapes = SVGLoader.createShapes(path);
+                        for (let j = 0; j < shapes.length; j++) {
+                            const shape = shapes[j];
+                            const geometry = new THREE.ExtrudeGeometry(shape, {
+                                depth: 20,
+                                bevelEnabled: false
+                            });
+                            const mesh = new THREE.Mesh(geometry, material);
+                            group.add(mesh);
+                        }
+                    }
 
+                    currentObjectRef.current = group;
+                    updateObjectTransform();
+                    sceneRef.current.add(currentObjectRef.current);
+                }, undefined, (error) => {
+                    console.error('Error loading SVG:', error);
+                    loadDefaultObject();
+                });
+            }
+        } else {
+            // Load default asterisk object
+            const loader = new GLTFLoader();
+            loader.load('assets/asterisk.gltf', (gltf) => {
+                currentObjectRef.current = gltf.scene;
+                currentObjectRef.current.scale.set(objectScale.x, objectScale.y, objectScale.z);
+                currentObjectRef.current.rotation.x = 3.1415 / 2;
+                updateObjectTransform();
+                sceneRef.current.add(currentObjectRef.current);
+            }, undefined, (error) => {
+                console.error('Error loading default asterisk:', error);
+                loadDefaultObject();
+            });
         }
-    }
+    };
 
+    const loadDefaultObject = () => {
+        // Fallback to a simple cube if loading fails
+        const geometry = new THREE.BoxGeometry(1, 1, 1);
+        const material = new THREE.MeshPhongMaterial({ color: 0x888888 });
+        const cube = new THREE.Mesh(geometry, material);
+        
+        currentObjectRef.current = cube;
+        updateObjectTransform();
+        sceneRef.current.add(currentObjectRef.current);
+    };
+
+    const addExportButtons = () => {
+        // Check if buttons already exist
+        if (document.getElementById('export-buttons')) return;
+
+        const buttonContainer = document.createElement('div');
+        buttonContainer.id = 'export-buttons';
+        buttonContainer.style.position = 'fixed';
+        buttonContainer.style.top = '10px';
+        buttonContainer.style.right = '10px';
+        buttonContainer.style.zIndex = '1000';
+        buttonContainer.style.display = 'flex';
+        buttonContainer.style.gap = '10px';
+
+        // Export as text button
+        const textButton = document.createElement('button');
+        textButton.textContent = 'Export as Text';
+        textButton.style.padding = '10px 15px';
+        textButton.style.backgroundColor = '#0066cc';
+        textButton.style.color = 'white';
+        textButton.style.border = 'none';
+        textButton.style.borderRadius = '5px';
+        textButton.style.cursor = 'pointer';
+        textButton.onclick = exportAsText;
+
+        // Export as SVG button
+        const svgButton = document.createElement('button');
+        svgButton.textContent = 'Export as SVG';
+        svgButton.style.padding = '10px 15px';
+        svgButton.style.backgroundColor = '#00aa00';
+        svgButton.style.color = 'white';
+        svgButton.style.border = 'none';
+        svgButton.style.borderRadius = '5px';
+        svgButton.style.cursor = 'pointer';
+        svgButton.onclick = exportAsSVG;
+
+        buttonContainer.appendChild(textButton);
+        buttonContainer.appendChild(svgButton);
+        document.body.appendChild(buttonContainer);
+    };
+
+    const exportAsText = () => {
+        if (!effectRef.current || !effectRef.current.domElement) return;
+
+        const asciiContent = effectRef.current.domElement.textContent;
+        if (!asciiContent) return;
+
+        const blob = new Blob([asciiContent], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'ascii-art.txt';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+
+    const exportAsSVG = () => {
+        if (!effectRef.current || !effectRef.current.domElement) return;
+
+        const asciiContent = effectRef.current.domElement.textContent;
+        if (!asciiContent) return;
+
+        const lines = asciiContent.split('\n');
+        const charWidth = 6;
+        const charHeight = 10;
+        const width = Math.max(...lines.map(line => line.length)) * charWidth;
+        const height = lines.length * charHeight;
+
+        let svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+            <rect width="100%" height="100%" fill="black"/>
+            <style>text { font-family: monospace; font-size: 8px; fill: #999999; }</style>`;
+
+        lines.forEach((line, y) => {
+            if (line.trim()) {
+                svg += `<text x="0" y="${(y + 1) * charHeight}">${line
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')}</text>`;
+            }
+        });
+
+        svg += '</svg>';
+
+        const blob = new Blob([svg], { type: 'image/svg+xml' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'ascii-art.svg';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+
+    const animate = () => {
+        if (autoRotate && currentObjectRef.current) {
+            currentObjectRef.current.rotation.y += rotationSpeed.y;
+            currentObjectRef.current.rotation.z += rotationSpeed.z;
+        }
+
+        if (effectRef.current && sceneRef.current && cameraRef.current) {
+            effectRef.current.render(sceneRef.current, cameraRef.current);
+        }
+
+        animationIdRef.current = requestAnimationFrame(animate);
+    };
+
+    const onWindowResize = () => {
+        if (!cameraRef.current || !rendererRef.current || !effectRef.current) return;
+
+        cameraRef.current.aspect = (window.innerWidth * 0.6) / window.innerHeight;
+        cameraRef.current.updateProjectionMatrix();
+        rendererRef.current.setSize((window.innerWidth * 0.6), window.innerHeight);
+        effectRef.current.setSize((window.innerWidth * 0.6), window.innerHeight);
+    };
+
+    return null; // This component doesn't render anything directly
 }
 
 export default AsterDynamic;
