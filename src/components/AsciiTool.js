@@ -53,7 +53,7 @@ function AsciiTool() {
     return (
         <div style={{ width: '100%', backgroundColor: '#111', color: '#fff'}}>
             <div className={styles.header}>
-                <div style={{ display: 'grid', gridTemplateColumns: '2fr 2fr', gap: '20px', padding: '20px' }}>
+                <div style={{ display: 'grid', marginTop:'4svh', gridTemplateColumns: '2fr 2fr', gap: '20px', padding: '20px' }}>
                     {/* Canvas Area */}
                     <div id="asterParent" style={{height:'100svh', width:'60svw'}}>
                         <AsterDynamic 
@@ -71,18 +71,16 @@ function AsciiTool() {
                     </div>
 
                     {/* Controls Panel */}
-                    <div style={{ 
+                    <div id="asciitool_c_p" style={{ 
                         backgroundColor: '#222', 
                         padding: '20px', 
                         borderRadius: '8px',
                         maxHeight: '80vh',
                         overflowY: 'auto'
                     }}>
-                        <h2 style={{ marginBottom: '20px', fontSize: '24px' }}>ASCII Art Controls</h2>
-
                         {/* Characters */}
                         <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#333', borderRadius: '6px' }}>
-                            <h3 style={{ marginBottom: '10px' }}>ASCII Characters</h3>
+                            <p style={{ marginBottom: '10px' }}>Constituent Characters</p>
                             <input
                                 type="text"
                                 value={characters}
@@ -102,7 +100,7 @@ function AsciiTool() {
 
                         {/* File Upload */}
                         <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#333', borderRadius: '6px' }}>
-                            <h3 style={{ marginBottom: '10px' }}>Load Model</h3>
+                            <p style={{ marginBottom: '10px' }}>Load Model</p>
                             <div style={{ marginBottom: '10px' }}>
                                 <label style={{ display: 'block', fontSize: '14px', marginBottom: '5px' }}>
                                     GLTF File:
@@ -129,7 +127,7 @@ function AsciiTool() {
 
                         {/* Camera Controls */}
                         <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#333', borderRadius: '6px' }}>
-                            <h3 style={{ marginBottom: '10px' }}>Camera Position</h3>
+                            <p style={{ marginBottom: '10px' }}>Camera Transform</p>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px' }}>
                                 {['x', 'y', 'z'].map(axis => (
                                     <label key={axis} style={{ fontSize: '12px' }}>
@@ -155,7 +153,7 @@ function AsciiTool() {
 
                         {/* Object Controls */}
                         <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#333', borderRadius: '6px' }}>
-                            <h3 style={{ marginBottom: '10px' }}>Object Transform</h3>
+                            <p style={{ marginBottom: '10px' }}>Object Transform</p>
                             
                             <div style={{ marginBottom: '10px' }}>
                                 <span style={{ fontSize: '14px', color: '#ccc' }}>Position:</span>
@@ -231,7 +229,7 @@ function AsciiTool() {
                                 <input
                                     type="checkbox"
                                     checked={autoRotate}
-                                    onChange={(e) => setAutoRotate(e.target.checked)}
+                                    onChange={(e) => {setAutoRotate(e.target.checked);}}
                                     style={{ marginRight: '8px' }}
                                 />
                                 Auto Rotate
@@ -241,7 +239,7 @@ function AsciiTool() {
                         {/* Lights */}
                         <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#333', borderRadius: '6px' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                                <h3>Lights</h3>
+                                <p>Lights</p>
                                 <button 
                                     onClick={addLight}
                                     style={{

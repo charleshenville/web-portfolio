@@ -4,13 +4,13 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { SVGLoader } from 'three/examples/jsm/loaders/SVGLoader.js';
 import React, { useEffect, useRef } from 'react';
 
-function AsterDynamic({ 
+function AsterDynamic({
     characters = ' .:-=+*#%@',
     cameraPos = { x: 0, y: 0, z: 5 },
     objectPos = { x: 0, y: 0, z: 0 },
-    objectRot = { x: Math.PI/2, y: 0, z: 0 },
+    objectRot = { x: Math.PI / 2, y: 0, z: 0 },
     objectScale = { x: 1, y: 1, z: 1 },
-    lights = [{ id: 1, x: 500, y: 500, z: 500, color: '#ffffff', intensity: 1 }],
+    lights = [{ id: 1, x: 100, y: 100, z: 100, color: '#ffffff', intensity: 1 }],
     autoRotate = false,
     rotationSpeed = { y: 0.001, z: 0.0004 },
     uploadedFile = null,
@@ -24,6 +24,7 @@ function AsterDynamic({
     const lightsArrayRef = useRef([]);
     const animationIdRef = useRef();
     const isInitializedRef = useRef(false);
+    const loadingRef = useRef(false); // Add loading state to prevent race conditions
 
     // Initialize scene only once
     useEffect(() => {
@@ -112,11 +113,11 @@ function AsterDynamic({
 
     const disposeObject = (obj) => {
         if (!obj) return;
-        
+
         if (obj.geometry) {
             obj.geometry.dispose();
         }
-        
+
         if (obj.material) {
             if (Array.isArray(obj.material)) {
                 obj.material.forEach(material => {
@@ -126,11 +127,11 @@ function AsterDynamic({
                 obj.material.dispose();
             }
         }
-        
+
         if (obj.children) {
             obj.children.forEach(child => disposeObject(child));
         }
-        
+
         if (obj.parent) {
             obj.parent.remove(obj);
         }
@@ -190,10 +191,10 @@ function AsterDynamic({
 
     const updateCharacters = () => {
         if (!effectRef.current || !rendererRef.current) return;
-        
+
         // Create new effect with updated characters
         const oldEffect = effectRef.current;
-        const newEffect = new AsciiEffect(rendererRef.current, characters, { invert: true });
+        const newEffect = new AsciiEffect(rendererRef.current, characters, { color: true, invert: true });
         newEffect.setSize((window.innerWidth * 0.6), window.innerHeight);
         newEffect.domElement.id = 'aster';
         newEffect.domElement.style.color = '#ffffff';
@@ -251,9 +252,11 @@ function AsterDynamic({
     };
 
     const loadObject = () => {
-        if (!sceneRef.current) return;
+        if (!sceneRef.current || loadingRef.current) return;
 
-        // Remove existing object
+        loadingRef.current = true;
+
+        // Remove existing object first and wait for it to be fully removed
         if (currentObjectRef.current) {
             sceneRef.current.remove(currentObjectRef.current);
             disposeObject(currentObjectRef.current);
@@ -264,9 +267,13 @@ function AsterDynamic({
             if (fileType === 'gltf') {
                 const loader = new GLTFLoader();
                 loader.load(uploadedFile, (gltf) => {
+                    // Double-check that we haven't started loading something else
+                    if (!loadingRef.current) return;
+
                     currentObjectRef.current = gltf.scene;
                     updateObjectTransform();
                     sceneRef.current.add(currentObjectRef.current);
+                    loadingRef.current = false;
                 }, undefined, (error) => {
                     console.error('Error loading GLTF:', error);
                     loadDefaultObject();
@@ -274,9 +281,12 @@ function AsterDynamic({
             } else if (fileType === 'svg') {
                 const loader = new SVGLoader();
                 loader.load(uploadedFile, (data) => {
+                    // Double-check that we haven't started loading something else
+                    if (!loadingRef.current) return;
+
                     const paths = data.paths;
                     const group = new THREE.Group();
-                    
+
                     for (let i = 0; i < paths.length; i++) {
                         const path = paths[i];
                         const material = new THREE.MeshBasicMaterial({
@@ -300,6 +310,7 @@ function AsterDynamic({
                     currentObjectRef.current = group;
                     updateObjectTransform();
                     sceneRef.current.add(currentObjectRef.current);
+                    loadingRef.current = false;
                 }, undefined, (error) => {
                     console.error('Error loading SVG:', error);
                     loadDefaultObject();
@@ -309,10 +320,14 @@ function AsterDynamic({
             // Load default asterisk object
             const loader = new GLTFLoader();
             loader.load('assets/asterisk.gltf', (gltf) => {
+                // Double-check that we haven't started loading something else
+                if (!loadingRef.current) return;
+
                 currentObjectRef.current = gltf.scene;
-                currentObjectRef.current.rotation.x = Math.PI / 2;
+                // Don't set rotation here - let updateObjectTransform handle it
                 updateObjectTransform();
                 sceneRef.current.add(currentObjectRef.current);
+                loadingRef.current = false;
             }, undefined, (error) => {
                 console.error('Error loading default asterisk:', error);
                 loadDefaultObject();
@@ -321,14 +336,18 @@ function AsterDynamic({
     };
 
     const loadDefaultObject = () => {
+        // Double-check that we haven't started loading something else
+        if (!loadingRef.current) return;
+
         // Fallback to a simple cube if loading fails
         const geometry = new THREE.BoxGeometry(1, 1, 1);
         const material = new THREE.MeshPhongMaterial({ color: 0x888888 });
         const cube = new THREE.Mesh(geometry, material);
-        
+
         currentObjectRef.current = cube;
         updateObjectTransform();
         sceneRef.current.add(currentObjectRef.current);
+        loadingRef.current = false;
     };
 
     const addExportButtons = () => {
@@ -337,9 +356,7 @@ function AsterDynamic({
 
         const buttonContainer = document.createElement('div');
         buttonContainer.id = 'export-buttons';
-        buttonContainer.style.position = 'fixed';
-        buttonContainer.style.top = '10px';
-        buttonContainer.style.right = '10px';
+        buttonContainer.style.position = 'relative';
         buttonContainer.style.zIndex = '1000';
         buttonContainer.style.display = 'flex';
         buttonContainer.style.gap = '10px';
@@ -368,16 +385,50 @@ function AsterDynamic({
 
         buttonContainer.appendChild(textButton);
         buttonContainer.appendChild(svgButton);
-        document.body.appendChild(buttonContainer);
+        const panel = document.getElementById("asciitool_c_p");
+        panel?.appendChild(buttonContainer);
     };
 
     const exportAsText = () => {
         if (!effectRef.current || !effectRef.current.domElement) return;
 
-        const asciiContent = effectRef.current.domElement.textContent;
-        if (!asciiContent) return;
+        const element = effectRef.current.domElement;
+        let text = '';
 
-        const blob = new Blob([asciiContent], { type: 'text/plain' });
+        // Find the TD element or use the element itself if it's the container
+        const tdElement = element.querySelector('td') || element;
+
+        // Walk through all child nodes of the TD
+        const processNode = (node) => {
+            if (node.nodeType === Node.TEXT_NODE) {
+                // Add text content
+                text += node.textContent;
+            } else if (node.nodeType === Node.ELEMENT_NODE) {
+                if (node.tagName.toLowerCase() === 'br') {
+                    // BR tags represent line breaks
+                    text += '\n';
+                } else if (node.tagName.toLowerCase() === 'span') {
+                    // Process span content
+                    for (let child of node.childNodes) {
+                        processNode(child);
+                    }
+                } else {
+                    // Process other elements recursively
+                    for (let child of node.childNodes) {
+                        processNode(child);
+                    }
+                }
+            }
+        };
+
+        // Process all child nodes
+        for (let child of tdElement.childNodes) {
+            processNode(child);
+        }
+
+        if (!text.trim()) return;
+
+        const blob = new Blob([text], { type: 'text/plain' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
