@@ -25,6 +25,10 @@ function AsterDynamic({
     const animationIdRef = useRef();
     const isInitializedRef = useRef(false);
     const loadingRef = useRef(false); // Add loading state to prevent race conditions
+    
+    // Store current prop values in refs so they're accessible in the animation loop
+    const autoRotateRef = useRef(autoRotate);
+    const rotationSpeedRef = useRef(rotationSpeed);
 
     // Initialize scene only once
     useEffect(() => {
@@ -37,6 +41,16 @@ function AsterDynamic({
             cleanup();
         };
     }, []);
+
+    // Update autoRotate ref when prop changes
+    useEffect(() => {
+        autoRotateRef.current = autoRotate;
+    }, [autoRotate]);
+
+    // Update rotationSpeed ref when prop changes
+    useEffect(() => {
+        rotationSpeedRef.current = rotationSpeed;
+    }, [rotationSpeed]);
 
     // Update characters when they change
     useEffect(() => {
@@ -155,7 +169,7 @@ function AsterDynamic({
         rendererRef.current = renderer;
 
         // Setup ASCII effect
-        let effect = new AsciiEffect(renderer, characters, { invert: true });
+        let effect = new AsciiEffect(renderer, characters, { color: true, invert: true });
         effect.setSize((window.innerWidth * 0.6), window.innerHeight);
         effect.domElement.id = 'aster';
         effect.domElement.style.color = '#ffffff';
@@ -365,7 +379,8 @@ function AsterDynamic({
         const textButton = document.createElement('button');
         textButton.textContent = 'Export as Text';
         textButton.style.padding = '10px 15px';
-        textButton.style.backgroundColor = '#0066cc';
+        textButton.style.backgroundColor = '#556574ff';
+        textButton.style.fontFamily = 'SF Mono, Monospace';
         textButton.style.color = 'white';
         textButton.style.border = 'none';
         textButton.style.borderRadius = '5px';
@@ -373,18 +388,18 @@ function AsterDynamic({
         textButton.onclick = exportAsText;
 
         // Export as SVG button
-        const svgButton = document.createElement('button');
-        svgButton.textContent = 'Export as SVG';
-        svgButton.style.padding = '10px 15px';
-        svgButton.style.backgroundColor = '#00aa00';
-        svgButton.style.color = 'white';
-        svgButton.style.border = 'none';
-        svgButton.style.borderRadius = '5px';
-        svgButton.style.cursor = 'pointer';
-        svgButton.onclick = exportAsSVG;
+        // const svgButton = document.createElement('button');
+        // svgButton.textContent = 'Export as SVG';
+        // svgButton.style.padding = '10px 15px';
+        // svgButton.style.backgroundColor = '#00aa00';
+        // svgButton.style.color = 'white';
+        // svgButton.style.border = 'none';
+        // svgButton.style.borderRadius = '5px';
+        // svgButton.style.cursor = 'pointer';
+        // svgButton.onclick = exportAsSVG;
 
         buttonContainer.appendChild(textButton);
-        buttonContainer.appendChild(svgButton);
+        // buttonContainer.appendChild(svgButton);
         const panel = document.getElementById("asciitool_c_p");
         panel?.appendChild(buttonContainer);
     };
@@ -478,9 +493,10 @@ function AsterDynamic({
     };
 
     const animate = () => {
-        if (autoRotate && currentObjectRef.current) {
-            currentObjectRef.current.rotation.y += rotationSpeed.y;
-            currentObjectRef.current.rotation.z += rotationSpeed.z;
+        // Use refs instead of props to get the current values
+        if (autoRotateRef.current && currentObjectRef.current) {
+            currentObjectRef.current.rotation.y += rotationSpeedRef.current.y;
+            currentObjectRef.current.rotation.z += rotationSpeedRef.current.z;
         }
 
         if (effectRef.current && sceneRef.current && cameraRef.current) {

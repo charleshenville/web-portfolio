@@ -13,7 +13,7 @@ function AsciiTool() {
         { id: 1, x: 500, y: 500, z: 500, color: '#ffffff', intensity: 1 }
     ]);
     const [autoRotate, setAutoRotate] = useState(false);
-    const [rotationSpeed, setRotationSpeed] = useState({ y: 0.001, z: 0.0004 });
+    const [rotationSpeed, setRotationSpeed] = useState({ y: 0.01, z: 0.004 });
     const [uploadedFile, setUploadedFile] = useState(null);
     const [fileType, setFileType] = useState(null);
 
@@ -100,26 +100,12 @@ function AsciiTool() {
 
                         {/* File Upload */}
                         <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#333', borderRadius: '6px' }}>
-                            <p style={{ marginBottom: '10px' }}>Load Model</p>
+                            <p style={{ marginBottom: '10px' }}>Model (.gltf/.glb)</p>
                             <div style={{ marginBottom: '10px' }}>
-                                <label style={{ display: 'block', fontSize: '14px', marginBottom: '5px' }}>
-                                    GLTF File:
-                                </label>
                                 <input
                                     type="file"
                                     accept=".gltf,.glb"
                                     onChange={(e) => handleFileUpload(e, 'gltf')}
-                                    style={{ width: '100%', padding: '5px' }}
-                                />
-                            </div>
-                            <div>
-                                <label style={{ display: 'block', fontSize: '14px', marginBottom: '5px' }}>
-                                    SVG File:
-                                </label>
-                                <input
-                                    type="file"
-                                    accept=".svg"
-                                    onChange={(e) => handleFileUpload(e, 'svg')}
                                     style={{ width: '100%', padding: '5px' }}
                                 />
                             </div>
@@ -244,12 +230,13 @@ function AsciiTool() {
                                     onClick={addLight}
                                     style={{
                                         padding: '6px 12px',
-                                        backgroundColor: '#0066cc',
+                                        backgroundColor: '#5c83abff',
                                         border: 'none',
                                         borderRadius: '4px',
                                         color: '#fff',
                                         cursor: 'pointer',
-                                        fontSize: '12px'
+                                        fontSize: '12px',
+                                        fontFamily: 'SF Mono, Monospace'
                                     }}
                                 >
                                     Add Light
@@ -269,13 +256,14 @@ function AsciiTool() {
                                             <button
                                                 onClick={() => removeLight(light.id)}
                                                 style={{
-                                                    backgroundColor: '#cc0000',
+                                                    backgroundColor: '#4a0000ff',
                                                     border: 'none',
                                                     borderRadius: '3px',
                                                     color: '#fff',
                                                     cursor: 'pointer',
                                                     fontSize: '10px',
-                                                    padding: '3px 6px'
+                                                    padding: '3px 6px',
+                                                    fontFamily: 'SF Mono, Monospace'
                                                 }}
                                             >
                                                 Remove
