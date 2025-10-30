@@ -208,11 +208,12 @@ function AsterDynamic({
 
         // Create new effect with updated characters
         const oldEffect = effectRef.current;
-        const newEffect = new AsciiEffect(rendererRef.current, characters, { color: true, invert: true });
+        const newEffect = new AsciiEffect(rendererRef.current, characters, { color: false, invert: true });
         newEffect.setSize((window.innerWidth * 0.6), window.innerHeight);
         newEffect.domElement.id = 'aster';
-        newEffect.domElement.style.color = '#ffffff';
-        newEffect.domElement.style.backgroundColor = 'black';
+        newEffect.domElement.style.color = '#D0DCCF';
+        // newEffect.domElement.style.backgroundColor = 'black';
+        newEffect.domElement.style.backgroundColor = '#3C4139';
         newEffect.domElement.style.width = '100%';
         newEffect.domElement.style.height = '100%';
         newEffect.domElement.style.left = '0';
