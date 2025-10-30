@@ -7,6 +7,7 @@ import Projects from './components/Projects';
 import Resume from './components/Resume';
 import Contact from './components/Contact';
 import AsciiTool from './components/AsciiTool';
+import AudioVisualizer from './components/AudioVisualizer';
 
 function App() {
 
@@ -20,6 +21,7 @@ function App() {
           <Route path='/resume' element={<Resume />} />
           <Route path='/contact' element={<Contact />} />
           <Route path='/asciitool' element={<AsciiTool/>} />
+          <Route path='/visualizer' element={<AudioVisualizer/>} />
           <Route path="*" element={<E404 />} />
       </Routes>
     </div>
