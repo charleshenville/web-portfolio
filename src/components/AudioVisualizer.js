@@ -5,6 +5,7 @@ import { Play, Pause } from 'lucide-react';
 function AudioVisualizer() {
     const [isPlaying, setIsPlaying] = useState(false);
     const audioRef = useRef(null);
+    const canvasRef = useRef(null);
     const analyserRef = useRef(null);
     const dataArrayRef = useRef(null);
     const sceneRef = useRef(null);
@@ -44,8 +45,12 @@ function AudioVisualizer() {
     }
 
     useEffect(() => {
-        const canvas = document.querySelector('#bg');
-        if (!canvas) return;
+        const canvas = canvasRef.current;
+        if (!canvas) {
+            console.log("Canvas not found!");
+            return;
+        }
+        console.log("Canvas found, initializing...");
 
         // Initialize Three.js
         const scene = new THREE.Scene();
@@ -105,6 +110,7 @@ function AudioVisualizer() {
 
         // Mouse controls
         const handleMouseDown = (e) => {
+            console.log("Mouse down detected!");
             isDraggingRef.current = true;
             previousMousePositionRef.current = { x: e.clientX, y: e.clientY };
         };
@@ -173,7 +179,7 @@ function AudioVisualizer() {
                 // Audio-reactive animation
                 if (frequencyData) {
                     // Map point index to frequency bin
-                    const freqIndex = Math.floor((Math.abs(pointMeshes.length / 2 - index) / pointMeshes.length / 16) * frequencyData.length);
+                    const freqIndex = Math.floor((Math.abs(pointMeshes.length / 2 - index) / pointMeshes.length / 8) * frequencyData.length);
                     const frequency = frequencyData[freqIndex] / 255; // Normalize to 0-1
 
                     // Scale points based on frequency
@@ -195,8 +201,6 @@ function AudioVisualizer() {
 
                     const hue = (r - (sphereConfig.radius - sphereConfig.randomOffset / 2)) / sphereConfig.randomOffset / 50;
                     mesh.material.color.setHSL(hue, 0.7, 0.5);
-
-
                 } else {
                     mesh.position.set(rotatedX, rotatedY, finalZ);
                 }
@@ -264,9 +268,9 @@ function AudioVisualizer() {
         }
     };
 
-    return (
-        <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: '#00000000' }}>
-            <canvas id="bg" style={{ display: 'block' }} />
+     return (
+        <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: '#00000000', position: 'relative' }}>
+            <canvas ref={canvasRef} style={{ display: 'block', position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }} />
             
             {/* Audio element - hidden */}
             <audio
