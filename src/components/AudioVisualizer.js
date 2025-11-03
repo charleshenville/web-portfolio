@@ -17,6 +17,15 @@ function AudioVisualizer() {
     const previousMousePositionRef = useRef({ x: 0, y: 0 });
     const animationFrameRef = useRef(null);
 
+    function getR(x,y,z) {
+        // let r = Math.abs(x) ** 3 + Math.abs(y) ** 3 + Math.abs(z) ** 3;
+        // return r ** 0.3333333;
+
+        let r = Math.abs(x) ** 2 + Math.abs(y) ** 2 + Math.abs(z) ** 2;
+        return r ** 0.5;
+
+    }
+
     // Fibonacci sphere generation
     function fibonacciSphere(samples = 1000, radius = 10, randomOffset = 0.1) {
         const points = [];
@@ -72,7 +81,7 @@ function AudioVisualizer() {
             samples: 5000,
             radius: 10,
             randomOffset: 0.05,
-            pointSize: 0.05
+            pointSize: 0.055
         };
 
         const pointsData = fibonacciSphere(
@@ -85,10 +94,9 @@ function AudioVisualizer() {
         const pointMeshes = [];
 
         pointsData.forEach((point, index) => {
-            let r = Math.abs(point.x) ** 3 + Math.abs(point.y) ** 3 + Math.abs(point.z) ** 3;
-            r = r ** 0.3333333;
+            const r = getR(point.x, point.y, point.z);
 
-            const hue = (r - (sphereConfig.radius - sphereConfig.randomOffset / 2)) / sphereConfig.randomOffset / 50;
+            const hue = (r - (sphereConfig.radius - sphereConfig.randomOffset / 2)) / sphereConfig.randomOffset / 100;
             const material = new THREE.MeshBasicMaterial({
                 color: new THREE.Color().setHSL(hue, 0.7, 0.5)
             });
@@ -110,13 +118,16 @@ function AudioVisualizer() {
 
         // Mouse controls
         const handleMouseDown = (e) => {
-            console.log("Mouse down detected!");
+            console.log("Mouse down detected!", e.target);
+            e.preventDefault();
             isDraggingRef.current = true;
             previousMousePositionRef.current = { x: e.clientX, y: e.clientY };
+            canvas.style.cursor = 'grabbing';
         };
 
         const handleMouseMove = (e) => {
             if (isDraggingRef.current) {
+                console.log("Dragging...");
                 const deltaX = e.clientX - previousMousePositionRef.current.x;
                 const deltaY = e.clientY - previousMousePositionRef.current.y;
 
@@ -128,7 +139,9 @@ function AudioVisualizer() {
         };
 
         const handleMouseUp = () => {
+            console.log("Mouse up");
             isDraggingRef.current = false;
+            canvas.style.cursor = 'grab';
         };
 
         const handleWheel = (e) => {
@@ -141,7 +154,9 @@ function AudioVisualizer() {
         canvas.addEventListener('mousemove', handleMouseMove);
         canvas.addEventListener('mouseup', handleMouseUp);
         canvas.addEventListener('mouseleave', handleMouseUp);
-        canvas.addEventListener('wheel', handleWheel);
+        canvas.addEventListener('wheel', handleWheel, { passive: false });
+        
+        console.log("Event listeners attached to canvas");
 
         // Window resize
         const handleResize = () => {
@@ -179,11 +194,12 @@ function AudioVisualizer() {
                 // Audio-reactive animation
                 if (frequencyData) {
                     // Map point index to frequency bin
-                    const freqIndex = Math.floor((Math.abs(pointMeshes.length / 2 - index) / pointMeshes.length / 8) * frequencyData.length);
+                    const freqIndex = Math.floor((Math.abs(pointMeshes.length / 2 - index) / pointMeshes.length / 16) * frequencyData.length);
                     const frequency = frequencyData[freqIndex] / 255; // Normalize to 0-1
 
                     // Scale points based on frequency
-                    const scale = 1 + frequency * 0.25;
+                    const randomFactor = (Math.random() - 0.5) * 0.2;
+                    const scale = 1 + frequency * (0.5 + randomFactor);
                     const distance = Math.sqrt(rotatedX * rotatedX + rotatedY * rotatedY + finalZ * finalZ);
                     const normalizedX = rotatedX / distance;
                     const normalizedY = rotatedY / distance;
@@ -196,10 +212,9 @@ function AudioVisualizer() {
                     );
 
                     // Color animation based on radius like initialized
-                    let r = Math.abs(mesh.position.x) ** 3 + Math.abs(mesh.position.y) ** 3 + Math.abs(mesh.position.z) ** 3;
-                    r = r ** 0.3333333;
+                    const r = getR(mesh.position.x, mesh.position.y, mesh.position.z);
 
-                    const hue = (r - (sphereConfig.radius - sphereConfig.randomOffset / 2)) / sphereConfig.randomOffset / 50;
+                    const hue = (r - (sphereConfig.radius - sphereConfig.randomOffset / 2)) / sphereConfig.randomOffset / 100;
                     mesh.material.color.setHSL(hue, 0.7, 0.5);
                 } else {
                     mesh.position.set(rotatedX, rotatedY, finalZ);
@@ -269,8 +284,18 @@ function AudioVisualizer() {
     };
 
      return (
-        <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: '#00000000', position: 'relative' }}>
-            <canvas ref={canvasRef} style={{ display: 'block', position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }} />
+        <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: '#000000', position: 'relative' }}>
+            <canvas ref={canvasRef} style={{ 
+                display: 'block', 
+                position: 'absolute', 
+                top: 0, 
+                left: 0, 
+                width: '100%', 
+                height: '100%',
+                touchAction: 'none',
+                cursor: 'grab',
+                zIndex: 2
+            }} />
             
             {/* Audio element - hidden */}
             <audio
