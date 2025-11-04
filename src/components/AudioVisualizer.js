@@ -1,6 +1,56 @@
 import * as THREE from 'three';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import React, { useState, useEffect, useRef } from 'react';
 import { Play, Pause } from 'lucide-react';
+
+// Custom dream-like haze shader
+const DreamHazeShader = {
+    uniforms: {
+        tDiffuse: { value: null },
+        time: { value: 0 },
+        intensity: { value: 0.5 }
+    },
+    vertexShader: `
+        varying vec2 vUv;
+        void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+    `,
+    fragmentShader: `
+        uniform sampler2D tDiffuse;
+        uniform float time;
+        uniform float intensity;
+        varying vec2 vUv;
+        
+        void main() {
+            vec2 uv = vUv;
+            
+            // Soft glow effect
+            vec4 color = texture2D(tDiffuse, uv);
+            
+            // Subtle chromatic aberration for dream-like quality
+            float offset = 0.002 * intensity;
+            vec4 r = texture2D(tDiffuse, uv + vec2(offset, 0.0));
+            vec4 b = texture2D(tDiffuse, uv - vec2(offset, 0.0));
+            color.r = mix(color.r, r.r, 0.3);
+            color.b = mix(color.b, b.b, 0.3);
+            
+            // Soft haze/bloom effect
+            // float dist = distance(uv, vec2(0.5));
+            // float haze = smoothstep(0.0, 0.8, dist) * 0.3 * intensity;
+            // color.rgb = mix(color.rgb, vec3(0.8, 0.7, 1.0), haze);
+            
+            // Subtle color shift for dreamy atmosphere
+            color.rgb *= vec3(1.05, 0.98, 1.1);
+            
+            gl_FragColor = color;
+        }
+    `
+};
 
 function AudioVisualizer() {
     const [isPlaying, setIsPlaying] = useState(false);
@@ -11,6 +61,8 @@ function AudioVisualizer() {
     const sceneRef = useRef(null);
     const cameraRef = useRef(null);
     const rendererRef = useRef(null);
+    const composerRef = useRef(null);
+    const dreamHazePassRef = useRef(null);
     const pointMeshesRef = useRef([]);
     const rotationRef = useRef({ x: 0, y: 0 });
     const isDraggingRef = useRef(false);
@@ -76,12 +128,38 @@ function AudioVisualizer() {
         cameraRef.current = camera;
         rendererRef.current = renderer;
 
+        // Set up post-processing pipeline
+        const composer = new EffectComposer(renderer);
+        composer.setPixelRatio(window.devicePixelRatio);
+        composer.setSize(window.innerWidth, window.innerHeight);
+
+        // Render pass - renders the scene
+        const renderPass = new RenderPass(scene, camera);
+        composer.addPass(renderPass);
+
+        // Bloom pass for dream-like glow
+        const bloomPass = new UnrealBloomPass(
+            new THREE.Vector2(window.innerWidth, window.innerHeight),
+            2.0,  // strength - increased for better glow
+            0.6,  // radius - increased for more spread
+            0.5   // threshold - lowered to capture more of the glowing points
+        );
+        composer.addPass(bloomPass);
+
+        // Custom dream haze pass
+        const dreamHazePass = new ShaderPass(DreamHazeShader);
+        dreamHazePass.uniforms.intensity.value = 0.6;
+        composer.addPass(dreamHazePass);
+
+        composerRef.current = composer;
+        dreamHazePassRef.current = dreamHazePass;
+
         // Create sphere points
         const sphereConfig = {
-            samples: 5000,
-            radius: 10,
-            randomOffset: 0.05,
-            pointSize: 0.055
+            samples: 10000,
+            radius: 8,
+            randomOffset: 0.1,
+            pointSize: 0.05
         };
 
         const pointsData = fibonacciSphere(
@@ -90,15 +168,22 @@ function AudioVisualizer() {
             sphereConfig.randomOffset
         );
 
-        const pointGeometry = new THREE.SphereGeometry(sphereConfig.pointSize, 8, 8);
+        const pointGeometry = new THREE.SphereGeometry(sphereConfig.pointSize * 1.2, 8, 8);
         const pointMeshes = [];
 
         pointsData.forEach((point, index) => {
             const r = getR(point.x, point.y, point.z);
 
             const hue = (r - (sphereConfig.radius - sphereConfig.randomOffset / 2)) / sphereConfig.randomOffset / 100;
+            const pointColor = new THREE.Color().setHSL(hue, 0.7, 0.7); // Brighter base color
+            
+            // Create emissive material for glowing light effect
             const material = new THREE.MeshBasicMaterial({
-                color: new THREE.Color().setHSL(hue, 0.7, 0.5)
+                color: pointColor,
+                emissive: pointColor.clone().multiplyScalar(2.0), // Bright emissive glow
+                emissiveIntensity: 1.5,
+                transparent: true,
+                opacity: 0.95
             });
 
             const mesh = new THREE.Mesh(pointGeometry, material);
@@ -107,7 +192,8 @@ function AudioVisualizer() {
             mesh.userData = {
                 originalPosition: { x: point.x, y: point.y, z: point.z },
                 index: index,
-                baseHue: hue
+                baseHue: hue,
+                baseColor: pointColor.clone()
             };
 
             pointMeshes.push(mesh);
@@ -164,14 +250,14 @@ function AudioVisualizer() {
             camera.updateProjectionMatrix();
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setPixelRatio(window.devicePixelRatio);
+            composer.setSize(window.innerWidth, window.innerHeight);
         };
 
         window.addEventListener('resize', handleResize);
 
         // Animation loop
         const animate = () => {
-            renderer.render(scene, camera);
-
             const time = Date.now() * 0.001;
             const rotation = rotationRef.current;
 
@@ -216,7 +302,16 @@ function AudioVisualizer() {
                     const r = getR(mesh.position.x, mesh.position.y, mesh.position.z);
 
                     const hue = (r - (sphereConfig.radius - sphereConfig.randomOffset / 2)) / sphereConfig.randomOffset / 100;
-                    mesh.material.color.setHSL(hue, 0.7, 0.5);
+                    const pointColor = new THREE.Color().setHSL(hue, 0.7, 0.6); // Brighter for light source
+                    
+                    // Update both color and emissive for glowing effect
+                    if (mesh.material && mesh.material.color) {
+                        mesh.material.color.copy(pointColor);
+                    }
+                    if (mesh.material && mesh.material.emissive) {
+                        mesh.material.emissive.copy(pointColor).multiplyScalar(1.5);
+                    }
+
                 } else {
                     mesh.position.set(rotatedX, rotatedY, finalZ);
                 }
@@ -224,6 +319,16 @@ function AudioVisualizer() {
 
             // Auto-rotation
             rotationRef.current.y += 0.001;
+
+            // Update dream haze shader time for subtle animation
+            if (dreamHazePassRef.current) {
+                dreamHazePassRef.current.uniforms.time.value = time;
+            }
+
+            // Render with post-processing
+            if (composerRef.current) {
+                composerRef.current.render();
+            }
 
             animationFrameRef.current = requestAnimationFrame(animate);
         };
