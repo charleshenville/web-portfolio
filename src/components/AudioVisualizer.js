@@ -199,7 +199,8 @@ function AudioVisualizer() {
 
                     // Scale points based on frequency
                     const randomFactor = (Math.random() - 0.5) * 0.2;
-                    const scale = 1 + frequency * (0.5 + randomFactor);
+                    const scale = 1 + frequency * (0.5 + randomFactor); 
+                    // const scale = 1 + frequency * (0.5);
                     const distance = Math.sqrt(rotatedX * rotatedX + rotatedY * rotatedY + finalZ * finalZ);
                     const normalizedX = rotatedX / distance;
                     const normalizedY = rotatedY / distance;
