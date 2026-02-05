@@ -3,8 +3,19 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
-import React, { useState, useEffect, useRef } from 'react';
-import { Play, Pause } from 'lucide-react';
+import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Play, Pause, ChevronDown } from 'lucide-react';
+
+// Maximum number of points to render (for performance)
+const MAX_POINTS = 50000;
+
+// Available assets
+const ASSETS = [
+    { id: 'sphere', name: 'Default Sphere', path: null },
+    { id: 'point_cloud', name: 'Point Cloud', path: 'assets/point_cloud.ply' },
+    { id: 'snow', name: 'Snow', path: 'assets/snow.ply' },
+];
 
 // Custom dream-like haze shader
 const DreamHazeShader = {
@@ -54,6 +65,9 @@ const DreamHazeShader = {
 
 function AudioVisualizer() {
     const [isPlaying, setIsPlaying] = useState(false);
+    const [selectedAsset, setSelectedAsset] = useState('sphere');
+    const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+    const [isLoading, setIsLoading] = useState(false);
     const audioRef = useRef(null);
     const canvasRef = useRef(null);
     const analyserRef = useRef(null);
@@ -63,11 +77,18 @@ function AudioVisualizer() {
     const rendererRef = useRef(null);
     const composerRef = useRef(null);
     const dreamHazePassRef = useRef(null);
-    const pointMeshesRef = useRef([]);
+    const pointsObjectRef = useRef(null); // Single points object
+    const pointsDataRef = useRef([]); // Store points data for animation
     const rotationRef = useRef({ x: 0, y: 0 });
     const isDraggingRef = useRef(false);
     const previousMousePositionRef = useRef({ x: 0, y: 0 });
     const animationFrameRef = useRef(null);
+    const sphereConfigRef = useRef({
+        samples: 10000,
+        radius: 12,
+        randomOffset: 0.1,
+        pointSize: 0.05
+    });
 
     function getR(x,y,z) {
         // let r = Math.abs(x) ** 3 + Math.abs(y) ** 3 + Math.abs(z) ** 3;
@@ -105,6 +126,172 @@ function AudioVisualizer() {
         return points;
     }
 
+    // Clear existing points from scene
+    const clearPoints = useCallback(() => {
+        if (pointsObjectRef.current && sceneRef.current) {
+            sceneRef.current.remove(pointsObjectRef.current);
+            if (pointsObjectRef.current.geometry) {
+                pointsObjectRef.current.geometry.dispose();
+            }
+            if (pointsObjectRef.current.material) {
+                pointsObjectRef.current.material.dispose();
+            }
+            pointsObjectRef.current = null;
+        }
+        pointsDataRef.current = [];
+    }, []);
+
+    // Create points object using InstancedMesh for efficient single draw call
+    const createPointsObject = useCallback((pointsData, config) => {
+        if (!sceneRef.current) return;
+
+        // Clear existing points first
+        clearPoints();
+
+        // Limit points to MAX_POINTS
+        const limitedPoints = pointsData.slice(0, MAX_POINTS);
+        
+        // Check if points have original colors from PLY
+        const hasOriginalColors = limitedPoints.length > 0 && limitedPoints[0].color;
+        
+        const pointGeometry = new THREE.SphereGeometry(config.pointSize * 1.2, 8, 8);
+        const pointMaterial = new THREE.MeshBasicMaterial({
+            color: 0xffffff,
+            transparent: true,
+            opacity: 0.95
+        });
+
+        // Use InstancedMesh for single draw call
+        const instancedMesh = new THREE.InstancedMesh(pointGeometry, pointMaterial, limitedPoints.length);
+        const dummy = new THREE.Object3D();
+        const colors = new Float32Array(limitedPoints.length * 3);
+
+        limitedPoints.forEach((point, index) => {
+            dummy.position.set(point.x, point.y, point.z);
+            dummy.updateMatrix();
+            instancedMesh.setMatrixAt(index, dummy.matrix);
+
+            let color;
+            if (point.color) {
+                // Use original PLY color
+                color = new THREE.Color(point.color.r, point.color.g, point.color.b);
+            } else {
+                // Calculate color based on radius (for generated sphere)
+                const r = getR(point.x, point.y, point.z);
+                const hue = (r - (config.radius - config.randomOffset / 2)) / config.randomOffset / 100;
+                color = new THREE.Color().setHSL(hue, 0.7, 0.7);
+            }
+            
+            colors[index * 3] = color.r;
+            colors[index * 3 + 1] = color.g;
+            colors[index * 3 + 2] = color.b;
+
+            // Store original position and color info in pointsData
+            limitedPoints[index] = {
+                ...point,
+                originalPosition: { x: point.x, y: point.y, z: point.z },
+                originalColor: point.color ? { r: color.r, g: color.g, b: color.b } : null,
+                index: index
+            };
+        });
+
+        instancedMesh.instanceMatrix.needsUpdate = true;
+        
+        // Store instance colors as attribute
+        instancedMesh.instanceColor = new THREE.InstancedBufferAttribute(colors, 3);
+        
+        // Store whether this mesh has original colors (to skip color animation)
+        instancedMesh.userData.hasOriginalColors = hasOriginalColors;
+        
+        sceneRef.current.add(instancedMesh);
+        pointsObjectRef.current = instancedMesh;
+        pointsDataRef.current = limitedPoints;
+
+        console.log(`Created ${limitedPoints.length} points (limited from ${pointsData.length}), original colors: ${hasOriginalColors}`);
+    }, [clearPoints]);
+
+    // Load PLY file and return points data with colors
+    const loadPLYFile = useCallback((path) => {
+        return new Promise((resolve, reject) => {
+            const loader = new PLYLoader();
+            loader.load(
+                path,
+                (geometry) => {
+                    const positions = geometry.attributes.position;
+                    const colors = geometry.attributes.color; // PLY color attribute
+                    const points = [];
+                    
+                    // Calculate bounding box to normalize/scale
+                    geometry.computeBoundingBox();
+                    const bbox = geometry.boundingBox;
+                    const center = new THREE.Vector3();
+                    bbox.getCenter(center);
+                    const size = new THREE.Vector3();
+                    bbox.getSize(size);
+                    const maxDim = Math.max(size.x, size.y, size.z);
+                    const scale = 24 / maxDim; // Scale to fit roughly in view
+
+                    for (let i = 0; i < positions.count; i++) {
+                        const point = {
+                            x: (positions.getX(i) - center.x) * scale,
+                            y: (positions.getY(i) - center.y) * scale,
+                            z: (positions.getZ(i) - center.z) * scale
+                        };
+                        
+                        // Include original color if available
+                        if (colors) {
+                            point.color = {
+                                r: colors.getX(i),
+                                g: colors.getY(i),
+                                b: colors.getZ(i)
+                            };
+                        }
+                        
+                        points.push(point);
+                    }
+                    
+                    console.log(`Loaded PLY with ${points.length} points, colors: ${colors ? 'yes' : 'no'}`);
+                    resolve(points);
+                },
+                (progress) => {
+                    console.log('Loading PLY:', (progress.loaded / progress.total * 100).toFixed(1) + '%');
+                },
+                (error) => {
+                    console.error('Error loading PLY:', error);
+                    reject(error);
+                }
+            );
+        });
+    }, []);
+
+    // Load and create points for selected asset
+    const loadAsset = useCallback(async (assetId) => {
+        const asset = ASSETS.find(a => a.id === assetId);
+        if (!asset) return;
+
+        setIsLoading(true);
+
+        try {
+            let pointsData;
+            const config = sphereConfigRef.current;
+
+            if (asset.path === null) {
+                // Generate fibonacci sphere
+                pointsData = fibonacciSphere(config.samples, config.radius, config.randomOffset);
+            } else {
+                // Load PLY file
+                pointsData = await loadPLYFile(asset.path);
+            }
+
+            createPointsObject(pointsData, config);
+        } catch (error) {
+            console.error('Failed to load asset:', error);
+        } finally {
+            setIsLoading(false);
+        }
+    }, [createPointsObject, loadPLYFile]);
+
+    // Initialize Three.js scene (runs once)
     useEffect(() => {
         const canvas = canvasRef.current;
         if (!canvas) {
@@ -154,57 +341,8 @@ function AudioVisualizer() {
         composerRef.current = composer;
         dreamHazePassRef.current = dreamHazePass;
 
-        // Create sphere points
-        const sphereConfig = {
-            samples: 10000,
-            radius: 12,
-            randomOffset: 0.1,
-            pointSize: 0.05
-        };
-
-        const pointsData = fibonacciSphere(
-            sphereConfig.samples,
-            sphereConfig.radius,
-            sphereConfig.randomOffset
-        );
-
-        const pointGeometry = new THREE.SphereGeometry(sphereConfig.pointSize * 1.2, 8, 8);
-        const pointMeshes = [];
-
-        pointsData.forEach((point, index) => {
-            const r = getR(point.x, point.y, point.z);
-
-            const hue = (r - (sphereConfig.radius - sphereConfig.randomOffset / 2)) / sphereConfig.randomOffset / 100;
-            const pointColor = new THREE.Color().setHSL(hue, 0.7, 0.7); // Brighter base color
-            
-            // Create emissive material for glowing light effect
-            const material = new THREE.MeshBasicMaterial({
-                color: pointColor,
-                emissive: pointColor.clone().multiplyScalar(2.0), // Bright emissive glow
-                emissiveIntensity: 1.5,
-                transparent: true,
-                opacity: 0.95
-            });
-
-            const mesh = new THREE.Mesh(pointGeometry, material);
-            mesh.position.set(point.x, point.y, point.z);
-
-            mesh.userData = {
-                originalPosition: { x: point.x, y: point.y, z: point.z },
-                index: index,
-                baseHue: hue,
-                baseColor: pointColor.clone()
-            };
-
-            pointMeshes.push(mesh);
-            scene.add(mesh);
-        });
-
-        pointMeshesRef.current = pointMeshes;
-
         // Mouse controls
         const handleMouseDown = (e) => {
-            console.log("Mouse down detected!", e.target);
             e.preventDefault();
             isDraggingRef.current = true;
             previousMousePositionRef.current = { x: e.clientX, y: e.clientY };
@@ -213,7 +351,6 @@ function AudioVisualizer() {
 
         const handleMouseMove = (e) => {
             if (isDraggingRef.current) {
-                console.log("Dragging...");
                 const deltaX = e.clientX - previousMousePositionRef.current.x;
                 const deltaY = e.clientY - previousMousePositionRef.current.y;
 
@@ -225,7 +362,6 @@ function AudioVisualizer() {
         };
 
         const handleMouseUp = () => {
-            console.log("Mouse up");
             isDraggingRef.current = false;
             canvas.style.cursor = 'grab';
         };
@@ -257,6 +393,9 @@ function AudioVisualizer() {
         window.addEventListener('resize', handleResize);
 
         // Animation loop
+        const dummy = new THREE.Object3D();
+        const config = sphereConfigRef.current;
+
         const animate = () => {
             const time = Date.now() * 0.001;
             const rotation = rotationRef.current;
@@ -268,54 +407,69 @@ function AudioVisualizer() {
                 frequencyData = dataArrayRef.current;
             }
 
-            pointMeshes.forEach((mesh, index) => {
-                const originalPos = mesh.userData.originalPosition;
+            const instancedMesh = pointsObjectRef.current;
+            const pointsData = pointsDataRef.current;
 
-                // Apply rotation from orbit controls
-                const rotatedX = originalPos.x * Math.cos(rotation.y) - originalPos.z * Math.sin(rotation.y);
-                const rotatedZ = originalPos.x * Math.sin(rotation.y) + originalPos.z * Math.cos(rotation.y);
-                const rotatedY = originalPos.y * Math.cos(rotation.x) - rotatedZ * Math.sin(rotation.x);
-                const finalZ = originalPos.y * Math.sin(rotation.x) + rotatedZ * Math.cos(rotation.x);
+            if (instancedMesh && pointsData.length > 0) {
+                const colors = instancedMesh.instanceColor ? instancedMesh.instanceColor.array : null;
+                const hasOriginalColors = instancedMesh.userData.hasOriginalColors;
 
-                // Audio-reactive animation
-                if (frequencyData) {
-                    // Map point index to frequency bin
-                    const freqIndex = Math.floor((Math.abs(pointMeshes.length / 2 - index) / pointMeshes.length / 16) * frequencyData.length);
-                    const frequency = frequencyData[freqIndex] / 255; // Normalize to 0-1
+                pointsData.forEach((point, index) => {
+                    const originalPos = point.originalPosition;
 
-                    // Scale points based on frequency
-                    const randomFactor = (Math.random() - 0.5) * 0.2;
-                    const scale = 1 + frequency * (0.5 + randomFactor); 
-                    // const scale = 1 + frequency * (0.5);
-                    const distance = Math.sqrt(rotatedX * rotatedX + rotatedY * rotatedY + finalZ * finalZ);
-                    const normalizedX = rotatedX / distance;
-                    const normalizedY = rotatedY / distance;
-                    const normalizedZ = finalZ / distance;
+                    // Apply rotation from orbit controls
+                    const rotatedX = originalPos.x * Math.cos(rotation.y) - originalPos.z * Math.sin(rotation.y);
+                    const rotatedZ = originalPos.x * Math.sin(rotation.y) + originalPos.z * Math.cos(rotation.y);
+                    const rotatedY = originalPos.y * Math.cos(rotation.x) - rotatedZ * Math.sin(rotation.x);
+                    const finalZ = originalPos.y * Math.sin(rotation.x) + rotatedZ * Math.cos(rotation.x);
 
-                    mesh.position.set(
-                        normalizedX * distance * scale,
-                        normalizedY * distance * scale,
-                        normalizedZ * distance * scale
-                    );
+                    let finalX = rotatedX;
+                    let finalY = rotatedY;
+                    let finalZPos = finalZ;
 
-                    // Color animation based on radius like initialized
-                    const r = getR(mesh.position.x, mesh.position.y, mesh.position.z);
+                    // Audio-reactive animation
+                    if (frequencyData) {
+                        // Map point index to frequency bin
+                        const freqIndex = Math.floor((Math.abs(pointsData.length / 2 - index) / pointsData.length / 16) * frequencyData.length);
+                        const frequency = frequencyData[freqIndex] / 255; // Normalize to 0-1
 
-                    const hue = (r - (sphereConfig.radius - sphereConfig.randomOffset / 2)) / sphereConfig.randomOffset / 100;
-                    const pointColor = new THREE.Color().setHSL(hue, 0.7, 0.6); // Brighter for light source
-                    
-                    // Update both color and emissive for glowing effect
-                    if (mesh.material && mesh.material.color) {
-                        mesh.material.color.copy(pointColor);
+                        // Scale points based on frequency
+                        const randomFactor = (Math.random() - 0.5) * 0.2;
+                        const scale = 1 + frequency * (0.5 + randomFactor);
+                        const distance = Math.sqrt(rotatedX * rotatedX + rotatedY * rotatedY + finalZ * finalZ);
+                        
+                        if (distance > 0) {
+                            const normalizedX = rotatedX / distance;
+                            const normalizedY = rotatedY / distance;
+                            const normalizedZ = finalZ / distance;
+
+                            finalX = normalizedX * distance * scale;
+                            finalY = normalizedY * distance * scale;
+                            finalZPos = normalizedZ * distance * scale;
+                        }
+
+                        // Color animation based on radius - only for generated points (not PLY with colors)
+                        if (colors && !hasOriginalColors) {
+                            const r = getR(finalX, finalY, finalZPos);
+                            const hue = (r - (config.radius - config.randomOffset / 2)) / config.randomOffset / 100;
+                            const pointColor = new THREE.Color().setHSL(hue, 0.7, 0.6);
+                            colors[index * 3] = pointColor.r;
+                            colors[index * 3 + 1] = pointColor.g;
+                            colors[index * 3 + 2] = pointColor.b;
+                        }
                     }
-                    if (mesh.material && mesh.material.emissive) {
-                        mesh.material.emissive.copy(pointColor).multiplyScalar(2);
-                    }
 
-                } else {
-                    mesh.position.set(rotatedX, rotatedY, finalZ);
+                    // Update instance matrix
+                    dummy.position.set(finalX, finalY, finalZPos);
+                    dummy.updateMatrix();
+                    instancedMesh.setMatrixAt(index, dummy.matrix);
+                });
+
+                instancedMesh.instanceMatrix.needsUpdate = true;
+                if (instancedMesh.instanceColor && !hasOriginalColors) {
+                    instancedMesh.instanceColor.needsUpdate = true;
                 }
-            });
+            }
 
             // Auto-rotation
             rotationRef.current.y += 0.001;
@@ -347,13 +501,16 @@ function AudioVisualizer() {
             canvas.removeEventListener('wheel', handleWheel);
             window.removeEventListener('resize', handleResize);
 
-            pointMeshes.forEach(mesh => {
-                mesh.geometry.dispose();
-                mesh.material.dispose();
-                scene.remove(mesh);
-            });
+            clearPoints();
         };
-    }, []);
+    }, [clearPoints]);
+
+    // Load asset when selectedAsset changes
+    useEffect(() => {
+        if (sceneRef.current) {
+            loadAsset(selectedAsset);
+        }
+    }, [selectedAsset, loadAsset]);
 
     // Initialize audio context and analyser
     const initAudio = () => {
@@ -389,7 +546,14 @@ function AudioVisualizer() {
         }
     };
 
-     return (
+    const handleAssetSelect = (assetId) => {
+        setSelectedAsset(assetId);
+        setIsDropdownOpen(false);
+    };
+
+    const selectedAssetName = ASSETS.find(a => a.id === selectedAsset)?.name || 'Select Asset';
+
+    return (
         <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: '#000000', position: 'relative' }}>
             <canvas ref={canvasRef} style={{ 
                 display: 'block', 
@@ -410,6 +574,116 @@ function AudioVisualizer() {
                 onEnded={() => setIsPlaying(false)}
                 style={{ display: 'none' }}
             />
+
+            {/* Loading indicator */}
+            {isLoading && (
+                <div style={{
+                    position: 'fixed',
+                    top: '50%',
+                    left: '50%',
+                    transform: 'translate(-50%, -50%)',
+                    color: 'white',
+                    fontSize: '18px',
+                    zIndex: 1001,
+                    background: 'rgba(0, 0, 0, 0.7)',
+                    padding: '20px 40px',
+                    borderRadius: '10px',
+                    backdropFilter: 'blur(10px)'
+                }}>
+                    Loading...
+                </div>
+            )}
+
+            {/* Asset selector dropdown */}
+            <div style={{
+                position: 'fixed',
+                bottom: '20px',
+                right: '20px',
+                zIndex: 1000
+            }}>
+                <button
+                    onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                    style={{
+                        padding: '12px 20px',
+                        borderRadius: '30px',
+                        border: 'none',
+                        background: 'rgba(255, 255, 255, 0.1)',
+                        backdropFilter: 'blur(10px)',
+                        color: 'white',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        fontSize: '14px',
+                        transition: 'all 0.3s ease',
+                        minWidth: '150px',
+                        justifyContent: 'space-between'
+                    }}
+                    onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.2)';
+                    }}
+                    onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
+                    }}
+                >
+                    <span>{selectedAssetName}</span>
+                    <ChevronDown 
+                        size={18} 
+                        style={{ 
+                            transform: isDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                            transition: 'transform 0.3s ease'
+                        }} 
+                    />
+                </button>
+
+                {isDropdownOpen && (
+                    <div style={{
+                        position: 'absolute',
+                        bottom: '100%',
+                        right: 0,
+                        marginBottom: '8px',
+                        background: 'rgba(30, 30, 30, 0.95)',
+                        backdropFilter: 'blur(10px)',
+                        borderRadius: '12px',
+                        overflow: 'hidden',
+                        minWidth: '150px',
+                        boxShadow: '0 4px 20px rgba(0, 0, 0, 0.5)'
+                    }}>
+                        {ASSETS.map((asset) => (
+                            <button
+                                key={asset.id}
+                                onClick={() => handleAssetSelect(asset.id)}
+                                style={{
+                                    display: 'block',
+                                    width: '100%',
+                                    padding: '12px 20px',
+                                    border: 'none',
+                                    background: selectedAsset === asset.id 
+                                        ? 'rgba(255, 255, 255, 0.15)' 
+                                        : 'transparent',
+                                    color: 'white',
+                                    cursor: 'pointer',
+                                    textAlign: 'left',
+                                    fontSize: '14px',
+                                    transition: 'background 0.2s ease'
+                                }}
+                                onMouseEnter={(e) => {
+                                    if (selectedAsset !== asset.id) {
+                                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
+                                    }
+                                }}
+                                onMouseLeave={(e) => {
+                                    if (selectedAsset !== asset.id) {
+                                        e.currentTarget.style.background = 'transparent';
+                                    }
+                                }}
+                            >
+                                {asset.name}
+                            </button>
+                        ))}
+                    </div>
+                )}
+            </div>
 
             {/* Play/Pause button */}
             <button
