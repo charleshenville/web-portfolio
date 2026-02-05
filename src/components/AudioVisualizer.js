@@ -157,7 +157,7 @@ function AudioVisualizer() {
         // Create sphere points
         const sphereConfig = {
             samples: 10000,
-            radius: 8,
+            radius: 12,
             randomOffset: 0.1,
             pointSize: 0.05
         };
@@ -309,7 +309,7 @@ function AudioVisualizer() {
                         mesh.material.color.copy(pointColor);
                     }
                     if (mesh.material && mesh.material.emissive) {
-                        mesh.material.emissive.copy(pointColor).multiplyScalar(1.5);
+                        mesh.material.emissive.copy(pointColor).multiplyScalar(2);
                     }
 
                 } else {
