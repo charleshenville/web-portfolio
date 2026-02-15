@@ -5,7 +5,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Play, Pause, ChevronDown } from 'lucide-react';
+import { Play, Pause, ChevronDown, Music } from 'lucide-react';
 
 // Maximum number of points to render (for performance)
 const MAX_POINTS = 50000;
@@ -14,7 +14,14 @@ const MAX_POINTS = 50000;
 const ASSETS = [
     { id: 'sphere', name: 'Default Sphere', path: null },
     { id: 'point_cloud', name: 'Point Cloud', path: 'assets/point_cloud.ply' },
+    { id: 'peppermint', name: 'Pepper', path: 'assets/pepper.ply' },
     { id: 'snow', name: 'Snow', path: 'assets/snow.ply' },
+];
+
+// Available music tracks
+const MUSIC_ASSETS = [
+    { id: 'test', name: 'Test Track', path: 'assets/test.mp3' },
+    // Add more tracks here: { id: 'unique_id', name: 'Display Name', path: 'assets/filename.mp3' },
 ];
 
 // Custom dream-like haze shader
@@ -68,6 +75,8 @@ function AudioVisualizer() {
     const [selectedAsset, setSelectedAsset] = useState('sphere');
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
+    const [selectedMusic, setSelectedMusic] = useState('test');
+    const [isMusicDropdownOpen, setIsMusicDropdownOpen] = useState(false);
     const audioRef = useRef(null);
     const canvasRef = useRef(null);
     const analyserRef = useRef(null);
@@ -87,7 +96,7 @@ function AudioVisualizer() {
         samples: 10000,
         radius: 12,
         randomOffset: 0.1,
-        pointSize: 0.05
+        pointSize: 0.02
     });
 
     function getR(x,y,z) {
@@ -551,7 +560,37 @@ function AudioVisualizer() {
         setIsDropdownOpen(false);
     };
 
+    const handleMusicSelect = (musicId) => {
+        const wasPlaying = isPlaying;
+        
+        // Pause current audio if playing
+        if (audioRef.current && isPlaying) {
+            audioRef.current.pause();
+            setIsPlaying(false);
+        }
+        
+        setSelectedMusic(musicId);
+        setIsMusicDropdownOpen(false);
+        
+        // Reset audio context for new track
+        analyserRef.current = null;
+        dataArrayRef.current = null;
+        
+        // If was playing, start new track after a brief delay for the src to update
+        if (wasPlaying) {
+            setTimeout(() => {
+                if (audioRef.current) {
+                    initAudio();
+                    audioRef.current.play();
+                    setIsPlaying(true);
+                }
+            }, 100);
+        }
+    };
+
     const selectedAssetName = ASSETS.find(a => a.id === selectedAsset)?.name || 'Select Asset';
+    const selectedMusicName = MUSIC_ASSETS.find(m => m.id === selectedMusic)?.name || 'Select Music';
+    const selectedMusicPath = MUSIC_ASSETS.find(m => m.id === selectedMusic)?.path || 'assets/test.mp3';
 
     return (
         <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: '#000000', position: 'relative' }}>
@@ -570,7 +609,7 @@ function AudioVisualizer() {
             {/* Audio element - hidden */}
             <audio
                 ref={audioRef}
-                src="assets/test.mp3"
+                src={selectedMusicPath}
                 onEnded={() => setIsPlaying(false)}
                 style={{ display: 'none' }}
             />
@@ -717,6 +756,98 @@ function AudioVisualizer() {
             >
                 {isPlaying ? <Pause size={28} /> : <Play size={28} />}
             </button>
+
+            {/* Music selector dropdown */}
+            <div style={{
+                position: 'fixed',
+                bottom: '20px',
+                left: '100px',
+                zIndex: 1000
+            }}>
+                <button
+                    onClick={() => setIsMusicDropdownOpen(!isMusicDropdownOpen)}
+                    style={{
+                        padding: '12px 20px',
+                        borderRadius: '30px',
+                        border: 'none',
+                        background: 'rgba(255, 255, 255, 0.1)',
+                        backdropFilter: 'blur(10px)',
+                        color: 'white',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        fontSize: '14px',
+                        transition: 'all 0.3s ease',
+                        minWidth: '150px',
+                        justifyContent: 'space-between'
+                    }}
+                    onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.2)';
+                    }}
+                    onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
+                    }}
+                >
+                    <Music size={16} />
+                    <span style={{ flex: 1, textAlign: 'left' }}>{selectedMusicName}</span>
+                    <ChevronDown 
+                        size={18} 
+                        style={{ 
+                            transform: isMusicDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                            transition: 'transform 0.3s ease'
+                        }} 
+                    />
+                </button>
+
+                {isMusicDropdownOpen && (
+                    <div style={{
+                        position: 'absolute',
+                        bottom: '100%',
+                        left: 0,
+                        marginBottom: '8px',
+                        background: 'rgba(30, 30, 30, 0.95)',
+                        backdropFilter: 'blur(10px)',
+                        borderRadius: '12px',
+                        overflow: 'hidden',
+                        minWidth: '150px',
+                        boxShadow: '0 4px 20px rgba(0, 0, 0, 0.5)'
+                    }}>
+                        {MUSIC_ASSETS.map((music) => (
+                            <button
+                                key={music.id}
+                                onClick={() => handleMusicSelect(music.id)}
+                                style={{
+                                    display: 'block',
+                                    width: '100%',
+                                    padding: '12px 20px',
+                                    border: 'none',
+                                    background: selectedMusic === music.id 
+                                        ? 'rgba(255, 255, 255, 0.15)' 
+                                        : 'transparent',
+                                    color: 'white',
+                                    cursor: 'pointer',
+                                    textAlign: 'left',
+                                    fontSize: '14px',
+                                    transition: 'background 0.2s ease'
+                                }}
+                                onMouseEnter={(e) => {
+                                    if (selectedMusic !== music.id) {
+                                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
+                                    }
+                                }}
+                                onMouseLeave={(e) => {
+                                    if (selectedMusic !== music.id) {
+                                        e.currentTarget.style.background = 'transparent';
+                                    }
+                                }}
+                            >
+                                {music.name}
+                            </button>
+                        ))}
+                    </div>
+                )}
+            </div>
         </div>
     );
 }
