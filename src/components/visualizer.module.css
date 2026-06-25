@@ -20,3 +20,271 @@
     opacity: 0;
     transition: opacity 1s ease-out;
 }
+
+/* ---- AudioVisualizer minimal/technical controls ---- */
+/* Two colors: --fg (light) on --bg (near-black), monospace throughout. */
+.av {
+    --fg: #d4d4d4;
+    --bg: #0c0c0c;
+    --line: rgba(212, 212, 212, 0.16);
+    --hover: rgba(212, 212, 212, 0.08);
+    font-family: "SF Mono", ui-monospace, Menlo, Monaco, monospace;
+}
+
+.av_toggle {
+    position: fixed;
+    top: 18px;
+    right: 18px;
+    z-index: 1100;
+    width: 38px;
+    height: 38px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--line);
+    cursor: pointer;
+    transition: opacity 0.4s ease, background 0.2s ease;
+}
+
+.av_toggle:hover {
+    background: var(--hover);
+}
+
+.av_hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.av_visible {
+    opacity: 1;
+}
+
+.av_panel {
+    position: fixed;
+    top: 18px;
+    right: 18px;
+    z-index: 1090;
+    width: 296px;
+    max-height: calc(100vh - 36px);
+    overflow-y: auto;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--line);
+    box-sizing: border-box;
+}
+
+.av_panel::-webkit-scrollbar {
+    width: 6px;
+}
+
+.av_panel::-webkit-scrollbar-thumb {
+    background: var(--line);
+}
+
+.av_head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--line);
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+}
+
+.av_title {
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+}
+
+.av_iconBtn {
+    width: 26px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    color: var(--fg);
+    border: 1px solid var(--line);
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+.av_iconBtn:hover {
+    background: var(--hover);
+}
+
+.av_section {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--line);
+}
+
+.av_sectionTitle {
+    font-size: 9px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    opacity: 0.55;
+    margin-bottom: 10px;
+}
+
+.av_playRow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.av_select {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--line);
+    font-family: inherit;
+    font-size: 12px;
+    padding: 7px 8px;
+    cursor: pointer;
+    outline: none;
+    -webkit-appearance: none;
+    appearance: none;
+}
+
+.av_select:hover {
+    background: var(--hover);
+}
+
+.av_checkRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    font-size: 12px;
+    user-select: none;
+}
+
+.av_switch {
+    width: 34px;
+    height: 18px;
+    border: 1px solid var(--line);
+    position: relative;
+    flex: 0 0 auto;
+    transition: background 0.2s ease;
+}
+
+.av_switchOn {
+    background: var(--fg);
+}
+
+.av_knob {
+    position: absolute;
+    top: 1px;
+    left: 1px;
+    width: 14px;
+    height: 14px;
+    background: var(--fg);
+    transition: transform 0.2s ease, background 0.2s ease;
+}
+
+.av_switchOn .av_knob {
+    transform: translateX(16px);
+    background: var(--bg);
+}
+
+.av_row {
+    display: grid;
+    grid-template-columns: 78px 1fr 52px;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 9px;
+}
+
+.av_row:last-child {
+    margin-bottom: 0;
+}
+
+.av_label {
+    font-size: 11px;
+    opacity: 0.85;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.av_slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 2px;
+    background: var(--line);
+    outline: none;
+    cursor: pointer;
+}
+
+.av_slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 10px;
+    height: 10px;
+    background: var(--fg);
+    cursor: pointer;
+    border: none;
+    border-radius: 0;
+}
+
+.av_slider::-moz-range-thumb {
+    width: 10px;
+    height: 10px;
+    background: var(--fg);
+    border: none;
+    border-radius: 0;
+    cursor: pointer;
+}
+
+.av_num {
+    width: 100%;
+    box-sizing: border-box;
+    background: transparent;
+    color: var(--fg);
+    border: 1px solid var(--line);
+    font-family: inherit;
+    font-size: 11px;
+    padding: 3px 4px;
+    outline: none;
+    text-align: right;
+    -moz-appearance: textfield;
+}
+
+.av_num::-webkit-outer-spin-button,
+.av_num::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.av_num:focus {
+    border-color: var(--fg);
+}
+
+.av_hint {
+    font-size: 9px;
+    line-height: 1.5;
+    opacity: 0.45;
+    letter-spacing: 0.5px;
+}
+
+.av_loading {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 1101;
+    color: var(--fg);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    font-family: "SF Mono", ui-monospace, Menlo, Monaco, monospace;
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    padding: 12px 22px;
+}

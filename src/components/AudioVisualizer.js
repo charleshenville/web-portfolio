@@ -4,11 +4,10 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Play, Pause, ChevronDown, Music } from 'lucide-react';
-
-// Maximum number of points to render (for performance)
-const MAX_POINTS = 150000;
+import { Play, Pause, SlidersHorizontal, X } from 'lucide-react';
+import styles from './visualizer.module.css';
 
 // Available assets
 const ASSETS = [
@@ -24,6 +23,70 @@ const ASSETS = [
 const MUSIC_ASSETS = [
     { id: 'test', name: 'Test Track', path: 'assets/test.mp3' },
     // Add more tracks here: { id: 'unique_id', name: 'Display Name', path: 'assets/filename.mp3' },
+];
+
+// Default values for every menu-configurable parameter.
+const DEFAULT_PARAMS = {
+    // Geometry (changing these rebuilds the point cloud)
+    samples: 30000,
+    radius: 8,
+    jitter: 0.01,
+    pointSize: 0.005,
+    maxPoints: 150000,
+    // Audio reactivity (live)
+    reactivity: 0.5,
+    scatter: 0.002,
+    originX: 0,
+    originY: 0,
+    originZ: 0,
+    // Post processing (live)
+    bloomStrength: 0.5,
+    bloomRadius: 0.6,
+    bloomThreshold: 0.5,
+    haze: 0.7,
+    // Navigation (live)
+    moveSpeed: 20,
+    damping: 0.08,
+};
+
+// Menu layout: grouped sliders. `point` marks parameters tied to a location in space.
+const PARAM_GROUPS = [
+    {
+        title: 'Geometry',
+        params: [
+            { key: 'samples', label: 'Points', min: 1000, max: 150000, step: 1000, sphereOnly: true },
+            { key: 'radius', label: 'Radius', min: 1, max: 20, step: 0.1, sphereOnly: true },
+            { key: 'jitter', label: 'Jitter', min: 0, max: 1, step: 0.001, sphereOnly: true },
+            { key: 'pointSize', label: 'Dot Size', min: 0.001, max: 0.05, step: 0.001 },
+            { key: 'maxPoints', label: 'Max Dots', min: 1000, max: 150000, step: 1000 },
+        ],
+    },
+    {
+        title: 'Audio Reactivity',
+        params: [
+            { key: 'reactivity', label: 'Reactivity', min: 0, max: 3, step: 0.01 },
+            { key: 'scatter', label: 'Scatter', min: 0, max: 1, step: 0.001 },
+            { key: 'originX', label: 'Pulse X', min: -20, max: 20, step: 0.1, point: 'pulse' },
+            { key: 'originY', label: 'Pulse Y', min: -20, max: 20, step: 0.1, point: 'pulse' },
+            { key: 'originZ', label: 'Pulse Z', min: -20, max: 20, step: 0.1, point: 'pulse' },
+        ],
+    },
+    {
+        title: 'Post FX',
+        params: [
+            { key: 'bloomStrength', label: 'Glow', min: 0, max: 3, step: 0.01 },
+            { key: 'bloomRadius', label: 'Glow Spread', min: 0, max: 2, step: 0.01 },
+            { key: 'bloomThreshold', label: 'Glow Floor', min: 0, max: 1, step: 0.01 },
+            { key: 'haze', label: 'Haze', min: 0, max: 2, step: 0.01 },
+        ],
+    },
+    {
+        title: 'Navigation',
+        params: [
+            { key: 'moveSpeed', label: 'Fly Speed', min: 0, max: 100, step: 1 },
+            { key: 'damping', label: 'Damping', min: 0, max: 0.3, step: 0.01 },
+        ],
+    },
 ];
 
 // Custom dream-like haze shader
@@ -59,11 +122,6 @@ const DreamHazeShader = {
             color.r = mix(color.r, r.r, 0.3);
             color.b = mix(color.b, b.b, 0.3);
             
-            // Soft haze/bloom effect
-            // float dist = distance(uv, vec2(0.5));
-            // float haze = smoothstep(0.0, 0.8, dist) * 0.3 * intensity;
-            // color.rgb = mix(color.rgb, vec3(0.8, 0.7, 1.0), haze);
-            
             // Subtle color shift for dreamy atmosphere
             color.rgb *= vec3(1.05, 0.98, 1.1);
             
@@ -72,13 +130,74 @@ const DreamHazeShader = {
     `
 };
 
+// Text field that lets you type freely (decimals, minus sign) while still
+// staying in sync with its slider. Commits only valid numbers.
+function NumberField({ value, min, max, step, disabled, onCommit }) {
+    const [text, setText] = useState(String(value));
+    const [focused, setFocused] = useState(false);
+
+    useEffect(() => {
+        if (!focused) setText(String(value));
+    }, [value, focused]);
+
+    return (
+        <input
+            className={styles.av_num}
+            type="number"
+            min={min}
+            max={max}
+            step={step}
+            disabled={disabled}
+            value={text}
+            onFocus={() => setFocused(true)}
+            onBlur={() => { setFocused(false); setText(String(value)); }}
+            onChange={(e) => {
+                setText(e.target.value);
+                const n = parseFloat(e.target.value);
+                if (!Number.isNaN(n)) onCommit(n);
+            }}
+        />
+    );
+}
+
+function getR(x, y, z) {
+    const r = Math.abs(x) ** 2 + Math.abs(y) ** 2 + Math.abs(z) ** 2;
+    return r ** 0.5;
+}
+
+// Fibonacci sphere generation
+function fibonacciSphere(samples = 1000, radius = 10, randomOffset = 0.1) {
+    const points = [];
+    const phi = Math.PI * (Math.sqrt(5) - 1);
+
+    for (let i = 0; i < samples; i++) {
+        let y = 1 - (i / (samples - 1)) * 2;
+        const r = Math.sqrt(1 - y * y);
+        const theta = phi * i;
+
+        let x = Math.cos(theta) * r;
+        let z = Math.sin(theta) * r;
+
+        x += (Math.random() - 0.5) * randomOffset;
+        y += (Math.random() - 0.5) * randomOffset;
+        z += (Math.random() - 0.5) * randomOffset;
+
+        points.push({ x: x * radius, y: y * radius, z: z * radius });
+    }
+
+    return points;
+}
+
 function AudioVisualizer() {
     const [isPlaying, setIsPlaying] = useState(false);
     const [selectedAsset, setSelectedAsset] = useState('fairview_4a');
-    const [isDropdownOpen, setIsDropdownOpen] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
     const [selectedMusic, setSelectedMusic] = useState('test');
-    const [isMusicDropdownOpen, setIsMusicDropdownOpen] = useState(false);
+    const [params, setParams] = useState(DEFAULT_PARAMS);
+    const [menuOpen, setMenuOpen] = useState(false);
+    const [showHelpers, setShowHelpers] = useState(false);
+    const [cursorActive, setCursorActive] = useState(true);
+
     const audioRef = useRef(null);
     const canvasRef = useRef(null);
     const analyserRef = useRef(null);
@@ -87,85 +206,51 @@ function AudioVisualizer() {
     const cameraRef = useRef(null);
     const rendererRef = useRef(null);
     const composerRef = useRef(null);
+    const controlsRef = useRef(null);
+    const bloomPassRef = useRef(null);
     const dreamHazePassRef = useRef(null);
-    const pointsObjectRef = useRef(null); // Single points object
-    const pointsDataRef = useRef([]); // Store points data for animation
-    const rotationRef = useRef({ x: 0, y: 0 });
-    const isDraggingRef = useRef(false);
-    const previousMousePositionRef = useRef({ x: 0, y: 0 });
+    const pointsObjectRef = useRef(null);
+    const pointsDataRef = useRef([]);
+    const rawPointsRef = useRef(null); // cached PLY points so rebuilds don't re-fetch
     const animationFrameRef = useRef(null);
-    const sphereConfigRef = useRef({
-        samples: 30000,
-        radius: 8,
-        randomOffset: 0.01,
-        pointSize: 0.005
-    });
 
-    function getR(x,y,z) {
-        // let r = Math.abs(x) ** 3 + Math.abs(y) ** 3 + Math.abs(z) ** 3;
-        // return r ** 0.3333333;
+    // Spatial helpers
+    const axesHelperRef = useRef(null);
+    const pulseMarkerRef = useRef(null);
+    const targetMarkerRef = useRef(null);
 
-        let r = Math.abs(x) ** 2 + Math.abs(y) ** 2 + Math.abs(z) ** 2;
-        return r ** 0.5;
+    // Navigation
+    const keysRef = useRef({});
+    const desiredTargetRef = useRef(null);
 
-    }
+    // Mirrors of state for the animation loop / event handlers (avoids stale closures)
+    const paramsRef = useRef(params);
+    const selectedAssetRef = useRef(selectedAsset);
+    const showHelpersRef = useRef(showHelpers);
 
-    // Fibonacci sphere generation
-    function fibonacciSphere(samples = 1000, radius = 10, randomOffset = 0.1) {
-        const points = [];
-        const phi = Math.PI * (Math.sqrt(5) - 1);
+    const hideTimerRef = useRef(null);
 
-        for (let i = 0; i < samples; i++) {
-            let y = 1 - (i / (samples - 1)) * 2;
-            const r = Math.sqrt(1 - y * y);
-            const theta = phi * i;
+    // ---- Point cloud building -------------------------------------------------
 
-            let x = Math.cos(theta) * r;
-            let z = Math.sin(theta) * r;
-
-            x += (Math.random() - 0.5) * randomOffset;
-            y += (Math.random() - 0.5) * randomOffset;
-            z += (Math.random() - 0.5) * randomOffset;
-
-            points.push({
-                x: x * radius,
-                y: y * radius,
-                z: z * radius
-            });
-        }
-
-        return points;
-    }
-
-    // Clear existing points from scene
     const clearPoints = useCallback(() => {
         if (pointsObjectRef.current && sceneRef.current) {
             sceneRef.current.remove(pointsObjectRef.current);
-            if (pointsObjectRef.current.geometry) {
-                pointsObjectRef.current.geometry.dispose();
-            }
-            if (pointsObjectRef.current.material) {
-                pointsObjectRef.current.material.dispose();
-            }
+            if (pointsObjectRef.current.geometry) pointsObjectRef.current.geometry.dispose();
+            if (pointsObjectRef.current.material) pointsObjectRef.current.material.dispose();
             pointsObjectRef.current = null;
         }
         pointsDataRef.current = [];
     }, []);
 
-    // Create points object using InstancedMesh for efficient single draw call
     const createPointsObject = useCallback((pointsData, config) => {
         if (!sceneRef.current) return;
-
-        // Clear existing points first
         clearPoints();
 
-        // Limit points to MAX_POINTS (first shuffle point order and then take the first MAX_POINTS)
         const shuffledPoints = pointsData.sort(() => Math.random() - 0.5);
-        const limitedPoints = shuffledPoints.slice(0, MAX_POINTS);
-        
-        // Check if points have original colors from PLY
+        const limitedPoints = shuffledPoints.slice(0, config.maxPoints);
+
         const hasOriginalColors = limitedPoints.length > 0 && limitedPoints[0].color;
-        
+
         const pointGeometry = new THREE.SphereGeometry(config.pointSize * 1.2, 8, 8);
         const pointMaterial = new THREE.MeshBasicMaterial({
             color: 0xffffff,
@@ -173,7 +258,6 @@ function AudioVisualizer() {
             opacity: 0.95
         });
 
-        // Use InstancedMesh for single draw call
         const instancedMesh = new THREE.InstancedMesh(pointGeometry, pointMaterial, limitedPoints.length);
         const dummy = new THREE.Object3D();
         const colors = new Float32Array(limitedPoints.length * 3);
@@ -185,20 +269,17 @@ function AudioVisualizer() {
 
             let color;
             if (point.color) {
-                // Use original PLY color
                 color = new THREE.Color(point.color.r, point.color.g, point.color.b);
             } else {
-                // Calculate color based on radius (for generated sphere)
                 const r = getR(point.x, point.y, point.z);
-                const hue = (r - (config.radius - config.randomOffset / 2)) / config.randomOffset / 100;
+                const hue = (r - (config.radius - config.jitter / 2)) / config.jitter / 100;
                 color = new THREE.Color().setHSL(hue, 0.7, 0.7);
             }
-            
+
             colors[index * 3] = color.r;
             colors[index * 3 + 1] = color.g;
             colors[index * 3 + 2] = color.b;
 
-            // Store original position and color info in pointsData
             limitedPoints[index] = {
                 ...point,
                 originalPosition: { x: point.x, y: point.y, z: point.z },
@@ -208,21 +289,14 @@ function AudioVisualizer() {
         });
 
         instancedMesh.instanceMatrix.needsUpdate = true;
-        
-        // Store instance colors as attribute
         instancedMesh.instanceColor = new THREE.InstancedBufferAttribute(colors, 3);
-        
-        // Store whether this mesh has original colors (to skip color animation)
         instancedMesh.userData.hasOriginalColors = hasOriginalColors;
-        
+
         sceneRef.current.add(instancedMesh);
         pointsObjectRef.current = instancedMesh;
         pointsDataRef.current = limitedPoints;
-
-        console.log(`Created ${limitedPoints.length} points (limited from ${pointsData.length}), original colors: ${hasOriginalColors}`);
     }, [clearPoints]);
 
-    // Load PLY file and return points data with colors
     const loadPLYFile = useCallback((path) => {
         return new Promise((resolve, reject) => {
             const loader = new PLYLoader();
@@ -230,10 +304,9 @@ function AudioVisualizer() {
                 path,
                 (geometry) => {
                     const positions = geometry.attributes.position;
-                    const colors = geometry.attributes.color; // PLY color attribute
+                    const colors = geometry.attributes.color;
                     const points = [];
-                    
-                    // Calculate bounding box to normalize/scale
+
                     geometry.computeBoundingBox();
                     const bbox = geometry.boundingBox;
                     const center = new THREE.Vector3();
@@ -241,7 +314,7 @@ function AudioVisualizer() {
                     const size = new THREE.Vector3();
                     bbox.getSize(size);
                     const maxDim = Math.max(size.x, size.y, size.z);
-                    const scale = 24 / maxDim; // Scale to fit roughly in view
+                    const scale = 24 / maxDim;
 
                     for (let i = 0; i < positions.count; i++) {
                         const point = {
@@ -249,8 +322,6 @@ function AudioVisualizer() {
                             y: (positions.getY(i) - center.y) * scale,
                             z: (positions.getZ(i) - center.z) * scale
                         };
-                        
-                        // Include original color if available
                         if (colors) {
                             point.color = {
                                 r: colors.getX(i),
@@ -258,141 +329,172 @@ function AudioVisualizer() {
                                 b: colors.getZ(i)
                             };
                         }
-                        
                         points.push(point);
                     }
-                    
-                    console.log(`Loaded PLY with ${points.length} points, colors: ${colors ? 'yes' : 'no'}`);
                     resolve(points);
                 },
-                (progress) => {
-                    console.log('Loading PLY:', (progress.loaded / progress.total * 100).toFixed(1) + '%');
-                },
-                (error) => {
-                    console.error('Error loading PLY:', error);
-                    reject(error);
-                }
+                undefined,
+                (error) => reject(error)
             );
         });
     }, []);
 
-    // Load and create points for selected asset
+    // Rebuild the point object from cached/regenerated raw data (no re-fetch).
+    const buildPoints = useCallback((asset) => {
+        if (!sceneRef.current || !asset) return;
+        const cfg = paramsRef.current;
+        let raw;
+        if (asset.path === null) {
+            raw = fibonacciSphere(cfg.samples, cfg.radius, cfg.jitter);
+        } else {
+            if (!rawPointsRef.current) return;
+            raw = rawPointsRef.current.map((p) => ({ ...p }));
+        }
+        createPointsObject(raw, cfg);
+    }, [createPointsObject]);
+
     const loadAsset = useCallback(async (assetId) => {
-        const asset = ASSETS.find(a => a.id === assetId);
+        const asset = ASSETS.find((a) => a.id === assetId);
         if (!asset) return;
-
         setIsLoading(true);
-
         try {
-            let pointsData;
-            const config = sphereConfigRef.current;
-
             if (asset.path === null) {
-                // Generate fibonacci sphere
-                pointsData = fibonacciSphere(config.samples, config.radius, config.randomOffset);
+                rawPointsRef.current = null;
             } else {
-                // Load PLY file
-                pointsData = await loadPLYFile(asset.path);
+                rawPointsRef.current = await loadPLYFile(asset.path);
             }
-
-            createPointsObject(pointsData, config);
+            buildPoints(asset);
         } catch (error) {
             console.error('Failed to load asset:', error);
         } finally {
             setIsLoading(false);
         }
-    }, [createPointsObject, loadPLYFile]);
+    }, [loadPLYFile, buildPoints]);
 
-    // Initialize Three.js scene (runs once)
+    const rebuildPoints = useCallback(() => {
+        const asset = ASSETS.find((a) => a.id === selectedAssetRef.current);
+        buildPoints(asset);
+    }, [buildPoints]);
+
+    // ---- Scene initialization (runs once) ------------------------------------
+
     useEffect(() => {
         const canvas = canvasRef.current;
-        if (!canvas) {
-            console.log("Canvas not found!");
-            return;
-        }
-        console.log("Canvas found, initializing...");
+        if (!canvas) return;
 
-        // Initialize Three.js
         const scene = new THREE.Scene();
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-        const renderer = new THREE.WebGLRenderer({
-            canvas: canvas,
-            antialias: true
-        });
+        const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
         renderer.setPixelRatio(window.devicePixelRatio);
         renderer.setSize(window.innerWidth, window.innerHeight);
-        camera.position.setZ(30);
+        camera.position.set(0, 0, 30);
 
         sceneRef.current = scene;
         cameraRef.current = camera;
         rendererRef.current = renderer;
 
-        // Set up post-processing pipeline
+        // Orbit controls (rotate / zoom / pan around a target)
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = paramsRef.current.damping;
+        controls.minDistance = 2;
+        controls.maxDistance = 200;
+        controls.target.set(0, 0, 0);
+        controlsRef.current = controls;
+
+        // Post-processing
         const composer = new EffectComposer(renderer);
         composer.setPixelRatio(window.devicePixelRatio);
         composer.setSize(window.innerWidth, window.innerHeight);
 
-        // Render pass - renders the scene
-        const renderPass = new RenderPass(scene, camera);
-        composer.addPass(renderPass);
+        composer.addPass(new RenderPass(scene, camera));
 
-        // Bloom pass for dream-like glow
         const bloomPass = new UnrealBloomPass(
             new THREE.Vector2(window.innerWidth, window.innerHeight),
-            0.5,  // strength - increased for better glow
-            0.6,  // radius - increased for more spread
-            0.5   // threshold - lowered to capture more of the glowing points
+            paramsRef.current.bloomStrength,
+            paramsRef.current.bloomRadius,
+            paramsRef.current.bloomThreshold
         );
         composer.addPass(bloomPass);
 
-        // Custom dream haze pass
         const dreamHazePass = new ShaderPass(DreamHazeShader);
-        dreamHazePass.uniforms.intensity.value = 0.7;
+        dreamHazePass.uniforms.intensity.value = paramsRef.current.haze;
         composer.addPass(dreamHazePass);
 
         composerRef.current = composer;
+        bloomPassRef.current = bloomPass;
         dreamHazePassRef.current = dreamHazePass;
 
-        // Mouse controls
-        const handleMouseDown = (e) => {
-            e.preventDefault();
-            isDraggingRef.current = true;
-            previousMousePositionRef.current = { x: e.clientX, y: e.clientY };
-            canvas.style.cursor = 'grabbing';
+        // Spatial helpers (hidden until toggled)
+        const axes = new THREE.AxesHelper(6);
+        axes.visible = false;
+        scene.add(axes);
+        axesHelperRef.current = axes;
+
+        const pulseMarker = new THREE.Mesh(
+            new THREE.SphereGeometry(0.35, 16, 12),
+            new THREE.MeshBasicMaterial({ color: 0xd4d4d4, wireframe: true })
+        );
+        pulseMarker.visible = false;
+        scene.add(pulseMarker);
+        pulseMarkerRef.current = pulseMarker;
+
+        const targetMarker = new THREE.Mesh(
+            new THREE.BoxGeometry(0.5, 0.5, 0.5),
+            new THREE.MeshBasicMaterial({ color: 0xd4d4d4, wireframe: true })
+        );
+        targetMarker.visible = false;
+        scene.add(targetMarker);
+        targetMarkerRef.current = targetMarker;
+
+        // Click (not drag) to set a new orbit focus point.
+        const raycaster = new THREE.Raycaster();
+        const ndc = new THREE.Vector2();
+        const pointerDown = { x: 0, y: 0, t: 0 };
+
+        const onPointerDown = (e) => {
+            pointerDown.x = e.clientX;
+            pointerDown.y = e.clientY;
+            pointerDown.t = Date.now();
         };
 
-        const handleMouseMove = (e) => {
-            if (isDraggingRef.current) {
-                const deltaX = e.clientX - previousMousePositionRef.current.x;
-                const deltaY = e.clientY - previousMousePositionRef.current.y;
+        const onPointerUp = (e) => {
+            const moved = Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y);
+            const elapsed = Date.now() - pointerDown.t;
+            if (moved > 5 || elapsed > 300) return; // it was a drag, not a click
 
-                rotationRef.current.y += deltaX * 0.005;
-                rotationRef.current.x += deltaY * 0.005;
+            const rect = canvas.getBoundingClientRect();
+            ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+            ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+            raycaster.setFromCamera(ndc, camera);
 
-                previousMousePositionRef.current = { x: e.clientX, y: e.clientY };
+            let focus = null;
+            if (pointsObjectRef.current) {
+                const hits = raycaster.intersectObject(pointsObjectRef.current, false);
+                if (hits.length > 0) focus = hits[0].point.clone();
             }
+            if (!focus) {
+                // Fallback: point along the ray at the current orbit distance.
+                const dist = camera.position.distanceTo(controls.target);
+                focus = raycaster.ray.origin.clone().add(raycaster.ray.direction.clone().multiplyScalar(dist));
+            }
+            desiredTargetRef.current = focus;
         };
 
-        const handleMouseUp = () => {
-            isDraggingRef.current = false;
-            canvas.style.cursor = 'grab';
+        canvas.addEventListener('pointerdown', onPointerDown);
+        canvas.addEventListener('pointerup', onPointerUp);
+
+        // Keyboard fly controls (WASD + space / shift)
+        const onKeyDown = (e) => {
+            const tag = e.target && e.target.tagName;
+            if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+            keysRef.current[e.code] = true;
+            if (e.code === 'Space') e.preventDefault();
         };
+        const onKeyUp = (e) => { keysRef.current[e.code] = false; };
+        window.addEventListener('keydown', onKeyDown);
+        window.addEventListener('keyup', onKeyUp);
 
-        const handleWheel = (e) => {
-            e.preventDefault();
-            camera.position.z += e.deltaY * 0.01;
-            camera.position.z = Math.max(10, Math.min(100, camera.position.z));
-        };
-
-        canvas.addEventListener('mousedown', handleMouseDown);
-        canvas.addEventListener('mousemove', handleMouseMove);
-        canvas.addEventListener('mouseup', handleMouseUp);
-        canvas.addEventListener('mouseleave', handleMouseUp);
-        canvas.addEventListener('wheel', handleWheel, { passive: false });
-        
-        console.log("Event listeners attached to canvas");
-
-        // Window resize
         const handleResize = () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
@@ -401,18 +503,54 @@ function AudioVisualizer() {
             composer.setPixelRatio(window.devicePixelRatio);
             composer.setSize(window.innerWidth, window.innerHeight);
         };
-
         window.addEventListener('resize', handleResize);
 
         // Animation loop
         const dummy = new THREE.Object3D();
-        const config = sphereConfigRef.current;
+        const clock = new THREE.Clock();
+        const forward = new THREE.Vector3();
+        const right = new THREE.Vector3();
+        const move = new THREE.Vector3();
 
         const animate = () => {
             const time = Date.now() * 0.001;
-            const rotation = rotationRef.current;
+            const dt = clock.getDelta();
+            const cfg = paramsRef.current;
 
-            // Get frequency data if available
+            // --- Keyboard fly movement ---
+            const keys = keysRef.current;
+            const moving = keys.KeyW || keys.KeyS || keys.KeyA || keys.KeyD ||
+                keys.Space || keys.ShiftLeft || keys.ShiftRight;
+            if (moving) {
+                camera.getWorldDirection(forward);
+                forward.normalize();
+                right.crossVectors(forward, camera.up).normalize();
+                move.set(0, 0, 0);
+                if (keys.KeyW) move.add(forward);
+                if (keys.KeyS) move.sub(forward);
+                if (keys.KeyD) move.add(right);
+                if (keys.KeyA) move.sub(right);
+                if (keys.Space) move.add(camera.up);
+                if (keys.ShiftLeft || keys.ShiftRight) move.sub(camera.up);
+                if (move.lengthSq() > 0) {
+                    move.normalize().multiplyScalar(cfg.moveSpeed * dt);
+                    camera.position.add(move);
+                    controls.target.add(move);
+                    desiredTargetRef.current = null; // cancel focus glide on manual move
+                }
+            }
+
+            // --- Glide toward a clicked focus point ---
+            if (desiredTargetRef.current) {
+                controls.target.lerp(desiredTargetRef.current, 0.12);
+                if (controls.target.distanceTo(desiredTargetRef.current) < 0.01) {
+                    desiredTargetRef.current = null;
+                }
+            }
+
+            controls.update();
+
+            // --- Audio data ---
             let frequencyData = null;
             if (analyserRef.current && dataArrayRef.current) {
                 analyserRef.current.getByteFrequencyData(dataArrayRef.current);
@@ -425,50 +563,29 @@ function AudioVisualizer() {
             if (instancedMesh && pointsData.length > 0) {
                 const colors = instancedMesh.instanceColor ? instancedMesh.instanceColor.array : null;
                 const hasOriginalColors = instancedMesh.userData.hasOriginalColors;
+                const ox = cfg.originX, oy = cfg.originY, oz = cfg.originZ;
 
                 pointsData.forEach((point, index) => {
-                    const originalPos = point.originalPosition;
+                    const o = point.originalPosition;
+                    let fx = o.x, fy = o.y, fz = o.z;
 
-                    // Apply rotation from orbit controls
-                    const rotatedX = originalPos.x * Math.cos(rotation.y) - originalPos.z * Math.sin(rotation.y);
-                    const rotatedZ = originalPos.x * Math.sin(rotation.y) + originalPos.z * Math.cos(rotation.y);
-                    const rotatedY = originalPos.y * Math.cos(rotation.x) - rotatedZ * Math.sin(rotation.x);
-                    const finalZ = originalPos.y * Math.sin(rotation.x) + rotatedZ * Math.cos(rotation.x);
-
-                    let finalX = rotatedX;
-                    let finalY = rotatedY;
-                    let finalZPos = finalZ;
-
-                    // Audio-reactive animation
                     if (frequencyData) {
-                        // Map point index to frequency bin
                         const freqIndex = Math.floor((Math.abs(pointsData.length / 2 - index) / pointsData.length / 16) * frequencyData.length);
-                        const frequency = frequencyData[freqIndex] / 255; // Normalize to 0-1
+                        const frequency = frequencyData[freqIndex] / 255;
+                        const randomFactor = 0.5 + (Math.random() - 0.5) * cfg.scatter;
+                        const scale = 1 + cfg.reactivity * (frequency * randomFactor);
 
-                        // Scale points based on frequency
-                        const baseScale = 0.5; // make menu-configurable
-                        const randomness = 0.002; // make menu-configurable
-                        const randomFactor = 0.5 + (Math.random() - 0.5) * randomness;
-                        const scale = 1 + baseScale * (frequency * randomFactor);
-                        const virtualOriginX = 0; // make menu-configurable
-                        const virtualOriginY = 0; // make menu-configurable
-                        const virtualOriginZ = 0; // make menu-configurable
-                        const distance = Math.sqrt((rotatedX - virtualOriginX) * (rotatedX - virtualOriginX) + (rotatedY - virtualOriginY) * (rotatedY - virtualOriginY) + (finalZ - virtualOriginZ) * (finalZ - virtualOriginZ));
-                        
-                        if (distance > 0) {
-                            const normalizedX = (rotatedX - virtualOriginX) / distance;
-                            const normalizedY = (rotatedY - virtualOriginY) / distance;
-                            const normalizedZ = (finalZ - virtualOriginZ) / distance;
-
-                            finalX = virtualOriginX + normalizedX * distance * scale;
-                            finalY = virtualOriginY + normalizedY * distance * scale;
-                            finalZPos = virtualOriginZ + normalizedZ * distance * scale;
+                        const dx = o.x - ox, dy = o.y - oy, dz = o.z - oz;
+                        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                        if (dist > 0) {
+                            fx = ox + dx * scale;
+                            fy = oy + dy * scale;
+                            fz = oz + dz * scale;
                         }
 
-                        // Color animation based on radius - only for generated points (not PLY with colors)
                         if (colors && !hasOriginalColors) {
-                            const r = getR(finalX, finalY, finalZPos);
-                            const hue = (r - (config.radius - config.randomOffset / 2)) / config.randomOffset / 100;
+                            const r = getR(fx, fy, fz);
+                            const hue = (r - (cfg.radius - cfg.jitter / 2)) / cfg.jitter / 100;
                             const pointColor = new THREE.Color().setHSL(hue, 0.7, 0.6);
                             colors[index * 3] = pointColor.r;
                             colors[index * 3 + 1] = pointColor.g;
@@ -476,8 +593,7 @@ function AudioVisualizer() {
                         }
                     }
 
-                    // Update instance matrix
-                    dummy.position.set(finalX, finalY, finalZPos);
+                    dummy.position.set(fx, fy, fz);
                     dummy.updateMatrix();
                     instancedMesh.setMatrixAt(index, dummy.matrix);
                 });
@@ -488,103 +604,117 @@ function AudioVisualizer() {
                 }
             }
 
-            // Auto-rotation
-            // rotationRef.current.y += 0.001;
+            // --- Helper markers ---
+            if (showHelpersRef.current) {
+                if (pulseMarkerRef.current) pulseMarkerRef.current.position.set(cfg.originX, cfg.originY, cfg.originZ);
+                if (targetMarkerRef.current) targetMarkerRef.current.position.copy(controls.target);
+            }
 
-            // Update dream haze shader time for subtle animation
             if (dreamHazePassRef.current) {
                 dreamHazePassRef.current.uniforms.time.value = time;
             }
-
-            // Render with post-processing
-            if (composerRef.current) {
-                composerRef.current.render();
-            }
+            if (composerRef.current) composerRef.current.render();
 
             animationFrameRef.current = requestAnimationFrame(animate);
         };
 
         animate();
 
-        // Cleanup
         return () => {
-            if (animationFrameRef.current) {
-                cancelAnimationFrame(animationFrameRef.current);
-            }
-            canvas.removeEventListener('mousedown', handleMouseDown);
-            canvas.removeEventListener('mousemove', handleMouseMove);
-            canvas.removeEventListener('mouseup', handleMouseUp);
-            canvas.removeEventListener('mouseleave', handleMouseUp);
-            canvas.removeEventListener('wheel', handleWheel);
+            if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+            canvas.removeEventListener('pointerdown', onPointerDown);
+            canvas.removeEventListener('pointerup', onPointerUp);
+            window.removeEventListener('keydown', onKeyDown);
+            window.removeEventListener('keyup', onKeyUp);
             window.removeEventListener('resize', handleResize);
-
+            controls.dispose();
             clearPoints();
         };
     }, [clearPoints]);
 
-    // Load asset when selectedAsset changes
+    // Load asset whenever the selection changes.
     useEffect(() => {
-        if (sceneRef.current) {
-            loadAsset(selectedAsset);
-        }
+        selectedAssetRef.current = selectedAsset;
+        if (sceneRef.current) loadAsset(selectedAsset);
     }, [selectedAsset, loadAsset]);
 
-    // Initialize audio context and analyser
+    // Push live params to three.js objects + keep the loop's ref in sync.
+    useEffect(() => {
+        paramsRef.current = params;
+        if (bloomPassRef.current) {
+            bloomPassRef.current.strength = params.bloomStrength;
+            bloomPassRef.current.radius = params.bloomRadius;
+            bloomPassRef.current.threshold = params.bloomThreshold;
+        }
+        if (dreamHazePassRef.current) dreamHazePassRef.current.uniforms.intensity.value = params.haze;
+        if (controlsRef.current) controlsRef.current.dampingFactor = params.damping;
+    }, [params]);
+
+    // Rebuild the point cloud (debounced) when geometry params change.
+    useEffect(() => {
+        if (!sceneRef.current) return;
+        const t = setTimeout(() => rebuildPoints(), 140);
+        return () => clearTimeout(t);
+    }, [params.samples, params.radius, params.jitter, params.pointSize, params.maxPoints, rebuildPoints]);
+
+    // Toggle helper visibility.
+    useEffect(() => {
+        showHelpersRef.current = showHelpers;
+        if (axesHelperRef.current) axesHelperRef.current.visible = showHelpers;
+        if (pulseMarkerRef.current) pulseMarkerRef.current.visible = showHelpers;
+        if (targetMarkerRef.current) targetMarkerRef.current.visible = showHelpers;
+    }, [showHelpers]);
+
+    // Reveal the menu toggle on cursor movement; hide after inactivity.
+    useEffect(() => {
+        const onMove = () => {
+            setCursorActive(true);
+            clearTimeout(hideTimerRef.current);
+            hideTimerRef.current = setTimeout(() => setCursorActive(false), 2500);
+        };
+        window.addEventListener('mousemove', onMove);
+        hideTimerRef.current = setTimeout(() => setCursorActive(false), 2500);
+        return () => {
+            window.removeEventListener('mousemove', onMove);
+            clearTimeout(hideTimerRef.current);
+        };
+    }, []);
+
+    // ---- Audio ---------------------------------------------------------------
+
     const initAudio = () => {
         if (!audioRef.current || analyserRef.current) return;
-
         const audioContext = new (window.AudioContext || window.webkitAudioContext)();
         const analyser = audioContext.createAnalyser();
         analyser.fftSize = 2048;
-
         const source = audioContext.createMediaElementSource(audioRef.current);
         source.connect(analyser);
         analyser.connect(audioContext.destination);
-
-        const bufferLength = analyser.frequencyBinCount;
-        const dataArray = new Uint8Array(bufferLength);
-
         analyserRef.current = analyser;
-        dataArrayRef.current = dataArray;
+        dataArrayRef.current = new Uint8Array(analyser.frequencyBinCount);
     };
 
     const togglePlay = () => {
         if (!audioRef.current) return;
-
         if (isPlaying) {
             audioRef.current.pause();
             setIsPlaying(false);
         } else {
-            if (!analyserRef.current) {
-                initAudio();
-            }
+            if (!analyserRef.current) initAudio();
             audioRef.current.play();
             setIsPlaying(true);
         }
     };
 
-    const handleAssetSelect = (assetId) => {
-        setSelectedAsset(assetId);
-        setIsDropdownOpen(false);
-    };
-
     const handleMusicSelect = (musicId) => {
         const wasPlaying = isPlaying;
-        
-        // Pause current audio if playing
         if (audioRef.current && isPlaying) {
             audioRef.current.pause();
             setIsPlaying(false);
         }
-        
         setSelectedMusic(musicId);
-        setIsMusicDropdownOpen(false);
-        
-        // Reset audio context for new track
         analyserRef.current = null;
         dataArrayRef.current = null;
-        
-        // If was playing, start new track after a brief delay for the src to update
         if (wasPlaying) {
             setTimeout(() => {
                 if (audioRef.current) {
@@ -596,25 +726,66 @@ function AudioVisualizer() {
         }
     };
 
-    const selectedAssetName = ASSETS.find(a => a.id === selectedAsset)?.name || 'Select Asset';
-    const selectedMusicName = MUSIC_ASSETS.find(m => m.id === selectedMusic)?.name || 'Select Music';
-    const selectedMusicPath = MUSIC_ASSETS.find(m => m.id === selectedMusic)?.path || 'assets/test.mp3';
+    // ---- Param handling ------------------------------------------------------
+
+    const updateParam = (key, value) => {
+        if (Number.isNaN(value)) return;
+        setParams((prev) => ({ ...prev, [key]: value }));
+    };
+
+    const resetParams = () => setParams(DEFAULT_PARAMS);
+
+    const selectedMusicPath = MUSIC_ASSETS.find((m) => m.id === selectedMusic)?.path || 'assets/test.mp3';
+    const currentAsset = ASSETS.find((a) => a.id === selectedAsset);
+    const isSphere = currentAsset?.path === null;
+
+    const renderRow = (def) => {
+        const disabled = def.sphereOnly && !isSphere;
+        const value = params[def.key];
+        return (
+            <div className={styles.av_row} key={def.key} style={disabled ? { opacity: 0.35 } : undefined}>
+                <span className={styles.av_label} title={def.label}>
+                    {def.point ? `◇ ${def.label}` : def.label}
+                </span>
+                <input
+                    className={styles.av_slider}
+                    type="range"
+                    min={def.min}
+                    max={def.max}
+                    step={def.step}
+                    value={value}
+                    disabled={disabled}
+                    onChange={(e) => updateParam(def.key, parseFloat(e.target.value))}
+                />
+                <NumberField
+                    value={value}
+                    min={def.min}
+                    max={def.max}
+                    step={def.step}
+                    disabled={disabled}
+                    onCommit={(n) => updateParam(def.key, n)}
+                />
+            </div>
+        );
+    };
 
     return (
-        <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: '#000000', position: 'relative' }}>
-            <canvas ref={canvasRef} style={{ 
-                display: 'block', 
-                position: 'absolute', 
-                top: 0, 
-                left: 0, 
-                width: '100%', 
-                height: '100%',
-                touchAction: 'none',
-                cursor: 'grab',
-                zIndex: 2
-            }} />
-            
-            {/* Audio element - hidden */}
+        <div className={styles.av} style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: '#000', position: 'relative' }}>
+            <canvas
+                ref={canvasRef}
+                style={{
+                    display: 'block',
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    height: '100%',
+                    touchAction: 'none',
+                    cursor: 'grab',
+                    zIndex: 2
+                }}
+            />
+
             <audio
                 ref={audioRef}
                 src={selectedMusicPath}
@@ -622,240 +793,112 @@ function AudioVisualizer() {
                 style={{ display: 'none' }}
             />
 
-            {/* Loading indicator */}
-            {isLoading && (
-                <div style={{
-                    position: 'fixed',
-                    top: '50%',
-                    left: '50%',
-                    transform: 'translate(-50%, -50%)',
-                    color: 'white',
-                    fontSize: '18px',
-                    zIndex: 1001,
-                    background: 'rgba(0, 0, 0, 0.7)',
-                    padding: '20px 40px',
-                    borderRadius: '10px',
-                    backdropFilter: 'blur(10px)'
-                }}>
-                    Loading...
-                </div>
+            {isLoading && <div className={styles.av_loading}>Loading</div>}
+
+            {/* Menu reveal button (auto-hides when the cursor is idle) */}
+            {!menuOpen && (
+                <button
+                    type="button"
+                    aria-label="Open controls"
+                    onClick={() => setMenuOpen(true)}
+                    className={`${styles.av_toggle} ${cursorActive ? styles.av_visible : styles.av_hidden}`}
+                >
+                    <SlidersHorizontal size={18} />
+                </button>
             )}
 
-            {/* Asset selector dropdown */}
-            <div style={{
-                position: 'fixed',
-                bottom: '20px',
-                right: '20px',
-                zIndex: 1000
-            }}>
-                <button
-                    onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-                    style={{
-                        padding: '12px 20px',
-                        borderRadius: '30px',
-                        border: 'none',
-                        background: 'rgba(255, 255, 255, 0.1)',
-                        backdropFilter: 'blur(10px)',
-                        color: 'white',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        fontSize: '14px',
-                        transition: 'all 0.3s ease',
-                        minWidth: '150px',
-                        justifyContent: 'space-between'
-                    }}
-                    onMouseEnter={(e) => {
-                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.2)';
-                    }}
-                    onMouseLeave={(e) => {
-                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
-                    }}
-                >
-                    <span>{selectedAssetName}</span>
-                    <ChevronDown 
-                        size={18} 
-                        style={{ 
-                            transform: isDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
-                            transition: 'transform 0.3s ease'
-                        }} 
-                    />
-                </button>
-
-                {isDropdownOpen && (
-                    <div style={{
-                        position: 'absolute',
-                        bottom: '100%',
-                        right: 0,
-                        marginBottom: '8px',
-                        background: 'rgba(30, 30, 30, 0.95)',
-                        backdropFilter: 'blur(10px)',
-                        borderRadius: '12px',
-                        overflow: 'hidden',
-                        minWidth: '150px',
-                        boxShadow: '0 4px 20px rgba(0, 0, 0, 0.5)'
-                    }}>
-                        {ASSETS.map((asset) => (
-                            <button
-                                key={asset.id}
-                                onClick={() => handleAssetSelect(asset.id)}
-                                style={{
-                                    display: 'block',
-                                    width: '100%',
-                                    padding: '12px 20px',
-                                    border: 'none',
-                                    background: selectedAsset === asset.id 
-                                        ? 'rgba(255, 255, 255, 0.15)' 
-                                        : 'transparent',
-                                    color: 'white',
-                                    cursor: 'pointer',
-                                    textAlign: 'left',
-                                    fontSize: '14px',
-                                    transition: 'background 0.2s ease'
-                                }}
-                                onMouseEnter={(e) => {
-                                    if (selectedAsset !== asset.id) {
-                                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
-                                    }
-                                }}
-                                onMouseLeave={(e) => {
-                                    if (selectedAsset !== asset.id) {
-                                        e.currentTarget.style.background = 'transparent';
-                                    }
-                                }}
-                            >
-                                {asset.name}
-                            </button>
-                        ))}
+            {/* Control panel */}
+            {menuOpen && (
+                <div className={styles.av_panel}>
+                    <div className={styles.av_head}>
+                        <span className={styles.av_title}>Visualizer</span>
+                        <button
+                            type="button"
+                            aria-label="Close controls"
+                            className={styles.av_iconBtn}
+                            onClick={() => setMenuOpen(false)}
+                        >
+                            <X size={16} />
+                        </button>
                     </div>
-                )}
-            </div>
 
-            {/* Play/Pause button */}
-            <button
-                onClick={togglePlay}
-                style={{
-                    position: 'fixed',
-                    bottom: '20px',
-                    left: '20px',
-                    width: '60px',
-                    height: '60px',
-                    borderRadius: '50%',
-                    border: 'none',
-                    background: 'rgba(255, 255, 255, 0.1)',
-                    backdropFilter: 'blur(10px)',
-                    color: 'white',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    transition: 'all 0.3s ease',
-                    zIndex: 1000
-                }}
-                onMouseEnter={(e) => {
-                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.2)';
-                    e.currentTarget.style.transform = 'scale(1.1)';
-                }}
-                onMouseLeave={(e) => {
-                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
-                    e.currentTarget.style.transform = 'scale(1)';
-                }}
-            >
-                {isPlaying ? <Pause size={28} /> : <Play size={28} />}
-            </button>
-
-            {/* Music selector dropdown */}
-            <div style={{
-                position: 'fixed',
-                bottom: '20px',
-                left: '100px',
-                zIndex: 1000
-            }}>
-                <button
-                    onClick={() => setIsMusicDropdownOpen(!isMusicDropdownOpen)}
-                    style={{
-                        padding: '12px 20px',
-                        borderRadius: '30px',
-                        border: 'none',
-                        background: 'rgba(255, 255, 255, 0.1)',
-                        backdropFilter: 'blur(10px)',
-                        color: 'white',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        fontSize: '14px',
-                        transition: 'all 0.3s ease',
-                        minWidth: '150px',
-                        justifyContent: 'space-between'
-                    }}
-                    onMouseEnter={(e) => {
-                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.2)';
-                    }}
-                    onMouseLeave={(e) => {
-                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
-                    }}
-                >
-                    <Music size={16} />
-                    <span style={{ flex: 1, textAlign: 'left' }}>{selectedMusicName}</span>
-                    <ChevronDown 
-                        size={18} 
-                        style={{ 
-                            transform: isMusicDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
-                            transition: 'transform 0.3s ease'
-                        }} 
-                    />
-                </button>
-
-                {isMusicDropdownOpen && (
-                    <div style={{
-                        position: 'absolute',
-                        bottom: '100%',
-                        left: 0,
-                        marginBottom: '8px',
-                        background: 'rgba(30, 30, 30, 0.95)',
-                        backdropFilter: 'blur(10px)',
-                        borderRadius: '12px',
-                        overflow: 'hidden',
-                        minWidth: '150px',
-                        boxShadow: '0 4px 20px rgba(0, 0, 0, 0.5)'
-                    }}>
-                        {MUSIC_ASSETS.map((music) => (
+                    {/* Playback */}
+                    <div className={styles.av_section}>
+                        <div className={styles.av_sectionTitle}>Playback</div>
+                        <div className={styles.av_playRow}>
                             <button
-                                key={music.id}
-                                onClick={() => handleMusicSelect(music.id)}
-                                style={{
-                                    display: 'block',
-                                    width: '100%',
-                                    padding: '12px 20px',
-                                    border: 'none',
-                                    background: selectedMusic === music.id 
-                                        ? 'rgba(255, 255, 255, 0.15)' 
-                                        : 'transparent',
-                                    color: 'white',
-                                    cursor: 'pointer',
-                                    textAlign: 'left',
-                                    fontSize: '14px',
-                                    transition: 'background 0.2s ease'
-                                }}
-                                onMouseEnter={(e) => {
-                                    if (selectedMusic !== music.id) {
-                                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
-                                    }
-                                }}
-                                onMouseLeave={(e) => {
-                                    if (selectedMusic !== music.id) {
-                                        e.currentTarget.style.background = 'transparent';
-                                    }
-                                }}
+                                type="button"
+                                aria-label={isPlaying ? 'Pause' : 'Play'}
+                                className={styles.av_iconBtn}
+                                onClick={togglePlay}
+                                style={{ width: 34, height: 34, flex: '0 0 auto' }}
                             >
-                                {music.name}
+                                {isPlaying ? <Pause size={16} /> : <Play size={16} />}
                             </button>
-                        ))}
+                            <select
+                                className={styles.av_select}
+                                value={selectedMusic}
+                                onChange={(e) => handleMusicSelect(e.target.value)}
+                            >
+                                {MUSIC_ASSETS.map((m) => (
+                                    <option key={m.id} value={m.id}>{m.name}</option>
+                                ))}
+                            </select>
+                        </div>
                     </div>
-                )}
-            </div>
+
+                    {/* Scene */}
+                    <div className={styles.av_section}>
+                        <div className={styles.av_sectionTitle}>Scene</div>
+                        <select
+                            className={styles.av_select}
+                            value={selectedAsset}
+                            onChange={(e) => setSelectedAsset(e.target.value)}
+                            style={{ marginBottom: 10 }}
+                        >
+                            {ASSETS.map((a) => (
+                                <option key={a.id} value={a.id}>{a.name}</option>
+                            ))}
+                        </select>
+                        <div
+                            className={styles.av_checkRow}
+                            onClick={() => setShowHelpers((v) => !v)}
+                            role="button"
+                            tabIndex={0}
+                            onKeyDown={(e) => { if (e.key === 'Enter') setShowHelpers((v) => !v); }}
+                        >
+                            <span>Show Helpers</span>
+                            <span className={`${styles.av_switch} ${showHelpers ? styles.av_switchOn : ''}`}>
+                                <span className={styles.av_knob} />
+                            </span>
+                        </div>
+                    </div>
+
+                    {/* Parameter groups */}
+                    {PARAM_GROUPS.map((group) => (
+                        <div className={styles.av_section} key={group.title}>
+                            <div className={styles.av_sectionTitle}>{group.title}</div>
+                            {group.params.map(renderRow)}
+                        </div>
+                    ))}
+
+                    {/* Footer */}
+                    <div className={styles.av_section} style={{ borderBottom: 'none' }}>
+                        <button
+                            type="button"
+                            className={styles.av_select}
+                            onClick={resetParams}
+                            style={{ textAlign: 'center', cursor: 'pointer' }}
+                        >
+                            Reset Defaults
+                        </button>
+                        <div className={styles.av_hint} style={{ marginTop: 10 }}>
+                            Drag to orbit · Scroll to zoom · Click a point to refocus<br />
+                            WASD to fly · Space / Shift up &amp; down · ◇ = point in space
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
