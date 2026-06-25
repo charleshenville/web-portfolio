@@ -8,13 +8,15 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Play, Pause, ChevronDown, Music } from 'lucide-react';
 
 // Maximum number of points to render (for performance)
-const MAX_POINTS = 50000;
+const MAX_POINTS = 150000;
 
 // Available assets
 const ASSETS = [
     { id: 'sphere', name: 'Default Sphere', path: null },
     { id: 'point_cloud', name: 'Point Cloud', path: 'assets/point_cloud.ply' },
-    { id: 'peppermint', name: 'Pepper', path: 'assets/pepper.ply' },
+    { id: 'pepper', name: 'Pepper', path: 'assets/pepper.ply' },
+    { id: 'fairview_4a', name: 'Fairview 4A', path: 'assets/fairview_4a.ply' },
+    { id: 'fairview_2b', name: 'Fairview 2B', path: 'assets/fairview_2b.ply' },
     { id: 'snow', name: 'Snow', path: 'assets/snow.ply' },
 ];
 
@@ -72,7 +74,7 @@ const DreamHazeShader = {
 
 function AudioVisualizer() {
     const [isPlaying, setIsPlaying] = useState(false);
-    const [selectedAsset, setSelectedAsset] = useState('sphere');
+    const [selectedAsset, setSelectedAsset] = useState('fairview_4a');
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
     const [selectedMusic, setSelectedMusic] = useState('test');
@@ -93,10 +95,10 @@ function AudioVisualizer() {
     const previousMousePositionRef = useRef({ x: 0, y: 0 });
     const animationFrameRef = useRef(null);
     const sphereConfigRef = useRef({
-        samples: 10000,
-        radius: 12,
-        randomOffset: 0.1,
-        pointSize: 0.02
+        samples: 30000,
+        radius: 8,
+        randomOffset: 0.01,
+        pointSize: 0.005
     });
 
     function getR(x,y,z) {
@@ -157,8 +159,9 @@ function AudioVisualizer() {
         // Clear existing points first
         clearPoints();
 
-        // Limit points to MAX_POINTS
-        const limitedPoints = pointsData.slice(0, MAX_POINTS);
+        // Limit points to MAX_POINTS (first shuffle point order and then take the first MAX_POINTS)
+        const shuffledPoints = pointsData.sort(() => Math.random() - 0.5);
+        const limitedPoints = shuffledPoints.slice(0, MAX_POINTS);
         
         // Check if points have original colors from PLY
         const hasOriginalColors = limitedPoints.length > 0 && limitedPoints[0].color;
@@ -336,7 +339,7 @@ function AudioVisualizer() {
         // Bloom pass for dream-like glow
         const bloomPass = new UnrealBloomPass(
             new THREE.Vector2(window.innerWidth, window.innerHeight),
-            2.0,  // strength - increased for better glow
+            0.5,  // strength - increased for better glow
             0.6,  // radius - increased for more spread
             0.5   // threshold - lowered to capture more of the glowing points
         );
@@ -344,7 +347,7 @@ function AudioVisualizer() {
 
         // Custom dream haze pass
         const dreamHazePass = new ShaderPass(DreamHazeShader);
-        dreamHazePass.uniforms.intensity.value = 0.6;
+        dreamHazePass.uniforms.intensity.value = 0.7;
         composer.addPass(dreamHazePass);
 
         composerRef.current = composer;
@@ -443,18 +446,23 @@ function AudioVisualizer() {
                         const frequency = frequencyData[freqIndex] / 255; // Normalize to 0-1
 
                         // Scale points based on frequency
-                        const randomFactor = (Math.random() - 0.5) * 0.2;
-                        const scale = 1 + frequency * (0.5 + randomFactor);
-                        const distance = Math.sqrt(rotatedX * rotatedX + rotatedY * rotatedY + finalZ * finalZ);
+                        const baseScale = 0.5; // make menu-configurable
+                        const randomness = 0.002; // make menu-configurable
+                        const randomFactor = 0.5 + (Math.random() - 0.5) * randomness;
+                        const scale = 1 + baseScale * (frequency * randomFactor);
+                        const virtualOriginX = 0; // make menu-configurable
+                        const virtualOriginY = 0; // make menu-configurable
+                        const virtualOriginZ = 0; // make menu-configurable
+                        const distance = Math.sqrt((rotatedX - virtualOriginX) * (rotatedX - virtualOriginX) + (rotatedY - virtualOriginY) * (rotatedY - virtualOriginY) + (finalZ - virtualOriginZ) * (finalZ - virtualOriginZ));
                         
                         if (distance > 0) {
-                            const normalizedX = rotatedX / distance;
-                            const normalizedY = rotatedY / distance;
-                            const normalizedZ = finalZ / distance;
+                            const normalizedX = (rotatedX - virtualOriginX) / distance;
+                            const normalizedY = (rotatedY - virtualOriginY) / distance;
+                            const normalizedZ = (finalZ - virtualOriginZ) / distance;
 
-                            finalX = normalizedX * distance * scale;
-                            finalY = normalizedY * distance * scale;
-                            finalZPos = normalizedZ * distance * scale;
+                            finalX = virtualOriginX + normalizedX * distance * scale;
+                            finalY = virtualOriginY + normalizedY * distance * scale;
+                            finalZPos = virtualOriginZ + normalizedZ * distance * scale;
                         }
 
                         // Color animation based on radius - only for generated points (not PLY with colors)
@@ -481,7 +489,7 @@ function AudioVisualizer() {
             }
 
             // Auto-rotation
-            rotationRef.current.y += 0.001;
+            // rotationRef.current.y += 0.001;
 
             // Update dream haze shader time for subtle animation
             if (dreamHazePassRef.current) {
