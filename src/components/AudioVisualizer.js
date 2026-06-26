@@ -54,7 +54,7 @@ const PARAM_GROUPS = [
     {
         title: 'Geometry',
         params: [
-            { key: 'samples', label: 'Points', min: 1000, max: 150000, step: 1000, sphereOnly: true },
+            { key: 'samples', label: 'Points', min: 1000, max: 300000, step: 1000, sphereOnly: true },
             { key: 'radius', label: 'Radius', min: 1, max: 20, step: 0.1, sphereOnly: true },
             { key: 'jitter', label: 'Jitter', min: 0, max: 1, step: 0.001, sphereOnly: true },
             { key: 'pointSize', label: 'Dot Size', min: 0.001, max: 0.05, step: 0.001 },
@@ -246,12 +246,13 @@ function AudioVisualizer() {
         if (!sceneRef.current) return;
         clearPoints();
 
+        // shuffle points and limit to maxPoints
         const shuffledPoints = pointsData.sort(() => Math.random() - 0.5);
         const limitedPoints = shuffledPoints.slice(0, config.maxPoints);
 
         const hasOriginalColors = limitedPoints.length > 0 && limitedPoints[0].color;
 
-        const pointGeometry = new THREE.SphereGeometry(config.pointSize * 1.2, 8, 8);
+        const pointGeometry = new THREE.TetrahedronGeometry(config.pointSize * 1.2, 0);
         const pointMaterial = new THREE.MeshBasicMaterial({
             color: 0xffffff,
             transparent: true,
@@ -348,7 +349,7 @@ function AudioVisualizer() {
             raw = fibonacciSphere(cfg.samples, cfg.radius, cfg.jitter);
         } else {
             if (!rawPointsRef.current) return;
-            raw = rawPointsRef.current.map((p) => ({ ...p }));
+            raw = rawPointsRef.current;
         }
         createPointsObject(raw, cfg);
     }, [createPointsObject]);
@@ -570,13 +571,16 @@ function AudioVisualizer() {
                     let fx = o.x, fy = o.y, fz = o.z;
 
                     if (frequencyData) {
-                        const freqIndex = Math.floor((Math.abs(pointsData.length / 2 - index) / pointsData.length / 16) * frequencyData.length);
+                        const dx = o.x - ox, dy = o.y - oy, dz = o.z - oz;
+                        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+                        const freqIndex = Math.floor((dist / 64) * frequencyData.length);
+                        
                         const frequency = frequencyData[freqIndex] / 255;
                         const randomFactor = 0.5 + (Math.random() - 0.5) * cfg.scatter;
                         const scale = 1 + cfg.reactivity * (frequency * randomFactor);
 
-                        const dx = o.x - ox, dy = o.y - oy, dz = o.z - oz;
-                        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                        
                         if (dist > 0) {
                             fx = ox + dx * scale;
                             fy = oy + dy * scale;
@@ -686,7 +690,7 @@ function AudioVisualizer() {
         if (!audioRef.current || analyserRef.current) return;
         const audioContext = new (window.AudioContext || window.webkitAudioContext)();
         const analyser = audioContext.createAnalyser();
-        analyser.fftSize = 2048;
+        analyser.fftSize = 4096;
         const source = audioContext.createMediaElementSource(audioRef.current);
         source.connect(analyser);
         analyser.connect(audioContext.destination);
