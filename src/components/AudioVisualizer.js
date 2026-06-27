@@ -5,11 +5,10 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Play, Pause, SlidersHorizontal, X, Plus, Crosshair, Circle, Square, Move3d, Download } from 'lucide-react';
+import { Play, Pause, SlidersHorizontal, X, Plus, Crosshair, Move3d, Move, RotateCw, Maximize2, Spline } from 'lucide-react';
 import styles from './visualizer.module.css';
 
 // Available assets. `type` is one of 'sphere' | 'ply' | 'glb'.
@@ -21,12 +20,54 @@ const ASSETS = [
     { id: 'fairview_2b', name: 'Fairview 2B', path: 'assets/fairview_2b.ply', type: 'ply' },
     { id: 'snow', name: 'Snow', path: 'assets/snow.ply', type: 'ply' },
     { id: 'asterisk', name: 'Asterisk (GLB)', path: 'assets/asterisk.gltf', type: 'glb' },
+    { id: 'sleepycat', name: 'Sleepy Cat', path: 'assets/sleeepycat.ply', type: 'ply' },
 ];
 
 // Available music tracks
 const MUSIC_ASSETS = [
     { id: 'test', name: 'Test Track', path: 'assets/test.mp3' },
+    { id: 'sleepycat', name: 'Sleepy Cat', path: 'assets/sleepycat.mp3' },
     // Add more tracks here: { id: 'unique_id', name: 'Display Name', path: 'assets/filename.mp3' },
+];
+
+// Available single-variable parametric curves. `fn(t)` returns a point in
+// roughly the [-1, 1] cube; it gets scaled by the per-curve `curveScale`.
+const CURVES = [
+    {
+        id: 'helix', name: 'Helix', tMin: 0, tMax: Math.PI * 6,
+        fn: (t) => ({ x: Math.cos(t), y: (t / (Math.PI * 6)) * 2 - 1, z: Math.sin(t) }),
+    },
+    {
+        id: 'lissajous', name: 'Lissajous', tMin: 0, tMax: Math.PI * 2,
+        fn: (t) => ({ x: Math.sin(3 * t), y: Math.sin(2 * t), z: Math.cos(4 * t) }),
+    },
+    {
+        id: 'rose', name: 'Rose', tMin: 0, tMax: Math.PI * 2,
+        fn: (t) => { const r = Math.cos(4 * t); return { x: r * Math.cos(t), y: r * Math.sin(t), z: Math.sin(3 * t) * 0.25 }; },
+    },
+    {
+        id: 'trefoil', name: 'Trefoil Knot', tMin: 0, tMax: Math.PI * 2,
+        fn: (t) => ({
+            x: (Math.sin(t) + 2 * Math.sin(2 * t)) / 3,
+            y: (Math.cos(t) - 2 * Math.cos(2 * t)) / 3,
+            z: -Math.sin(3 * t) / 3,
+        }),
+    },
+    {
+        id: 'figure8', name: 'Figure Eight', tMin: 0, tMax: Math.PI * 2,
+        fn: (t) => ({ x: Math.sin(t), y: Math.sin(t) * Math.cos(t), z: Math.cos(t) * 0.3 }),
+    },
+    {
+        id: 'spiral', name: 'Spiral', tMin: 0, tMax: Math.PI * 8,
+        fn: (t) => { const k = t / (Math.PI * 8); return { x: k * Math.cos(t), y: k * 2 - 1, z: k * Math.sin(t) }; },
+    },
+    {
+        id: 'torusKnot', name: 'Torus Knot', tMin: 0, tMax: Math.PI * 2,
+        fn: (t) => {
+            const p = 2, q = 3; const r = Math.cos(q * t) + 2;
+            return { x: r * Math.cos(p * t) / 3, y: r * Math.sin(p * t) / 3, z: -Math.sin(q * t) / 3 };
+        },
+    },
 ];
 
 // Scene-wide parameters (camera + post processing).
@@ -57,14 +98,41 @@ const OBJECT_DEFAULTS = {
     posX: 0,
     posY: 0,
     posZ: 0,
+    rotX: 0,
+    rotY: 0,
+    rotZ: 0,
     scale: 1,
 };
 
-// Menu layout. `scope` is 'object' (selected asset) or 'global' (scene).
+// Per-curve parameters. Every placed parametric curve gets its own copy.
+const CURVE_DEFAULTS = {
+    // Shape / flow
+    curveScale: 8,
+    dotCount: 240,
+    dotSize: 0.045,
+    jitter: 0.05,
+    flowSpeed: 0.15,
+    startColor: '#ff3b3b',
+    endColor: '#3bb0ff',
+    // Audio reactivity
+    reactivity: 0.6,
+    // Transform
+    posX: 0,
+    posY: 0,
+    posZ: 0,
+    rotX: 0,
+    rotY: 0,
+    rotZ: 0,
+    scale: 1,
+};
+
+// Menu layout. `scope` is 'object' (selected item) or 'global' (scene).
+// Object groups carry a `kind`: 'asset', 'curve', or 'both'.
 const PARAM_GROUPS = [
     {
         title: 'Geometry',
         scope: 'object',
+        kind: 'asset',
         params: [
             { key: 'samples', label: 'Points', min: 1000, max: 300000, step: 1000, sphereOnly: true },
             { key: 'radius', label: 'Radius', min: 1, max: 20, step: 0.1, sphereOnly: true },
@@ -74,24 +142,52 @@ const PARAM_GROUPS = [
         ],
     },
     {
+        title: 'Curve',
+        scope: 'object',
+        kind: 'curve',
+        params: [
+            { key: 'curveScale', label: 'Size', min: 1, max: 24, step: 0.1 },
+            { key: 'dotCount', label: 'Dots', min: 10, max: 3000, step: 10 },
+            { key: 'dotSize', label: 'Dot Size', min: 0.005, max: 0.2, step: 0.005 },
+            { key: 'jitter', label: 'Jitter', min: 0, max: 1, step: 0.005 },
+            { key: 'flowSpeed', label: 'Flow', min: 0, max: 2, step: 0.01 },
+            { key: 'startColor', label: 'Start Color', type: 'color' },
+            { key: 'endColor', label: 'End Color', type: 'color' },
+        ],
+    },
+    {
         title: 'Transform',
         scope: 'object',
+        kind: 'both',
         params: [
             { key: 'posX', label: 'Pos X', min: -50, max: 50, step: 0.1, point: 'transform' },
             { key: 'posY', label: 'Pos Y', min: -50, max: 50, step: 0.1, point: 'transform' },
             { key: 'posZ', label: 'Pos Z', min: -50, max: 50, step: 0.1, point: 'transform' },
+            { type: 'gizmoButtons' },
+            { key: 'rotX', label: 'Rot X', min: -180, max: 180, step: 1 },
+            { key: 'rotY', label: 'Rot Y', min: -180, max: 180, step: 1 },
+            { key: 'rotZ', label: 'Rot Z', min: -180, max: 180, step: 1 },
             { key: 'scale', label: 'Scale', min: 0.05, max: 10, step: 0.05 },
         ],
     },
     {
         title: 'Audio Reactivity',
         scope: 'object',
+        kind: 'asset',
         params: [
             { key: 'reactivity', label: 'Reactivity', min: 0, max: 3, step: 0.01 },
             { key: 'scatter', label: 'Scatter', min: 0, max: 1, step: 0.001, cloudOnly: true },
             { key: 'originX', label: 'Pulse X', min: -20, max: 20, step: 0.1, point: 'pulse', cloudOnly: true },
             { key: 'originY', label: 'Pulse Y', min: -20, max: 20, step: 0.1, point: 'pulse', cloudOnly: true },
             { key: 'originZ', label: 'Pulse Z', min: -20, max: 20, step: 0.1, point: 'pulse', cloudOnly: true },
+        ],
+    },
+    {
+        title: 'Audio Reactivity',
+        scope: 'object',
+        kind: 'curve',
+        params: [
+            { key: 'reactivity', label: 'Reactivity', min: 0, max: 3, step: 0.01 },
         ],
     },
     {
@@ -117,6 +213,7 @@ const PARAM_GROUPS = [
 const SELECT_COLOR = 0xff3b3b;
 const BOX_COLOR = 0x4ad4d4;
 const GEOM_KEYS = ['samples', 'radius', 'jitter', 'pointSize', 'maxPoints'];
+const CURVE_GEOM_KEYS = ['dotCount', 'dotSize'];
 
 // Custom dream-like haze shader
 const DreamHazeShader = {
@@ -238,9 +335,17 @@ let _instanceCounter = 0;
 const nextInstanceId = () => `item_${Date.now().toString(36)}_${(_instanceCounter++)}`;
 const makeItem = (assetId, reactive = true) => ({
     id: nextInstanceId(),
+    kind: 'asset',
     assetId,
     reactive,
     op: { ...OBJECT_DEFAULTS },
+});
+const makeCurveItem = (funcId, reactive = true) => ({
+    id: nextInstanceId(),
+    kind: 'curve',
+    funcId,
+    reactive,
+    op: { ...CURVE_DEFAULTS },
 });
 
 function AudioVisualizer() {
@@ -257,12 +362,9 @@ function AudioVisualizer() {
     const [sceneItems, setSceneItems] = useState(() => [makeItem('fairview_4a', true)]);
     const [selectedId, setSelectedId] = useState(null);
     const [addAssetId, setAddAssetId] = useState('sphere');
+    const [addCurveId, setAddCurveId] = useState(CURVES[0].id);
     const [transformMode, setTransformMode] = useState(false);
-
-    // Flight path recording / playback
-    const [isRecording, setIsRecording] = useState(false);
-    const [isPlayingPath, setIsPlayingPath] = useState(false);
-    const [hasPath, setHasPath] = useState(false);
+    const [gizmoMode, setGizmoMode] = useState('translate');
 
     const audioRef = useRef(null);
     const canvasRef = useRef(null);
@@ -286,16 +388,10 @@ function AudioVisualizer() {
     const axesHelperRef = useRef(null);
     const pulseMarkerRef = useRef(null);
     const targetMarkerRef = useRef(null);
-    const pathTubeRef = useRef(null);
 
     // Navigation
     const keysRef = useRef({});
     const desiredTargetRef = useRef(null);
-
-    // Flight path data
-    const pathRef = useRef({ positions: [], targets: [], posCurve: null, targetCurve: null, duration: 0, playStart: 0, lastSample: 0 });
-    const isRecordingRef = useRef(false);
-    const isPlayingPathRef = useRef(false);
 
     // Debounced point-cloud rebuilds.
     const rebuildTimerRef = useRef(null);
@@ -307,6 +403,7 @@ function AudioVisualizer() {
     const isPlayingRef = useRef(isPlaying);
     const selectedIdRef = useRef(selectedId);
     const transformModeRef = useRef(transformMode);
+    const gizmoModeRef = useRef(gizmoMode);
     const sceneItemsRef = useRef(sceneItems);
 
     const hideTimerRef = useRef(null);
@@ -320,6 +417,7 @@ function AudioVisualizer() {
 
         const hasOriginalColors = count > 0 && !!limited[0].color;
 
+        // const geometry = new THREE.SphereGeometry(op.pointSize * 1.2, 8, 8,);
         const geometry = new THREE.TetrahedronGeometry(op.pointSize * 1.2, 0);
         const material = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95 });
         const mesh = new THREE.InstancedMesh(geometry, material, count);
@@ -380,6 +478,77 @@ function AudioVisualizer() {
             dirs: null,
             dists: null,
             freqIndex: null,
+            dirty: false,
+        };
+    }, []);
+
+    // Build an InstancedMesh of dots that flow along a parametric curve.
+    const buildCurveRecord = useCallback((funcId, op) => {
+        const curve = CURVES.find((c) => c.id === funcId) || CURVES[0];
+        const count = Math.max(1, Math.round(op.dotCount));
+
+        const geometry = new THREE.TetrahedronGeometry(op.dotSize * 1.2, 0);
+        const material = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95 });
+        const mesh = new THREE.InstancedMesh(geometry, material, count);
+
+        const dummy = new THREE.Object3D();
+        dummy.updateMatrix();
+        const phases = new Float32Array(count);
+        const jitterOffsets = new Float32Array(count * 3);
+        const colors = new Float32Array(count * 3);
+        const colA = new THREE.Color(op.startColor);
+        const colB = new THREE.Color(op.endColor);
+
+        for (let i = 0; i < count; i++) {
+            mesh.setMatrixAt(i, dummy.matrix);
+            const u = i / count;
+            phases[i] = u;
+            jitterOffsets[i * 3] = Math.random() * 2 - 1;
+            jitterOffsets[i * 3 + 1] = Math.random() * 2 - 1;
+            jitterOffsets[i * 3 + 2] = Math.random() * 2 - 1;
+            colors[i * 3] = colA.r + (colB.r - colA.r) * u;
+            colors[i * 3 + 1] = colA.g + (colB.g - colA.g) * u;
+            colors[i * 3 + 2] = colA.b + (colB.b - colA.b) * u;
+        }
+
+        mesh.instanceMatrix.needsUpdate = true;
+        mesh.instanceColor = new THREE.InstancedBufferAttribute(colors, 3);
+        mesh.frustumCulled = false;
+
+        // Bounds (local space) from sampling the curve at this scale.
+        const amp = op.curveScale;
+        const span = curve.tMax - curve.tMin;
+        const min = new THREE.Vector3(Infinity, Infinity, Infinity);
+        const max = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+        const samplesN = 200;
+        for (let i = 0; i <= samplesN; i++) {
+            const t = curve.tMin + (i / samplesN) * span;
+            const p = curve.fn(t);
+            const x = p.x * amp, y = p.y * amp, z = p.z * amp;
+            if (x < min.x) min.x = x; if (y < min.y) min.y = y; if (z < min.z) min.z = z;
+            if (x > max.x) max.x = x; if (y > max.y) max.y = y; if (z > max.z) max.z = z;
+        }
+        const margin = op.jitter * amp + 0.5;
+        min.subScalar(margin);
+        max.addScalar(margin);
+        const localBox = new THREE.Box3(min, max);
+
+        return {
+            kind: 'curve',
+            type: 'curve',
+            object3D: mesh,
+            transformTarget: mesh,
+            reactiveScaleTarget: null,
+            instancedMesh: mesh,
+            count,
+            funcId,
+            curve,
+            phases,
+            jitterOffsets,
+            colA,
+            colB,
+            flow: 0,
+            localBox,
             dirty: false,
         };
     }, []);
@@ -478,9 +647,13 @@ function AudioVisualizer() {
         if (!t || !rec.op) return;
         const tc = transformControlsRef.current;
         const dragging = tc && tc.dragging && selectedIdRef.current === t.userData.itemId;
-        if (!dragging) {
-            t.position.set(rec.op.posX, rec.op.posY, rec.op.posZ);
-        }
+        if (dragging) return; // don't fight the gizmo mid-drag
+        t.position.set(rec.op.posX, rec.op.posY, rec.op.posZ);
+        t.rotation.set(
+            THREE.MathUtils.degToRad(rec.op.rotX || 0),
+            THREE.MathUtils.degToRad(rec.op.rotY || 0),
+            THREE.MathUtils.degToRad(rec.op.rotZ || 0)
+        );
         t.scale.setScalar(rec.op.scale);
     }, []);
 
@@ -493,6 +666,7 @@ function AudioVisualizer() {
         const tc = transformControlsRef.current;
         if (tc && selected) {
             if (transformModeRef.current && rec.transformTarget) {
+                tc.setMode(gizmoModeRef.current);
                 tc.attach(rec.transformTarget);
                 tc.visible = true;
                 tc.enabled = true;
@@ -540,6 +714,22 @@ function AudioVisualizer() {
 
     const addSceneItem = useCallback(async (item) => {
         if (!sceneRef.current || sceneObjectsRef.current.has(item.id)) return;
+
+        // Parametric curves build synchronously, no asset loading needed.
+        if (item.kind === 'curve') {
+            const record = buildCurveRecord(item.funcId, item.op);
+            record.reactive = item.reactive;
+            record.op = item.op;
+            record.curveKey = CURVE_GEOM_KEYS.map((k) => item.op[k]).join('|');
+            record.object3D.userData.itemId = item.id;
+            record.transformTarget.userData.itemId = item.id;
+            applyTransform(record);
+            sceneRef.current.add(record.object3D);
+            attachBoxHelper(record, item.id);
+            sceneObjectsRef.current.set(item.id, record);
+            return;
+        }
+
         const asset = ASSETS.find((a) => a.id === item.assetId);
         if (!asset) return;
 
@@ -584,14 +774,30 @@ function AudioVisualizer() {
         } finally {
             setIsLoading(false);
         }
-    }, [buildPointCloudRecord, loadGLBRecord, loadPLYFile, disposeRecord, attachBoxHelper, applyTransform]);
+    }, [buildPointCloudRecord, buildCurveRecord, loadGLBRecord, loadPLYFile, disposeRecord, attachBoxHelper, applyTransform]);
 
-    // Rebuild a point cloud in place (geometry params changed) keeping transform.
+    // Rebuild a point cloud / curve in place (geometry params changed) keeping transform.
     const rebuildItem = useCallback((item) => {
-        const asset = ASSETS.find((a) => a.id === item.assetId);
-        if (!asset || asset.type === 'glb') return;
         const old = sceneObjectsRef.current.get(item.id);
         if (!old || old.loading) return;
+
+        if (item.kind === 'curve') {
+            disposeRecord(old);
+            const record = buildCurveRecord(item.funcId, item.op);
+            record.reactive = item.reactive;
+            record.op = item.op;
+            record.curveKey = CURVE_GEOM_KEYS.map((k) => item.op[k]).join('|');
+            record.object3D.userData.itemId = item.id;
+            record.transformTarget.userData.itemId = item.id;
+            applyTransform(record);
+            sceneRef.current.add(record.object3D);
+            attachBoxHelper(record, item.id);
+            sceneObjectsRef.current.set(item.id, record);
+            return;
+        }
+
+        const asset = ASSETS.find((a) => a.id === item.assetId);
+        if (!asset || asset.type === 'glb') return;
 
         let raw;
         if (asset.type === 'sphere') {
@@ -612,7 +818,7 @@ function AudioVisualizer() {
         sceneRef.current.add(record.object3D);
         attachBoxHelper(record, item.id);
         sceneObjectsRef.current.set(item.id, record);
-    }, [buildPointCloudRecord, disposeRecord, attachBoxHelper, applyTransform]);
+    }, [buildPointCloudRecord, buildCurveRecord, disposeRecord, attachBoxHelper, applyTransform]);
 
     const flushRebuilds = useCallback(() => {
         const ids = rebuildSetRef.current;
@@ -648,6 +854,21 @@ function AudioVisualizer() {
             }
             if (rec.loading) return;
 
+            if (rec.kind === 'curve') {
+                rec.reactive = item.reactive;
+                rec.op = item.op;
+                rec.curve = CURVES.find((c) => c.id === item.funcId) || rec.curve;
+                rec.colA = new THREE.Color(item.op.startColor);
+                rec.colB = new THREE.Color(item.op.endColor);
+                applyTransform(rec);
+                const curveKey = CURVE_GEOM_KEYS.map((k) => item.op[k]).join('|');
+                if (curveKey !== rec.curveKey) {
+                    rebuildSetRef.current.add(item.id);
+                    needsRebuild = true;
+                }
+                return;
+            }
+
             if (rec.reactive && !item.reactive) rec.dirty = true; // reset on next frame
             rec.reactive = item.reactive;
             rec.op = item.op;
@@ -666,57 +887,6 @@ function AudioVisualizer() {
             rebuildTimerRef.current = setTimeout(flushRebuilds, 160);
         }
     }, [sceneItems, addSceneItem, disposeRecord, applyTransform, flushRebuilds]);
-
-    // ---- Flight path contour -------------------------------------------------
-
-    const buildPathTube = useCallback(() => {
-        const scene = sceneRef.current;
-        if (!scene) return;
-        if (pathTubeRef.current) {
-            scene.remove(pathTubeRef.current);
-            pathTubeRef.current.geometry.dispose();
-            pathTubeRef.current.material.dispose();
-            pathTubeRef.current = null;
-        }
-        const curve = pathRef.current.posCurve;
-        if (!curve) return;
-
-        const segs = Math.min(800, Math.max(40, pathRef.current.positions.length * 6));
-        const geo = new THREE.TubeGeometry(curve, segs, 0.18, 8, false);
-        const mat = new THREE.MeshStandardMaterial({
-            color: BOX_COLOR,
-            emissive: 0x123236,
-            metalness: 0.1,
-            roughness: 0.6,
-        });
-        const mesh = new THREE.Mesh(geo, mat);
-        mesh.visible = showHelpersRef.current;
-        mesh.userData.isPathTube = true;
-        scene.add(mesh);
-        pathTubeRef.current = mesh;
-    }, []);
-
-    const exportPathGLB = useCallback(() => {
-        const mesh = pathTubeRef.current;
-        if (!mesh) return;
-        const exporter = new GLTFExporter();
-        exporter.parse(
-            mesh,
-            (result) => {
-                const blob = new Blob([result], { type: 'model/gltf-binary' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'flightpath.glb';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-            },
-            (error) => console.error('GLB export failed:', error),
-            { binary: true }
-        );
-    }, []);
 
     // ---- Scene initialization (runs once) ------------------------------------
 
@@ -760,15 +930,25 @@ function AudioVisualizer() {
         transformControls.visible = false;
         transformControls.enabled = false;
         transformControls.addEventListener('dragging-changed', (e) => {
-            controls.enabled = !e.value && !isPlayingPathRef.current;
+            controls.enabled = !e.value;
         });
         transformControls.addEventListener('objectChange', () => {
             const id = selectedIdRef.current;
             const rec = sceneObjectsRef.current.get(id);
             if (!rec || !rec.transformTarget) return;
-            const p = rec.transformTarget.position;
+            const o = rec.transformTarget;
+            const p = o.position, r = o.rotation, s = o.scale;
+            const r2d = THREE.MathUtils.radToDeg;
             setSceneItems((prev) => prev.map((it) => (
-                it.id === id ? { ...it, op: { ...it.op, posX: round2(p.x), posY: round2(p.y), posZ: round2(p.z) } } : it
+                it.id === id ? {
+                    ...it,
+                    op: {
+                        ...it.op,
+                        posX: round2(p.x), posY: round2(p.y), posZ: round2(p.z),
+                        rotX: round2(r2d(r.x)), rotY: round2(r2d(r.y)), rotZ: round2(r2d(r.z)),
+                        scale: round2((s.x + s.y + s.z) / 3),
+                    },
+                } : it
             )));
         });
         scene.add(transformControls);
@@ -831,7 +1011,6 @@ function AudioVisualizer() {
         };
 
         const onPointerUp = (e) => {
-            if (isPlayingPathRef.current) return;
             if (transformControls.dragging || transformControls.axis) return; // interacting with gizmo
             const moved = Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y);
             const elapsed = Date.now() - pointerDown.t;
@@ -900,64 +1079,38 @@ function AudioVisualizer() {
             const time = Date.now() * 0.001;
             const dt = clock.getDelta();
             const cfg = paramsRef.current;
-            const playingPath = isPlayingPathRef.current;
 
-            // --- Flight path playback (overrides manual control) ---
-            if (playingPath && pathRef.current.posCurve) {
-                const now = performance.now();
-                const dur = pathRef.current.duration || 1;
-                let u = (now - pathRef.current.playStart) / dur;
-                if (u >= 1) {
-                    u = 1;
-                    isPlayingPathRef.current = false;
-                    setIsPlayingPath(false);
-                    controls.enabled = true;
-                }
-                camera.position.copy(pathRef.current.posCurve.getPoint(u));
-                controls.target.copy(pathRef.current.targetCurve.getPoint(u));
-                camera.lookAt(controls.target);
-            } else {
-                const keys = keysRef.current;
-                const moving = keys.KeyW || keys.KeyS || keys.KeyA || keys.KeyD ||
-                    keys.Space || keys.ShiftLeft || keys.ShiftRight;
-                if (moving) {
-                    camera.getWorldDirection(forward);
-                    forward.normalize();
-                    right.crossVectors(forward, camera.up).normalize();
-                    move.set(0, 0, 0);
-                    if (keys.KeyW) move.add(forward);
-                    if (keys.KeyS) move.sub(forward);
-                    if (keys.KeyD) move.add(right);
-                    if (keys.KeyA) move.sub(right);
-                    if (keys.Space) move.add(camera.up);
-                    if (keys.ShiftLeft || keys.ShiftRight) move.sub(camera.up);
-                    if (move.lengthSq() > 0) {
-                        move.normalize().multiplyScalar(cfg.moveSpeed * dt);
-                        camera.position.add(move);
-                        controls.target.add(move);
-                        desiredTargetRef.current = null;
-                    }
-                }
-
-                if (desiredTargetRef.current) {
-                    controls.target.lerp(desiredTargetRef.current, 0.12);
-                    if (controls.target.distanceTo(desiredTargetRef.current) < 0.01) {
-                        desiredTargetRef.current = null;
-                    }
-                }
-
-                controls.update();
-            }
-
-            // --- Flight path recording (fixed interval sampling) ---
-            if (isRecordingRef.current) {
-                const now = performance.now();
-                if (now - pathRef.current.lastSample >= 50) {
-                    pathRef.current.lastSample = now;
-                    pathRef.current.positions.push(camera.position.clone());
-                    pathRef.current.targets.push(controls.target.clone());
+            // --- Manual fly / orbit control ---
+            const keys = keysRef.current;
+            const moving = keys.KeyW || keys.KeyS || keys.KeyA || keys.KeyD ||
+                keys.Space || keys.ShiftLeft || keys.ShiftRight;
+            if (moving) {
+                camera.getWorldDirection(forward);
+                forward.normalize();
+                right.crossVectors(forward, camera.up).normalize();
+                move.set(0, 0, 0);
+                if (keys.KeyW) move.add(forward);
+                if (keys.KeyS) move.sub(forward);
+                if (keys.KeyD) move.add(right);
+                if (keys.KeyA) move.sub(right);
+                if (keys.Space) move.add(camera.up);
+                if (keys.ShiftLeft || keys.ShiftRight) move.sub(camera.up);
+                if (move.lengthSq() > 0) {
+                    move.normalize().multiplyScalar(cfg.moveSpeed * dt);
+                    camera.position.add(move);
+                    controls.target.add(move);
+                    desiredTargetRef.current = null;
                 }
             }
+
+            if (desiredTargetRef.current) {
+                controls.target.lerp(desiredTargetRef.current, 0.12);
+                if (controls.target.distanceTo(desiredTargetRef.current) < 0.01) {
+                    desiredTargetRef.current = null;
+                }
+            }
+
+            controls.update();
 
             // --- Audio data ---
             let frequencyData = null;
@@ -978,6 +1131,40 @@ function AudioVisualizer() {
             sceneObjectsRef.current.forEach((rec) => {
                 if (rec.loading || !rec.op) return;
                 const op = rec.op;
+
+                // Parametric curves: dots continuously flow along the curve.
+                if (rec.kind === 'curve') {
+                    const mesh = rec.instancedMesh;
+                    if (!mesh) return;
+                    const curve = rec.curve;
+                    const count = rec.count;
+                    const amp = op.curveScale;
+                    const span = curve.tMax - curve.tMin;
+                    const reactBoost = (rec.reactive && playing) ? op.reactivity * bass : 0;
+                    rec.flow += op.flowSpeed * (1 + reactBoost) * dt;
+                    if (rec.flow > 1e6) rec.flow = 0; // avoid float drift over time
+                    const jitterAmp = op.jitter * amp * (1 + reactBoost * 4);
+                    const arr = mesh.instanceMatrix.array;
+                    const carr = mesh.instanceColor.array;
+                    const colA = rec.colA, colB = rec.colB;
+                    const jit = rec.jitterOffsets, ph = rec.phases;
+                    for (let i = 0; i < count; i++) {
+                        let u = ph[i] + rec.flow;
+                        u -= Math.floor(u);
+                        const t = curve.tMin + u * span;
+                        const p = curve.fn(t);
+                        const m = i * 16;
+                        arr[m + 12] = p.x * amp + jit[i * 3] * jitterAmp;
+                        arr[m + 13] = p.y * amp + jit[i * 3 + 1] * jitterAmp;
+                        arr[m + 14] = p.z * amp + jit[i * 3 + 2] * jitterAmp;
+                        carr[i * 3] = colA.r + (colB.r - colA.r) * u;
+                        carr[i * 3 + 1] = colA.g + (colB.g - colA.g) * u;
+                        carr[i * 3 + 2] = colA.b + (colB.b - colA.b) * u;
+                    }
+                    mesh.instanceMatrix.needsUpdate = true;
+                    mesh.instanceColor.needsUpdate = true;
+                    return;
+                }
 
                 if (rec.type === 'glb') {
                     if (rec.reactive && playing && rec.reactiveScaleTarget) {
@@ -1058,7 +1245,7 @@ function AudioVisualizer() {
             if (showHelpersRef.current) {
                 const selRec = sceneObjectsRef.current.get(selectedIdRef.current);
                 if (pulseMarkerRef.current) {
-                    if (selRec && selRec.transformTarget && selRec.op && selRec.type !== 'glb') {
+                    if (selRec && selRec.transformTarget && selRec.op && selRec.type !== 'glb' && selRec.kind !== 'curve') {
                         scratchVec.set(selRec.op.originX, selRec.op.originY, selRec.op.originZ);
                         selRec.transformTarget.localToWorld(scratchVec);
                         pulseMarkerRef.current.position.copy(scratchVec);
@@ -1118,6 +1305,13 @@ function AudioVisualizer() {
         sceneObjectsRef.current.forEach((rec, id) => applySelection(rec, id));
     }, [selectedId, transformMode, sceneItems, sceneReady, showHelpers, applySelection]);
 
+    // Keep the gizmo's transform mode (translate / rotate / scale) in sync.
+    useEffect(() => {
+        gizmoModeRef.current = gizmoMode;
+        const tc = transformControlsRef.current;
+        if (tc && tc.object) tc.setMode(gizmoMode);
+    }, [gizmoMode]);
+
     // Push live params to three.js objects + keep the loop's ref in sync.
     useEffect(() => {
         paramsRef.current = params;
@@ -1132,13 +1326,12 @@ function AudioVisualizer() {
 
     useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
 
-    // Toggle helper visibility (axes, markers, bounding boxes, path tube).
+    // Toggle helper visibility (axes, markers, bounding boxes).
     useEffect(() => {
         showHelpersRef.current = showHelpers;
         if (axesHelperRef.current) axesHelperRef.current.visible = showHelpers;
         if (targetMarkerRef.current) targetMarkerRef.current.visible = showHelpers;
         if (pulseMarkerRef.current && !showHelpers) pulseMarkerRef.current.visible = false;
-        if (pathTubeRef.current) pathTubeRef.current.visible = showHelpers;
         sceneObjectsRef.current.forEach((rec, id) => {
             if (rec.boxHelper) rec.boxHelper.visible = showHelpers || id === selectedIdRef.current;
         });
@@ -1213,49 +1406,18 @@ function AudioVisualizer() {
         setSelectedId(item.id);
     };
 
+    const addCurve = () => {
+        const item = makeCurveItem(addCurveId, true);
+        setSceneItems((prev) => [...prev, item]);
+        setSelectedId(item.id);
+    };
+
     const removeItem = (id) => {
         setSceneItems((prev) => prev.filter((i) => i.id !== id));
     };
 
     const toggleReactive = (id) => {
         setSceneItems((prev) => prev.map((i) => (i.id === id ? { ...i, reactive: !i.reactive } : i)));
-    };
-
-    // ---- Flight path controls ------------------------------------------------
-
-    const toggleRecord = () => {
-        if (isRecording) {
-            isRecordingRef.current = false;
-            setIsRecording(false);
-            const pts = pathRef.current.positions;
-            const tgts = pathRef.current.targets;
-            if (pts.length >= 2) {
-                pathRef.current.posCurve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
-                pathRef.current.targetCurve = new THREE.CatmullRomCurve3(tgts, false, 'catmullrom', 0.5);
-                pathRef.current.duration = (pts.length - 1) * 50;
-                buildPathTube();
-                setHasPath(true);
-            } else {
-                setHasPath(false);
-            }
-        } else {
-            if (isPlayingPathRef.current) return;
-            pathRef.current.positions = [];
-            pathRef.current.targets = [];
-            pathRef.current.lastSample = 0;
-            isRecordingRef.current = true;
-            setIsRecording(true);
-            setHasPath(false);
-        }
-    };
-
-    const playPath = () => {
-        if (!hasPath || isRecording || isPlayingPathRef.current) return;
-        if (!pathRef.current.posCurve) return;
-        pathRef.current.playStart = performance.now();
-        isPlayingPathRef.current = true;
-        setIsPlayingPath(true);
-        if (controlsRef.current) controlsRef.current.enabled = false;
     };
 
     // ---- Param handling ------------------------------------------------------
@@ -1288,16 +1450,46 @@ function AudioVisualizer() {
         setParams(GLOBAL_DEFAULTS);
         if (selectedId === null) return;
         setSceneItems((prev) => prev.map((i) => (
-            i.id === selectedId ? { ...i, op: { ...OBJECT_DEFAULTS } } : i
+            i.id === selectedId
+                ? { ...i, op: { ...(i.kind === 'curve' ? CURVE_DEFAULTS : OBJECT_DEFAULTS) } }
+                : i
         )));
     };
 
     const selectedMusicPath = MUSIC_ASSETS.find((m) => m.id === selectedMusic)?.path || 'assets/test.mp3';
     const selectedItem = sceneItems.find((i) => i.id === selectedId) || null;
-    const selectedAsset = selectedItem ? ASSETS.find((a) => a.id === selectedItem.assetId) : null;
+    const selKind = selectedItem?.kind || 'asset';
+    const selectedAsset = selectedItem && selKind === 'asset' ? ASSETS.find((a) => a.id === selectedItem.assetId) : null;
+    const selectedCurve = selectedItem && selKind === 'curve' ? CURVES.find((c) => c.id === selectedItem.funcId) : null;
     const selType = selectedAsset?.type;
+    const selectedLabel = selectedAsset?.name || selectedCurve?.name || (selectedItem ? 'no selection' : 'no selection');
 
     const renderRow = (def, scope) => {
+        // Gizmo mode selector (Move / Rotate / Scale) lives under the position sliders.
+        if (def.type === 'gizmoButtons') {
+            const modes = [
+                ['translate', 'Move', Move],
+                ['rotate', 'Rotate', RotateCw],
+                ['scale', 'Scale', Maximize2],
+            ];
+            return (
+                <div className={styles.av_gizmoRow} key="gizmoBtns">
+                    {modes.map(([mode, label, Icon]) => (
+                        <button
+                            key={mode}
+                            type="button"
+                            disabled={!selectedItem}
+                            className={`${styles.av_gizmoBtn} ${transformMode && gizmoMode === mode ? styles.av_gizmoBtnOn : ''}`}
+                            onClick={() => { setGizmoMode(mode); setTransformMode(true); }}
+                        >
+                            <Icon size={12} style={{ marginRight: 5, verticalAlign: '-2px' }} />
+                            {label}
+                        </button>
+                    ))}
+                </div>
+            );
+        }
+
         let disabled;
         let value;
         if (scope === 'global') {
@@ -1310,6 +1502,24 @@ function AudioVisualizer() {
             value = selectedItem ? selectedItem.op[def.key] : OBJECT_DEFAULTS[def.key];
         }
         const commit = scope === 'global' ? updateParam : updateObjectParam;
+
+        // Color picker rows (curve start / end dot colors).
+        if (def.type === 'color') {
+            return (
+                <div className={styles.av_row} key={def.key} style={disabled ? { opacity: 0.35 } : undefined}>
+                    <span className={styles.av_label} title={def.label}>{def.label}</span>
+                    <input
+                        className={styles.av_color}
+                        type="color"
+                        value={value || '#ffffff'}
+                        disabled={disabled}
+                        onChange={(e) => commit(def.key, e.target.value)}
+                        style={{ gridColumn: '2 / span 2' }}
+                    />
+                </div>
+            );
+        }
+
         return (
             <div className={styles.av_row} key={def.key} style={disabled ? { opacity: 0.35 } : undefined}>
                 <span className={styles.av_label} title={def.label}>
@@ -1419,7 +1629,11 @@ function AudioVisualizer() {
                     <div className={styles.av_section}>
                         <div className={styles.av_sectionTitle}>Scene</div>
                         {sceneItems.map((item) => {
-                            const asset = ASSETS.find((a) => a.id === item.assetId);
+                            const isCurve = item.kind === 'curve';
+                            const asset = isCurve
+                                ? CURVES.find((c) => c.id === item.funcId)
+                                : ASSETS.find((a) => a.id === item.assetId);
+                            const displayName = (isCurve ? `~ ${asset?.name || item.funcId}` : asset?.name) || item.assetId;
                             const isSel = item.id === selectedId;
                             return (
                                 <div
@@ -1430,8 +1644,8 @@ function AudioVisualizer() {
                                     tabIndex={0}
                                     onKeyDown={(e) => { if (e.key === 'Enter') setSelectedId(item.id); }}
                                 >
-                                    <span className={styles.av_itemName} title={asset?.name || item.assetId}>
-                                        {asset?.name || item.assetId}
+                                    <span className={styles.av_itemName} title={displayName}>
+                                        {displayName}
                                     </span>
                                     <span
                                         className={`${styles.av_switch} ${item.reactive ? styles.av_switchOn : ''}`}
@@ -1473,6 +1687,26 @@ function AudioVisualizer() {
                                 <Plus size={15} />
                             </button>
                         </div>
+                        <div className={styles.av_addRow} style={{ marginTop: 8 }}>
+                            <Spline size={15} style={{ flex: '0 0 auto', opacity: 0.6 }} />
+                            <select
+                                className={styles.av_select}
+                                value={addCurveId}
+                                onChange={(e) => setAddCurveId(e.target.value)}
+                            >
+                                {CURVES.map((c) => (
+                                    <option key={c.id} value={c.id}>{c.name}</option>
+                                ))}
+                            </select>
+                            <button
+                                type="button"
+                                className={styles.av_miniBtn}
+                                aria-label="Add curve"
+                                onClick={addCurve}
+                            >
+                                <Plus size={15} />
+                            </button>
+                        </div>
                         <div
                             className={styles.av_checkRow}
                             onClick={() => setShowHelpers((v) => !v)}
@@ -1494,74 +1728,31 @@ function AudioVisualizer() {
                             onKeyDown={(e) => { if (e.key === 'Enter') setTransformMode((v) => !v); }}
                             style={{ marginTop: 10 }}
                         >
-                            <span><Move3d size={11} style={{ verticalAlign: '-1px', marginRight: 6 }} />Move Gizmo</span>
+                            <span><Move3d size={11} style={{ verticalAlign: '-1px', marginRight: 6 }} />Gizmo</span>
                             <span className={`${styles.av_switch} ${transformMode ? styles.av_switchOn : ''}`}>
                                 <span className={styles.av_knob} />
                             </span>
                         </div>
                         <div className={styles.av_hint} style={{ marginTop: 8 }}>
-                            Click an asset (here or in 3D) to select · selected box is red · switch toggles reactivity
+                            Click an item (here or in 3D) to select · selected box is red · switch toggles reactivity
                         </div>
                     </div>
 
-                    {/* Camera flight path */}
-                    <div className={styles.av_section}>
-                        <div className={styles.av_sectionTitle}>Camera Path</div>
-                        <div className={styles.av_btnRow}>
-                            <button
-                                type="button"
-                                className={`${styles.av_select} ${isRecording ? styles.av_recActive : ''}`}
-                                onClick={toggleRecord}
-                                disabled={isPlayingPath}
-                                style={{ textAlign: 'center' }}
-                            >
-                                {isRecording
-                                    ? (<><Square size={11} style={{ verticalAlign: '-1px', marginRight: 6 }} />Stop</>)
-                                    : (<><Circle size={11} style={{ verticalAlign: '-1px', marginRight: 6 }} />Record</>)}
-                            </button>
-                            <button
-                                type="button"
-                                className={styles.av_select}
-                                onClick={playPath}
-                                disabled={!hasPath || isRecording || isPlayingPath}
-                                style={{ textAlign: 'center' }}
-                            >
-                                <Play size={11} style={{ verticalAlign: '-1px', marginRight: 6 }} />
-                                {isPlayingPath ? 'Playing' : 'Play'}
-                            </button>
-                        </div>
-                        <button
-                            type="button"
-                            className={styles.av_select}
-                            onClick={exportPathGLB}
-                            disabled={!hasPath}
-                            style={{ textAlign: 'center', marginTop: 8 }}
-                        >
-                            <Download size={11} style={{ verticalAlign: '-1px', marginRight: 6 }} />
-                            Export Path GLB
-                        </button>
-                        <div className={styles.av_hint} style={{ marginTop: 8 }}>
-                            {isRecording
-                                ? 'Recording — fly around, then Stop'
-                                : hasPath
-                                    ? 'Path ready — Play, or enable Helpers to see the contour'
-                                    : 'Record a flight to build a Catmull-Rom tube contour'}
-                        </div>
-                    </div>
-
-                    {/* Parameter groups */}
-                    {PARAM_GROUPS.map((group) => (
-                        <div className={styles.av_section} key={group.title}>
+                    {/* Parameter groups (object groups filtered by the selected kind) */}
+                    {PARAM_GROUPS.filter((group) => (
+                        group.scope === 'global' || group.kind === 'both' || group.kind === selKind
+                    )).map((group) => (
+                        <div className={styles.av_section} key={`${group.title}-${group.kind || group.scope}`}>
                             <div className={styles.av_sectionTitle}>
                                 {group.title}
                                 {group.scope === 'object' && (
                                     <span className={styles.av_scopeTag}>
-                                        {selectedAsset ? selectedAsset.name : 'no selection'}
+                                        {selectedLabel}
                                     </span>
                                 )}
                             </div>
                             {group.params.map((def) => renderRow(def, group.scope))}
-                            {group.title === 'Audio Reactivity' && (
+                            {group.title === 'Audio Reactivity' && group.kind === 'asset' && (
                                 <button
                                     type="button"
                                     className={styles.av_select}

@@ -213,6 +213,69 @@
     text-overflow: ellipsis;
 }
 
+/* Gizmo mode selector (Move / Rotate / Scale) */
+.av_gizmoRow {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    margin-bottom: 9px;
+}
+
+.av_gizmoBtn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--line);
+    font-family: inherit;
+    font-size: 10px;
+    letter-spacing: 0.5px;
+    padding: 6px 4px;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.av_gizmoBtn:hover {
+    background: var(--hover);
+}
+
+.av_gizmoBtn:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
+.av_gizmoBtnOn {
+    background: var(--fg);
+    color: var(--bg);
+    border-color: var(--fg);
+}
+
+/* Color picker (curve dot gradient) */
+.av_color {
+    width: 100%;
+    height: 22px;
+    box-sizing: border-box;
+    background: transparent;
+    border: 1px solid var(--line);
+    padding: 2px;
+    cursor: pointer;
+    outline: none;
+}
+
+.av_color::-webkit-color-swatch-wrapper {
+    padding: 0;
+}
+
+.av_color::-webkit-color-swatch {
+    border: none;
+}
+
+.av_color:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
 .av_slider {
     -webkit-appearance: none;
     appearance: none;
