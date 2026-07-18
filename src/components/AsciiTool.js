@@ -1,320 +1,347 @@
-import styles from './resume.module.css';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef } from 'react';
+import { SlidersHorizontal, X, Plus, Upload, Download } from 'lucide-react';
 import AsterDynamic from './AsterDynamic';
+import VfxNumberField from './VfxNumberField';
+import styles from './vfx.module.css';
+
+const DEFAULTS = {
+    characters: ' .:-=+*#%@',
+    cameraPos: { x: 0, y: 0, z: 1 },
+    objectPos: { x: 0, y: 0, z: 0 },
+    objectRot: { x: Math.PI / 2, y: 0, z: 0 },
+    objectScale: { x: 1, y: 1, z: 1 },
+    autoRotate: false,
+    rotationSpeed: { y: 0.01, z: 0.004 },
+};
+
+const makeDefaultLight = () => ({ id: 1, x: 500, y: 500, z: 500, color: '#ffffff', intensity: 1 });
 
 function AsciiTool() {
-    // UI State
-    const [characters, setCharacters] = useState(' .:-=+*#%@');
-    const [cameraPos, setCameraPos] = useState({ x: 0, y: 0, z: 1 });
-    const [objectPos, setObjectPos] = useState({ x: 0, y: 0, z: 0 });
-    const [objectRot, setObjectRot] = useState({ x: Math.PI/2, y: 0, z: 0 });
-    const [objectScale, setObjectScale] = useState({ x: 1, y: 1, z: 1 });
-    const [lights, setLights] = useState([
-        { id: 1, x: 500, y: 500, z: 500, color: '#ffffff', intensity: 1 }
-    ]);
-    const [autoRotate, setAutoRotate] = useState(false);
-    const [rotationSpeed, setRotationSpeed] = useState({ y: 0.01, z: 0.004 });
+    const [characters, setCharacters] = useState(DEFAULTS.characters);
+    const [cameraPos, setCameraPos] = useState(DEFAULTS.cameraPos);
+    const [objectPos, setObjectPos] = useState(DEFAULTS.objectPos);
+    const [objectRot, setObjectRot] = useState(DEFAULTS.objectRot);
+    const [objectScale, setObjectScale] = useState(DEFAULTS.objectScale);
+    const [lights, setLights] = useState([makeDefaultLight()]);
+    const [autoRotate, setAutoRotate] = useState(DEFAULTS.autoRotate);
+    const [rotationSpeed, setRotationSpeed] = useState(DEFAULTS.rotationSpeed);
     const [uploadedFile, setUploadedFile] = useState(null);
     const [fileType, setFileType] = useState(null);
+    const [fileName, setFileName] = useState('');
+    const [menuOpen, setMenuOpen] = useState(true);
 
-    const handleFileUpload = (event, type) => {
+    const fileInputRef = useRef(null);
+
+    const handleFileUpload = (event) => {
         const file = event.target.files[0];
         if (!file) return;
-        
-        const url = URL.createObjectURL(file);
-        setUploadedFile(url);
-        setFileType(type);
+        setUploadedFile((prev) => {
+            if (prev) URL.revokeObjectURL(prev);
+            return URL.createObjectURL(file);
+        });
+        setFileType('gltf');
+        setFileName(file.name);
+        event.target.value = '';
     };
 
     const addLight = () => {
-        const newLight = {
+        setLights((prev) => [...prev, {
             id: Date.now(),
             x: Math.random() * 200 - 100,
             y: Math.random() * 200 - 100,
             z: Math.random() * 200 - 100,
             color: '#ffffff',
-            intensity: 1
-        };
-        setLights([...lights, newLight]);
+            intensity: 1,
+        }]);
     };
 
     const updateLight = (id, property, value) => {
-        setLights(lights.map(light => 
+        setLights((prev) => prev.map((light) => (
             light.id === id ? { ...light, [property]: value } : light
-        ));
+        )));
     };
 
     const removeLight = (id) => {
-        if (lights.length > 1) {
-            setLights(lights.filter(light => light.id !== id));
-        }
+        setLights((prev) => (prev.length > 1 ? prev.filter((light) => light.id !== id) : prev));
     };
 
+    const resetDefaults = () => {
+        setCharacters(DEFAULTS.characters);
+        setCameraPos(DEFAULTS.cameraPos);
+        setObjectPos(DEFAULTS.objectPos);
+        setObjectRot(DEFAULTS.objectRot);
+        setObjectScale(DEFAULTS.objectScale);
+        setAutoRotate(DEFAULTS.autoRotate);
+        setRotationSpeed(DEFAULTS.rotationSpeed);
+        setLights([makeDefaultLight()]);
+    };
+
+    // Serialize the rendered ascii frame (spans + <br> line breaks) to a .txt.
+    const exportAsText = () => {
+        const element = document.getElementById('aster');
+        if (!element) return;
+        const tdElement = element.querySelector('td') || element;
+
+        let text = '';
+        const processNode = (node) => {
+            if (node.nodeType === Node.TEXT_NODE) {
+                text += node.textContent;
+            } else if (node.nodeType === Node.ELEMENT_NODE) {
+                if (node.tagName.toLowerCase() === 'br') {
+                    text += '\n';
+                } else {
+                    for (const child of node.childNodes) processNode(child);
+                }
+            }
+        };
+        for (const child of tdElement.childNodes) processNode(child);
+
+        if (!text.trim()) return;
+
+        const blob = new Blob([text], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'ascii-art.txt';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+
+    // Slider + typed-value row (typed value can override the slider range).
+    const sliderRow = (label, value, onCommit, min, max, step) => (
+        <div className={styles.vfx_row} key={label}>
+            <span className={styles.vfx_label} title={label}>{label}</span>
+            <input
+                type="range"
+                className={styles.vfx_slider}
+                min={min}
+                max={max}
+                step={step}
+                value={value}
+                onChange={(e) => onCommit(parseFloat(e.target.value))}
+            />
+            <VfxNumberField
+                value={value}
+                min={min}
+                max={max}
+                step={step}
+                onCommit={onCommit}
+            />
+        </div>
+    );
+
+    const switchRow = (label, value, onToggle) => (
+        <div
+            className={styles.vfx_checkRow}
+            key={label}
+            role="button"
+            tabIndex={0}
+            onClick={onToggle}
+            onKeyDown={(e) => { if (e.key === 'Enter') onToggle(); }}
+        >
+            <span>{label}</span>
+            <span className={`${styles.vfx_switch} ${value ? styles.vfx_switchOn : ''}`}>
+                <span className={styles.vfx_knob} />
+            </span>
+        </div>
+    );
+
+    const vecRows = (labels, vec, setVec, min, max, step) => (
+        ['x', 'y', 'z'].map((axis, i) => sliderRow(
+            labels[i],
+            vec[axis],
+            (n) => setVec({ ...vec, [axis]: n }),
+            min, max, step,
+        ))
+    );
+
     return (
-        <div style={{ width: '100%', backgroundColor: '#111', color: '#fff'}}>
-            <div className={styles.header}>
-                <div style={{ display: 'grid', marginTop:'4svh', gridTemplateColumns: '2fr 2fr', gap: '20px', padding: '20px' }}>
-                    {/* Canvas Area */}
-                    <div id="asterParent" style={{height:'100svh', width:'60svw'}}>
-                        <AsterDynamic 
-                            characters={characters}
-                            cameraPos={cameraPos}
-                            objectPos={objectPos}
-                            objectRot={objectRot}
-                            objectScale={objectScale}
-                            lights={lights}
-                            autoRotate={autoRotate}
-                            rotationSpeed={rotationSpeed}
-                            uploadedFile={uploadedFile}
-                            fileType={fileType}
-                        />
+        <div className={styles.vfx}>
+            <input
+                ref={fileInputRef}
+                type="file"
+                accept=".gltf,.glb"
+                style={{ display: 'none' }}
+                onChange={handleFileUpload}
+            />
+
+            {/* Full-screen ascii preview */}
+            <div id="asterParent" className={styles.vfx_fullStage}>
+                <AsterDynamic
+                    characters={characters}
+                    cameraPos={cameraPos}
+                    objectPos={objectPos}
+                    objectRot={objectRot}
+                    objectScale={objectScale}
+                    lights={lights}
+                    autoRotate={autoRotate}
+                    rotationSpeed={rotationSpeed}
+                    uploadedFile={uploadedFile}
+                    fileType={fileType}
+                />
+            </div>
+
+            {!menuOpen && (
+                <button
+                    type="button"
+                    aria-label="Open controls"
+                    onClick={() => setMenuOpen(true)}
+                    className={`${styles.vfx_toggle} ${styles.vfx_visible}`}
+                >
+                    <SlidersHorizontal size={18} />
+                </button>
+            )}
+
+            {menuOpen && (
+                <div className={styles.vfx_panel}>
+                    <div className={styles.vfx_head}>
+                        <span className={styles.vfx_title}>Ascii Renderer</span>
+                        <button
+                            type="button"
+                            aria-label="Close controls"
+                            className={styles.vfx_iconBtn}
+                            onClick={() => setMenuOpen(false)}
+                        >
+                            <X size={16} />
+                        </button>
                     </div>
 
-                    {/* Controls Panel */}
-                    <div id="asciitool_c_p" style={{ 
-                        backgroundColor: '#222', 
-                        padding: '20px', 
-                        borderRadius: '8px',
-                        maxHeight: '80vh',
-                        overflowY: 'auto'
-                    }}>
-                        {/* Characters */}
-                        <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#333', borderRadius: '6px' }}>
-                            <p style={{ marginBottom: '10px' }}>Constituent Characters</p>
-                            <input
-                                type="text"
-                                value={characters}
-                                onChange={(e) => setCharacters(e.target.value)}
-                                style={{
-                                    width: '100%',
-                                    padding: '8px',
-                                    backgroundColor: '#444',
-                                    border: '1px solid #666',
-                                    borderRadius: '4px',
-                                    color: '#fff',
-                                    fontFamily: 'monospace'
-                                }}
-                                placeholder="Enter characters..."
-                            />
+                    {/* Source */}
+                    <div className={styles.vfx_section}>
+                        <div className={styles.vfx_sectionTitle}>Source</div>
+                        <div className={styles.vfx_playRow}>
+                            <button
+                                type="button"
+                                className={styles.vfx_select}
+                                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                                onClick={() => fileInputRef.current.click()}
+                            >
+                                <Upload size={13} />
+                                {uploadedFile ? 'Change Model' : 'Upload Model'}
+                            </button>
                         </div>
-
-                        {/* File Upload */}
-                        <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#333', borderRadius: '6px' }}>
-                            <p style={{ marginBottom: '10px' }}>Model (.gltf/.glb)</p>
-                            <div style={{ marginBottom: '10px' }}>
-                                <input
-                                    type="file"
-                                    accept=".gltf,.glb"
-                                    onChange={(e) => handleFileUpload(e, 'gltf')}
-                                    style={{ width: '100%', padding: '5px' }}
-                                />
-                            </div>
+                        <div className={styles.vfx_fileName} title={fileName || 'asterisk.gltf (default)'}>
+                            {fileName || 'asterisk.gltf (default)'}
                         </div>
+                    </div>
 
-                        {/* Camera Controls */}
-                        <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#333', borderRadius: '6px' }}>
-                            <p style={{ marginBottom: '10px' }}>Camera Transform</p>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px' }}>
-                                {['x', 'y', 'z'].map(axis => (
-                                    <label key={axis} style={{ fontSize: '12px' }}>
-                                        <span style={{ color: '#ccc' }}>{axis.toUpperCase()}:</span>
-                                        <input
-                                            type="number"
-                                            value={cameraPos[axis]}
-                                            onChange={(e) => setCameraPos({...cameraPos, [axis]: parseFloat(e.target.value) || 0})}
-                                            style={{
-                                                width: '100%',
-                                                padding: '4px',
-                                                backgroundColor: '#444',
-                                                border: '1px solid #666',
-                                                borderRadius: '4px',
-                                                color: '#fff',
-                                                marginTop: '2px'
-                                            }}
-                                        />
-                                    </label>
+                    {/* Characters */}
+                    <div className={styles.vfx_section}>
+                        <div className={styles.vfx_sectionTitle}>Characters</div>
+                        <input
+                            type="text"
+                            className={styles.vfx_text}
+                            value={characters}
+                            onChange={(e) => setCharacters(e.target.value)}
+                            placeholder="dark -> bright ramp"
+                            spellCheck={false}
+                        />
+                        <div className={styles.vfx_hint} style={{ marginTop: 8 }}>
+                            Characters ordered dark to bright.
+                        </div>
+                    </div>
+
+                    {/* Camera */}
+                    <div className={styles.vfx_section}>
+                        <div className={styles.vfx_sectionTitle}>Camera</div>
+                        {vecRows(['Pos X', 'Pos Y', 'Pos Z'], cameraPos, setCameraPos, -20, 20, 0.1)}
+                    </div>
+
+                    {/* Object */}
+                    <div className={styles.vfx_section}>
+                        <div className={styles.vfx_sectionTitle}>Object Transform</div>
+                        {vecRows(['Pos X', 'Pos Y', 'Pos Z'], objectPos, setObjectPos, -20, 20, 0.1)}
+                        {vecRows(['Rot X', 'Rot Y', 'Rot Z'], objectRot, setObjectRot, -Math.PI * 2, Math.PI * 2, 0.01)}
+                        {vecRows(['Scale X', 'Scale Y', 'Scale Z'], objectScale, setObjectScale, 0.05, 10, 0.05)}
+                    </div>
+
+                    {/* Rotation */}
+                    <div className={styles.vfx_section}>
+                        <div className={styles.vfx_sectionTitle}>Rotation</div>
+                        {switchRow('Auto Rotate', autoRotate, () => setAutoRotate((v) => !v))}
+                        {sliderRow('Speed Y', rotationSpeed.y, (n) => setRotationSpeed({ ...rotationSpeed, y: n }), -0.1, 0.1, 0.001)}
+                        {sliderRow('Speed Z', rotationSpeed.z, (n) => setRotationSpeed({ ...rotationSpeed, z: n }), -0.1, 0.1, 0.001)}
+                    </div>
+
+                    {/* Lights */}
+                    <div className={styles.vfx_section}>
+                        <div className={styles.vfx_sectionTitle}>Lights</div>
+                        {lights.map((light, i) => (
+                            <div className={styles.vfx_card} key={light.id}>
+                                <div className={styles.vfx_cardHead}>
+                                    <span>Light {i + 1}</span>
+                                    <button
+                                        type="button"
+                                        aria-label="Remove light"
+                                        className={styles.vfx_iconBtn}
+                                        disabled={lights.length <= 1}
+                                        onClick={() => removeLight(light.id)}
+                                    >
+                                        <X size={13} />
+                                    </button>
+                                </div>
+                                {['x', 'y', 'z'].map((axis) => sliderRow(
+                                    axis.toUpperCase(),
+                                    light[axis],
+                                    (n) => updateLight(light.id, axis, n),
+                                    -1000, 1000, 1,
                                 ))}
-                            </div>
-                        </div>
-
-                        {/* Object Controls */}
-                        <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#333', borderRadius: '6px' }}>
-                            <p style={{ marginBottom: '10px' }}>Object Transform</p>
-                            
-                            <div style={{ marginBottom: '10px' }}>
-                                <span style={{ fontSize: '14px', color: '#ccc' }}>Position:</span>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px', marginTop: '5px' }}>
-                                    {['x', 'y', 'z'].map(axis => (
-                                        <input
-                                            key={axis}
-                                            type="number"
-                                            value={objectPos[axis]}
-                                            onChange={(e) => setObjectPos({...objectPos, [axis]: parseFloat(e.target.value) || 0})}
-                                            style={{
-                                                padding: '4px',
-                                                backgroundColor: '#444',
-                                                border: '1px solid #666',
-                                                borderRadius: '4px',
-                                                color: '#fff',
-                                                fontSize: '12px'
-                                            }}
-                                            placeholder={axis}
-                                        />
-                                    ))}
+                                {sliderRow('Intensity', light.intensity, (n) => updateLight(light.id, 'intensity', n), 0, 5, 0.1)}
+                                <div className={styles.vfx_row}>
+                                    <span className={styles.vfx_label}>Color</span>
+                                    <input
+                                        type="color"
+                                        className={styles.vfx_color}
+                                        style={{ gridColumn: '2 / 4' }}
+                                        value={light.color}
+                                        onChange={(e) => updateLight(light.id, 'color', e.target.value)}
+                                    />
                                 </div>
                             </div>
+                        ))}
+                        <button
+                            type="button"
+                            className={styles.vfx_select}
+                            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 4 }}
+                            onClick={addLight}
+                        >
+                            <Plus size={13} />
+                            Add Light
+                        </button>
+                    </div>
 
-                            <div style={{ marginBottom: '10px' }}>
-                                <span style={{ fontSize: '14px', color: '#ccc' }}>Rotation:</span>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px', marginTop: '5px' }}>
-                                    {['x', 'y', 'z'].map(axis => (
-                                        <input
-                                            key={axis}
-                                            type="number"
-                                            step="0.1"
-                                            value={objectRot[axis].toFixed(2)}
-                                            onChange={(e) => setObjectRot({...objectRot, [axis]: parseFloat(e.target.value) || 0})}
-                                            style={{
-                                                padding: '4px',
-                                                backgroundColor: '#444',
-                                                border: '1px solid #666',
-                                                borderRadius: '4px',
-                                                color: '#fff',
-                                                fontSize: '12px'
-                                            }}
-                                            placeholder={axis}
-                                        />
-                                    ))}
-                                </div>
-                            </div>
+                    {/* Export */}
+                    <div className={styles.vfx_section}>
+                        <div className={styles.vfx_sectionTitle}>Export</div>
+                        <button
+                            type="button"
+                            className={styles.vfx_select}
+                            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                            onClick={exportAsText}
+                        >
+                            <Download size={13} />
+                            Export as Text
+                        </button>
+                    </div>
 
-                            <div style={{ marginBottom: '10px' }}>
-                                <span style={{ fontSize: '14px', color: '#ccc' }}>Scale:</span>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px', marginTop: '5px' }}>
-                                    {['x', 'y', 'z'].map(axis => (
-                                        <input
-                                            key={axis}
-                                            type="number"
-                                            value={objectScale[axis]}
-                                            onChange={(e) => setObjectScale({...objectScale, [axis]: parseFloat(e.target.value) || 1})}
-                                            style={{
-                                                padding: '4px',
-                                                backgroundColor: '#444',
-                                                border: '1px solid #666',
-                                                borderRadius: '4px',
-                                                color: '#fff',
-                                                fontSize: '12px'
-                                            }}
-                                            placeholder={axis}
-                                        />
-                                    ))}
-                                </div>
-                            </div>
-
-                            <label style={{ display: 'flex', alignItems: 'center', fontSize: '14px', marginTop: '10px' }}>
-                                <input
-                                    type="checkbox"
-                                    checked={autoRotate}
-                                    onChange={(e) => {setAutoRotate(e.target.checked);}}
-                                    style={{ marginRight: '8px' }}
-                                />
-                                Auto Rotate
-                            </label>
-                        </div>
-
-                        {/* Lights */}
-                        <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#333', borderRadius: '6px' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                                <p>Lights</p>
-                                <button 
-                                    onClick={addLight}
-                                    style={{
-                                        padding: '6px 12px',
-                                        backgroundColor: '#5c83abff',
-                                        border: 'none',
-                                        borderRadius: '4px',
-                                        color: '#fff',
-                                        cursor: 'pointer',
-                                        fontSize: '12px',
-                                        fontFamily: 'SF Mono, Monospace'
-                                    }}
-                                >
-                                    Add Light
-                                </button>
-                            </div>
-
-                            <div style={{ maxHeight: '200px', overflowY: 'auto' }}>
-                                {lights.map((light) => (
-                                    <div key={light.id} style={{ 
-                                        backgroundColor: '#444', 
-                                        padding: '10px', 
-                                        borderRadius: '4px', 
-                                        marginBottom: '8px' 
-                                    }}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                                            <span style={{ fontSize: '14px', fontWeight: 'bold' }}>Light {light.id}</span>
-                                            <button
-                                                onClick={() => removeLight(light.id)}
-                                                style={{
-                                                    backgroundColor: '#4a0000ff',
-                                                    border: 'none',
-                                                    borderRadius: '3px',
-                                                    color: '#fff',
-                                                    cursor: 'pointer',
-                                                    fontSize: '10px',
-                                                    padding: '3px 6px',
-                                                    fontFamily: 'SF Mono, Monospace'
-                                                }}
-                                            >
-                                                Remove
-                                            </button>
-                                        </div>
-
-                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px', marginBottom: '8px' }}>
-                                            {['x', 'y', 'z'].map(axis => (
-                                                <input
-                                                    key={axis}
-                                                    type="number"
-                                                    value={light[axis]}
-                                                    onChange={(e) => updateLight(light.id, axis, parseFloat(e.target.value) || 0)}
-                                                    style={{
-                                                        padding: '4px',
-                                                        backgroundColor: '#555',
-                                                        border: '1px solid #777',
-                                                        borderRadius: '3px',
-                                                        color: '#fff',
-                                                        fontSize: '11px'
-                                                    }}
-                                                    placeholder={axis}
-                                                />
-                                            ))}
-                                        </div>
-
-                                        <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                                            <input
-                                                type="color"
-                                                value={light.color}
-                                                onChange={(e) => updateLight(light.id, 'color', e.target.value)}
-                                                style={{ width: '30px', height: '25px', borderRadius: '3px', border: 'none' }}
-                                            />
-                                            <input
-                                                type="range"
-                                                min="0"
-                                                max="2"
-                                                step="0.1"
-                                                value={light.intensity}
-                                                onChange={(e) => updateLight(light.id, 'intensity', parseFloat(e.target.value))}
-                                                style={{ flex: 1 }}
-                                            />
-                                            <span style={{ fontSize: '11px', minWidth: '30px' }}>{light.intensity}</span>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
+                    <div className={styles.vfx_section}>
+                        <button
+                            type="button"
+                            className={styles.vfx_select}
+                            style={{ textAlign: 'center' }}
+                            onClick={resetDefaults}
+                        >
+                            Reset Defaults
+                        </button>
+                        <div className={styles.vfx_hint} style={{ marginTop: 10 }}>
+                            Upload a .gltf / .glb model to replace the default asterisk.
+                            Type a value next to any slider to override its range.
                         </div>
                     </div>
                 </div>
-            </div>
+            )}
         </div>
     );
 }

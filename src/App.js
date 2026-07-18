@@ -8,6 +8,7 @@ import Resume from './components/Resume';
 import Contact from './components/Contact';
 import AsciiTool from './components/AsciiTool';
 import AudioVisualizer from './components/AudioVisualizer';
+import VFX from './components/VFX';
 
 function App() {
 
@@ -22,6 +23,7 @@ function App() {
           <Route path='/contact' element={<Contact />} />
           <Route path='/asciitool' element={<AsciiTool/>} />
           <Route path='/visualizer' element={<AudioVisualizer/>} />
+          <Route path='/vfx' element={<VFX/>} />
           <Route path="*" element={<E404 />} />
       </Routes>
     </div>

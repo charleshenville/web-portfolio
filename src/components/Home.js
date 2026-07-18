@@ -177,7 +177,7 @@ function Home() {
                             <div className={observe}>
                                 <div className={styles.aboutTxt}>about</div>
                                 <div className={styles.aboutSubTxt}>
-                                    Hello! I’m Charles, a 21 year-old computer
+                                    Hello! I’m Charles, a 22 year-old computer
                                     engineer at the University of Toronto in Canada.
                                     I’m passionate about all things relating to data,
                                     automation, design, and more recently, machine learning.

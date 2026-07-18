@@ -15,6 +15,7 @@ function MenuBar() {
             <a href="/" className={styles.txt} onClick={() => navigateAndReload('/')}>Home</a>
             <a href="#/projects" className={styles.txt} onClick={() => navigateAndReload('/#/projects')}>Projects</a>
             <a href="/#/visualizer" className={styles.txt} onClick={() => navigateAndReload('/#/visualizer')}>Music</a>
+            <a href="/#/vfx" className={styles.txt} onClick={() => navigateAndReload('/#/vfx')}>VFX</a>
             <a href="/#/resume" className={styles.txt} onClick={() => navigateAndReload('/#/resume')}>Resume</a>
             <a href="/#/contact" className={styles.txt} onClick={() => navigateAndReload('/#/contact')}>Contact</a>
             <a href="https://github.com/charleshenville/web-portfolio" target="_blank" className={styles.txt}>Source</a>

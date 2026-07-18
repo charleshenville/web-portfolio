@@ -115,12 +115,6 @@ function AsterDynamic({
             }
         }
 
-        // Clean up export buttons
-        const exportButtons = document.getElementById('export-buttons');
-        if (exportButtons) {
-            exportButtons.remove();
-        }
-
         // Remove resize listener
         window.removeEventListener('resize', onWindowResize);
     };
@@ -151,6 +145,15 @@ function AsterDynamic({
         }
     };
 
+    // Preview fills its container (falls back to the full window).
+    const getStageSize = () => {
+        const parent = document.getElementById('asterParent');
+        return {
+            width: parent?.clientWidth || window.innerWidth,
+            height: parent?.clientHeight || window.innerHeight,
+        };
+    };
+
     const initializeScene = () => {
         // Remove existing element if it exists
         const existingElement = document.getElementById('aster');
@@ -158,10 +161,11 @@ function AsterDynamic({
             existingElement.remove();
         }
 
+        const { width, height } = getStageSize();
         let scene = new THREE.Scene();
-        let camera = new THREE.PerspectiveCamera(75, (window.innerWidth * 0.6) / window.innerHeight, 0.1, 1000);
+        let camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
         let renderer = new THREE.WebGLRenderer();
-        renderer.setSize((window.innerWidth * 0.6), window.innerHeight);
+        renderer.setSize(width, height);
 
         // Store references
         sceneRef.current = scene;
@@ -170,7 +174,7 @@ function AsterDynamic({
 
         // Setup ASCII effect
         let effect = new AsciiEffect(renderer, characters, { color: true, invert: true });
-        effect.setSize((window.innerWidth * 0.6), window.innerHeight);
+        effect.setSize(width, height);
         effect.domElement.id = 'aster';
         effect.domElement.style.color = '#ffffff';
         effect.domElement.style.backgroundColor = 'black';
@@ -187,9 +191,6 @@ function AsterDynamic({
         if (asterParentElem) {
             asterParentElem.appendChild(effect.domElement);
         }
-
-        // Add export buttons
-        addExportButtons();
 
         // Setup initial state
         setupLights();
@@ -208,12 +209,12 @@ function AsterDynamic({
 
         // Create new effect with updated characters
         const oldEffect = effectRef.current;
+        const { width, height } = getStageSize();
         const newEffect = new AsciiEffect(rendererRef.current, characters, { color: false, invert: true });
-        newEffect.setSize((window.innerWidth * 0.6), window.innerHeight);
+        newEffect.setSize(width, height);
         newEffect.domElement.id = 'aster';
-        newEffect.domElement.style.color = '#D0DCCF';
-        // newEffect.domElement.style.backgroundColor = 'black';
-        newEffect.domElement.style.backgroundColor = '#3C4139';
+        newEffect.domElement.style.color = '#ffffff';
+        newEffect.domElement.style.backgroundColor = 'black';
         newEffect.domElement.style.width = '100%';
         newEffect.domElement.style.height = '100%';
         newEffect.domElement.style.left = '0';
@@ -365,134 +366,6 @@ function AsterDynamic({
         loadingRef.current = false;
     };
 
-    const addExportButtons = () => {
-        // Check if buttons already exist
-        if (document.getElementById('export-buttons')) return;
-
-        const buttonContainer = document.createElement('div');
-        buttonContainer.id = 'export-buttons';
-        buttonContainer.style.position = 'relative';
-        buttonContainer.style.zIndex = '1000';
-        buttonContainer.style.display = 'flex';
-        buttonContainer.style.gap = '10px';
-
-        // Export as text button
-        const textButton = document.createElement('button');
-        textButton.textContent = 'Export as Text';
-        textButton.style.padding = '10px 15px';
-        textButton.style.backgroundColor = '#556574ff';
-        textButton.style.fontFamily = 'SF Mono, Monospace';
-        textButton.style.color = 'white';
-        textButton.style.border = 'none';
-        textButton.style.borderRadius = '5px';
-        textButton.style.cursor = 'pointer';
-        textButton.onclick = exportAsText;
-
-        // Export as SVG button
-        // const svgButton = document.createElement('button');
-        // svgButton.textContent = 'Export as SVG';
-        // svgButton.style.padding = '10px 15px';
-        // svgButton.style.backgroundColor = '#00aa00';
-        // svgButton.style.color = 'white';
-        // svgButton.style.border = 'none';
-        // svgButton.style.borderRadius = '5px';
-        // svgButton.style.cursor = 'pointer';
-        // svgButton.onclick = exportAsSVG;
-
-        buttonContainer.appendChild(textButton);
-        // buttonContainer.appendChild(svgButton);
-        const panel = document.getElementById("asciitool_c_p");
-        panel?.appendChild(buttonContainer);
-    };
-
-    const exportAsText = () => {
-        if (!effectRef.current || !effectRef.current.domElement) return;
-
-        const element = effectRef.current.domElement;
-        let text = '';
-
-        // Find the TD element or use the element itself if it's the container
-        const tdElement = element.querySelector('td') || element;
-
-        // Walk through all child nodes of the TD
-        const processNode = (node) => {
-            if (node.nodeType === Node.TEXT_NODE) {
-                // Add text content
-                text += node.textContent;
-            } else if (node.nodeType === Node.ELEMENT_NODE) {
-                if (node.tagName.toLowerCase() === 'br') {
-                    // BR tags represent line breaks
-                    text += '\n';
-                } else if (node.tagName.toLowerCase() === 'span') {
-                    // Process span content
-                    for (let child of node.childNodes) {
-                        processNode(child);
-                    }
-                } else {
-                    // Process other elements recursively
-                    for (let child of node.childNodes) {
-                        processNode(child);
-                    }
-                }
-            }
-        };
-
-        // Process all child nodes
-        for (let child of tdElement.childNodes) {
-            processNode(child);
-        }
-
-        if (!text.trim()) return;
-
-        const blob = new Blob([text], { type: 'text/plain' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'ascii-art.txt';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-    };
-
-    const exportAsSVG = () => {
-        if (!effectRef.current || !effectRef.current.domElement) return;
-
-        const asciiContent = effectRef.current.domElement.textContent;
-        if (!asciiContent) return;
-
-        const lines = asciiContent.split('\n');
-        const charWidth = 6;
-        const charHeight = 10;
-        const width = Math.max(...lines.map(line => line.length)) * charWidth;
-        const height = lines.length * charHeight;
-
-        let svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
-            <rect width="100%" height="100%" fill="black"/>
-            <style>text { font-family: monospace; font-size: 8px; fill: #999999; }</style>`;
-
-        lines.forEach((line, y) => {
-            if (line.trim()) {
-                svg += `<text x="0" y="${(y + 1) * charHeight}">${line
-                    .replace(/&/g, '&amp;')
-                    .replace(/</g, '&lt;')
-                    .replace(/>/g, '&gt;')}</text>`;
-            }
-        });
-
-        svg += '</svg>';
-
-        const blob = new Blob([svg], { type: 'image/svg+xml' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'ascii-art.svg';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-    };
-
     const animate = () => {
         // Use refs instead of props to get the current values
         if (autoRotateRef.current && currentObjectRef.current) {
@@ -510,10 +383,11 @@ function AsterDynamic({
     const onWindowResize = () => {
         if (!cameraRef.current || !rendererRef.current || !effectRef.current) return;
 
-        cameraRef.current.aspect = (window.innerWidth * 0.6) / window.innerHeight;
+        const { width, height } = getStageSize();
+        cameraRef.current.aspect = width / height;
         cameraRef.current.updateProjectionMatrix();
-        rendererRef.current.setSize((window.innerWidth * 0.6), window.innerHeight);
-        effectRef.current.setSize((window.innerWidth * 0.6), window.innerHeight);
+        rendererRef.current.setSize(width, height);
+        effectRef.current.setSize(width, height);
     };
 
     return null; // This component doesn't render anything directly

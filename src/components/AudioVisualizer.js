@@ -8,7 +8,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Play, Pause, SlidersHorizontal, X, Plus, Crosshair, Move3d, Move, RotateCw, Maximize2, Spline } from 'lucide-react';
+import { Play, Pause, SlidersHorizontal, X, Plus, Crosshair, Move3d, Move, RotateCw, Maximize2, Spline, Video } from 'lucide-react';
 import styles from './visualizer.module.css';
 
 // Available assets. `type` is one of 'sphere' | 'ply' | 'glb'.
@@ -27,7 +27,18 @@ const ASSETS = [
 const MUSIC_ASSETS = [
     { id: 'test', name: 'Test Track', path: 'assets/test.mp3' },
     { id: 'sleepycat', name: 'Sleepy Cat', path: 'assets/sleepycat.mp3' },
+    { id: 'maestro', name: 'Maestro', path: 'assets/maestro.mp3' },
     // Add more tracks here: { id: 'unique_id', name: 'Display Name', path: 'assets/filename.mp3' },
+];
+
+// Output resolutions for the POV video renderer. `custom` uses the width/height
+// the user types in the panel.
+const RENDER_PRESETS = [
+    { id: '720p', name: '720p (1280x720)', width: 1280, height: 720 },
+    { id: '1080p', name: '1080p (1920x1080)', width: 1920, height: 1080 },
+    { id: '1440p', name: '1440p (2560x1440)', width: 2560, height: 1440 },
+    { id: '2160p', name: '4K (3840x2160)', width: 3840, height: 2160 },
+    { id: 'custom', name: 'Custom', width: 1920, height: 1080 },
 ];
 
 // Available single-variable parametric curves. `fn(t)` returns a point in
@@ -91,6 +102,10 @@ const OBJECT_DEFAULTS = {
     // Audio reactivity
     reactivity: 0.5,
     scatter: 0.002,
+    // Fraction of the audio spectrum (0 = lowest bin, 1 = highest bin) the
+    // point cloud reacts to. freqRangeMin/Max define the sub-band.
+    freqRangeMin: 0,
+    freqRangeMax: 1,
     originX: 0,
     originY: 0,
     originZ: 0,
@@ -177,6 +192,8 @@ const PARAM_GROUPS = [
         params: [
             { key: 'reactivity', label: 'Reactivity', min: 0, max: 3, step: 0.01 },
             { key: 'scatter', label: 'Scatter', min: 0, max: 1, step: 0.001, cloudOnly: true },
+            { key: 'freqRangeMin', label: 'Freq Low', min: 0, max: 1, step: 0.01, cloudOnly: true },
+            { key: 'freqRangeMax', label: 'Freq High', min: 0, max: 1, step: 0.01, cloudOnly: true },
             { key: 'originX', label: 'Pulse X', min: -20, max: 20, step: 0.1, point: 'pulse', cloudOnly: true },
             { key: 'originY', label: 'Pulse Y', min: -20, max: 20, step: 0.1, point: 'pulse', cloudOnly: true },
             { key: 'originZ', label: 'Pulse Z', min: -20, max: 20, step: 0.1, point: 'pulse', cloudOnly: true },
@@ -366,10 +383,27 @@ function AudioVisualizer() {
     const [transformMode, setTransformMode] = useState(false);
     const [gizmoMode, setGizmoMode] = useState('translate');
 
+    // POV video rendering
+    const [renderPreset, setRenderPreset] = useState('1080p');
+    const [customW, setCustomW] = useState(1920);
+    const [customH, setCustomH] = useState(1080);
+    const [renderFps, setRenderFps] = useState(60);
+    const [isRendering, setIsRendering] = useState(false);
+    const [renderProgress, setRenderProgress] = useState(0);
+    const [renderStage, setRenderStage] = useState('');
+
     const audioRef = useRef(null);
     const canvasRef = useRef(null);
     const analyserRef = useRef(null);
     const dataArrayRef = useRef(null);
+    const audioCtxRef = useRef(null);
+
+    // POV video rendering
+    const recordDestRef = useRef(null); // MediaStreamAudioDestinationNode (captured audio)
+    const mediaRecorderRef = useRef(null);
+    const isRenderingRef = useRef(false);
+    const renderCanceledRef = useRef(false);
+    const renderStopRef = useRef(null);
     const sceneRef = useRef(null);
     const cameraRef = useRef(null);
     const rendererRef = useRef(null);
@@ -661,7 +695,8 @@ function AudioVisualizer() {
         const selected = id === selectedIdRef.current;
         if (rec.boxHelper) {
             rec.boxHelper.material.color.setHex(selected ? SELECT_COLOR : BOX_COLOR);
-            rec.boxHelper.visible = showHelpersRef.current || selected;
+            // Bounding boxes (including the selected/red one) only show with helpers on.
+            rec.boxHelper.visible = showHelpersRef.current;
         }
         const tc = transformControlsRef.current;
         if (tc && selected) {
@@ -1191,15 +1226,21 @@ function AudioVisualizer() {
                         const dists = new Float32Array(n);
                         const freqIndex = new Uint16Array(n);
                         const bins = frequencyData.length;
+                        // Restrict reactivity to the chosen sub-band of the spectrum.
+                        const fLo = Math.max(0, Math.min(1, op.freqRangeMin ?? 0));
+                        const fHi = Math.max(0, Math.min(1, op.freqRangeMax ?? 1));
+                        const loBin = Math.round(Math.min(fLo, fHi) * (bins - 1));
+                        const hiBin = Math.round(Math.max(fLo, fHi) * (bins - 1));
+                        const bandSpan = Math.max(1, hiBin - loBin);
                         for (let i = 0; i < n; i++) {
                             const dx = base[i * 3] - ox;
                             const dy = base[i * 3 + 1] - oy;
                             const dz = base[i * 3 + 2] - oz;
                             const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
                             dists[i] = dist;
-                            let fidx = Math.floor((dist / 64) * bins);
-                            if (fidx >= bins) fidx = bins - 1;
-                            else if (fidx < 0) fidx = 0;
+                            let fidx = loBin + Math.floor((dist / 64) * bandSpan);
+                            if (fidx > hiBin) fidx = hiBin;
+                            else if (fidx < loBin) fidx = loBin;
                             freqIndex[i] = fidx;
                             if (dist > 1e-6) {
                                 dirs[i * 3] = dx / dist;
@@ -1332,8 +1373,8 @@ function AudioVisualizer() {
         if (axesHelperRef.current) axesHelperRef.current.visible = showHelpers;
         if (targetMarkerRef.current) targetMarkerRef.current.visible = showHelpers;
         if (pulseMarkerRef.current && !showHelpers) pulseMarkerRef.current.visible = false;
-        sceneObjectsRef.current.forEach((rec, id) => {
-            if (rec.boxHelper) rec.boxHelper.visible = showHelpers || id === selectedIdRef.current;
+        sceneObjectsRef.current.forEach((rec) => {
+            if (rec.boxHelper) rec.boxHelper.visible = showHelpers;
         });
     }, [showHelpers]);
 
@@ -1352,6 +1393,12 @@ function AudioVisualizer() {
         };
     }, []);
 
+    // Stop any in-flight render if the component unmounts.
+    useEffect(() => () => {
+        renderCanceledRef.current = true;
+        if (renderStopRef.current) renderStopRef.current();
+    }, []);
+
     // ---- Audio ---------------------------------------------------------------
 
     const initAudio = () => {
@@ -1362,6 +1409,11 @@ function AudioVisualizer() {
         const source = audioContext.createMediaElementSource(audioRef.current);
         source.connect(analyser);
         analyser.connect(audioContext.destination);
+        // Tap the same signal into a stream node so the renderer can mux audio.
+        const recordDest = audioContext.createMediaStreamDestination();
+        analyser.connect(recordDest);
+        audioCtxRef.current = audioContext;
+        recordDestRef.current = recordDest;
         analyserRef.current = analyser;
         dataArrayRef.current = new Uint8Array(analyser.frequencyBinCount);
     };
@@ -1385,18 +1437,194 @@ function AudioVisualizer() {
             setIsPlaying(false);
         }
         setSelectedMusic(musicId);
-        analyserRef.current = null;
-        dataArrayRef.current = null;
+        // Keep the existing audio graph: an <audio> element can only ever be
+        // bound to one MediaElementSourceNode, so we reuse it across tracks.
+        // Changing `src` (via selectedMusic) makes the same graph follow the
+        // new track automatically.
         if (wasPlaying) {
             setTimeout(() => {
                 if (audioRef.current) {
-                    initAudio();
+                    if (!analyserRef.current) initAudio();
                     audioRef.current.play();
                     setIsPlaying(true);
                 }
             }, 100);
         }
     };
+
+    // ---- POV video rendering -------------------------------------------------
+
+    // Records the live composited canvas (current camera POV, with audio
+    // reactivity) plus the track audio into a webm for the full song duration.
+    const startRender = useCallback(async () => {
+        if (isRenderingRef.current) return;
+        const renderer = rendererRef.current;
+        const camera = cameraRef.current;
+        const composer = composerRef.current;
+        const audio = audioRef.current;
+        if (!renderer || !camera || !composer || !audio) return;
+        if (typeof MediaRecorder === 'undefined' || !renderer.domElement.captureStream) {
+            // eslint-disable-next-line no-alert
+            window.alert('Video capture is not supported in this browser.');
+            return;
+        }
+
+        const preset = RENDER_PRESETS.find((p) => p.id === renderPreset) || RENDER_PRESETS[1];
+        const width = Math.max(2, Math.round(preset.id === 'custom' ? customW : preset.width));
+        const height = Math.max(2, Math.round(preset.id === 'custom' ? customH : preset.height));
+        const fps = Math.max(1, Math.min(120, Math.round(renderFps)));
+
+        setIsRendering(true);
+        isRenderingRef.current = true;
+        renderCanceledRef.current = false;
+        setRenderStage('Preparing');
+        setRenderProgress(0);
+
+        // Ensure the audio graph exists and is running.
+        if (!analyserRef.current) initAudio();
+        if (audioCtxRef.current && audioCtxRef.current.state === 'suspended') {
+            try { await audioCtxRef.current.resume(); } catch (e) { /* ignore */ }
+        }
+
+        // Make sure we know how long the track is.
+        if (!Number.isFinite(audio.duration) || audio.duration === 0) {
+            await new Promise((resolve) => {
+                const onMeta = () => { audio.removeEventListener('loadedmetadata', onMeta); resolve(); };
+                audio.addEventListener('loadedmetadata', onMeta);
+                audio.load();
+                setTimeout(resolve, 4000); // fail-safe
+            });
+        }
+        const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
+
+        // Remember the on-screen size so we can restore it afterwards.
+        const prevSize = new THREE.Vector2();
+        renderer.getSize(prevSize);
+        const prevPixelRatio = renderer.getPixelRatio();
+        const prevAspect = camera.aspect;
+
+        // Render at the requested resolution (pixelRatio 1 → buffer == W×H).
+        renderer.setPixelRatio(1);
+        renderer.setSize(width, height, false);
+        composer.setPixelRatio(1);
+        composer.setSize(width, height);
+        camera.aspect = width / height;
+        camera.updateProjectionMatrix();
+        if (bloomPassRef.current) bloomPassRef.current.setSize(width, height);
+
+        const restoreSize = () => {
+            renderer.setPixelRatio(prevPixelRatio);
+            renderer.setSize(prevSize.x, prevSize.y, false);
+            composer.setPixelRatio(prevPixelRatio);
+            composer.setSize(prevSize.x, prevSize.y);
+            camera.aspect = prevAspect;
+            camera.updateProjectionMatrix();
+            if (bloomPassRef.current) bloomPassRef.current.setSize(prevSize.x, prevSize.y);
+        };
+
+        // Build a combined video (canvas) + audio (track) stream.
+        const canvasStream = renderer.domElement.captureStream(fps);
+        const tracks = [...canvasStream.getVideoTracks()];
+        if (recordDestRef.current) {
+            const audioTrack = recordDestRef.current.stream.getAudioTracks()[0];
+            if (audioTrack) tracks.push(audioTrack);
+        }
+        const combined = new MediaStream(tracks);
+
+        const mimeCandidates = [
+            'video/webm;codecs=vp9,opus',
+            'video/webm;codecs=vp8,opus',
+            'video/webm',
+        ];
+        const mimeType = mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m)) || '';
+
+        let recorder;
+        try {
+            recorder = new MediaRecorder(combined, mimeType
+                ? { mimeType, videoBitsPerSecond: 16_000_000 }
+                : {});
+        } catch (e) {
+            restoreSize();
+            isRenderingRef.current = false;
+            setIsRendering(false);
+            setRenderStage('');
+            // eslint-disable-next-line no-alert
+            window.alert('Failed to start the video recorder.');
+            return;
+        }
+        mediaRecorderRef.current = recorder;
+
+        const chunks = [];
+        recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+
+        let progressTimer = null;
+        const finish = () => {
+            if (renderStopRef.current !== finish) return; // already stopped
+            renderStopRef.current = null;
+            if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+            audio.removeEventListener('ended', finish);
+            if (recorder.state !== 'inactive') recorder.stop();
+            audio.pause();
+            setIsPlaying(false);
+        };
+        renderStopRef.current = finish;
+
+        recorder.onstop = () => {
+            canvasStream.getTracks().forEach((t) => t.stop());
+            restoreSize();
+            mediaRecorderRef.current = null;
+            isRenderingRef.current = false;
+            setIsRendering(false);
+            setRenderStage('');
+            setRenderProgress(0);
+
+            if (!renderCanceledRef.current && chunks.length > 0) {
+                const blob = new Blob(chunks, { type: mimeType || 'video/webm' });
+                const url = URL.createObjectURL(blob);
+                const musicName = MUSIC_ASSETS.find((m) => m.id === selectedMusic)?.name || 'render';
+                const safeName = musicName.replace(/\s+/g, '_').toLowerCase();
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${safeName}_${width}x${height}_${fps}fps.webm`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                setTimeout(() => URL.revokeObjectURL(url), 2000);
+            }
+        };
+
+        // Start from the top so the whole song is captured with reactivity.
+        audio.pause();
+        try { audio.currentTime = 0; } catch (e) { /* ignore */ }
+        audio.addEventListener('ended', finish);
+
+        recorder.start(1000); // gather data in 1s chunks
+        setRenderStage('Recording');
+        try {
+            await audio.play();
+        } catch (e) {
+            finish();
+            return;
+        }
+        setIsPlaying(true);
+
+        progressTimer = setInterval(() => {
+            if (duration > 0) {
+                const p = Math.min(1, audio.currentTime / duration);
+                setRenderProgress(p);
+                if (audio.currentTime >= duration - 0.05) finish();
+            } else {
+                // Unknown duration: reflect elapsed time loosely.
+                setRenderProgress((prev) => Math.min(0.99, prev + 0.01));
+            }
+        }, 200);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [renderPreset, customW, customH, renderFps, selectedMusic]);
+
+    const cancelRender = useCallback(() => {
+        renderCanceledRef.current = true;
+        if (renderStopRef.current) renderStopRef.current();
+    }, []);
 
     // ---- Composition controls ------------------------------------------------
 
@@ -1573,6 +1801,36 @@ function AudioVisualizer() {
 
             {isLoading && <div className={styles.av_loading}>Loading</div>}
 
+            {/* POV render progress overlay */}
+            {isRendering && (
+                <div className={styles.av_renderOverlay}>
+                    <div className={styles.av_renderCard}>
+                        <div className={styles.av_renderTitle}>
+                            <Video size={14} style={{ verticalAlign: '-2px', marginRight: 8 }} />
+                            Rendering POV Video
+                        </div>
+                        <div className={styles.av_renderSub}>
+                            {renderStage || 'Working'} · {renderFps} fps
+                        </div>
+                        <div className={styles.av_progress} style={{ marginTop: 14 }}>
+                            <div
+                                className={styles.av_progressFill}
+                                style={{ width: `${Math.round(renderProgress * 100)}%` }}
+                            />
+                        </div>
+                        <div className={styles.av_renderPct}>{Math.round(renderProgress * 100)}%</div>
+                        <button
+                            type="button"
+                            className={`${styles.av_select} ${styles.av_recActive}`}
+                            onClick={cancelRender}
+                            style={{ textAlign: 'center', marginTop: 4 }}
+                        >
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+            )}
+
             {/* Menu reveal button (auto-hides when the cursor is idle) */}
             {!menuOpen && (
                 <button
@@ -1609,6 +1867,7 @@ function AudioVisualizer() {
                                 aria-label={isPlaying ? 'Pause' : 'Play'}
                                 className={styles.av_iconBtn}
                                 onClick={togglePlay}
+                                disabled={isRendering}
                                 style={{ width: 34, height: 34, flex: '0 0 auto' }}
                             >
                                 {isPlaying ? <Pause size={16} /> : <Play size={16} />}
@@ -1616,6 +1875,7 @@ function AudioVisualizer() {
                             <select
                                 className={styles.av_select}
                                 value={selectedMusic}
+                                disabled={isRendering}
                                 onChange={(e) => handleMusicSelect(e.target.value)}
                             >
                                 {MUSIC_ASSETS.map((m) => (
@@ -1766,6 +2026,101 @@ function AudioVisualizer() {
                             )}
                         </div>
                     ))}
+
+                    {/* POV video render */}
+                    <div className={styles.av_section}>
+                        <div className={styles.av_sectionTitle}>Render POV Video</div>
+                        <select
+                            className={styles.av_select}
+                            value={renderPreset}
+                            disabled={isRendering}
+                            onChange={(e) => setRenderPreset(e.target.value)}
+                        >
+                            {RENDER_PRESETS.map((p) => (
+                                <option key={p.id} value={p.id}>{p.name}</option>
+                            ))}
+                        </select>
+
+                        {renderPreset === 'custom' && (
+                            <div className={styles.av_addRow} style={{ marginTop: 8 }}>
+                                <NumberField
+                                    value={customW}
+                                    min={2}
+                                    max={7680}
+                                    step={2}
+                                    disabled={isRendering}
+                                    onCommit={(n) => setCustomW(Math.round(n))}
+                                />
+                                <span style={{ opacity: 0.6, fontSize: 12 }}>×</span>
+                                <NumberField
+                                    value={customH}
+                                    min={2}
+                                    max={4320}
+                                    step={2}
+                                    disabled={isRendering}
+                                    onCommit={(n) => setCustomH(Math.round(n))}
+                                />
+                            </div>
+                        )}
+
+                        <div className={styles.av_row} style={{ marginTop: 8 }}>
+                            <span className={styles.av_label} title="Frames per second">FPS</span>
+                            <input
+                                className={styles.av_slider}
+                                type="range"
+                                min={24}
+                                max={120}
+                                step={1}
+                                value={renderFps}
+                                disabled={isRendering}
+                                onChange={(e) => setRenderFps(parseFloat(e.target.value))}
+                            />
+                            <NumberField
+                                value={renderFps}
+                                min={1}
+                                max={120}
+                                step={1}
+                                disabled={isRendering}
+                                onCommit={(n) => setRenderFps(Math.round(n))}
+                            />
+                        </div>
+
+                        {!isRendering ? (
+                            <button
+                                type="button"
+                                className={styles.av_select}
+                                onClick={startRender}
+                                style={{ textAlign: 'center', marginTop: 8 }}
+                            >
+                                <Video size={12} style={{ verticalAlign: '-2px', marginRight: 6 }} />
+                                Render Full Song
+                            </button>
+                        ) : (
+                            <>
+                                <div className={styles.av_progress} style={{ marginTop: 10 }}>
+                                    <div
+                                        className={styles.av_progressFill}
+                                        style={{ width: `${Math.round(renderProgress * 100)}%` }}
+                                    />
+                                </div>
+                                <div className={styles.av_hint} style={{ marginTop: 6 }}>
+                                    {renderStage} · {Math.round(renderProgress * 100)}%
+                                </div>
+                                <button
+                                    type="button"
+                                    className={`${styles.av_select} ${styles.av_recActive}`}
+                                    onClick={cancelRender}
+                                    style={{ textAlign: 'center', marginTop: 8 }}
+                                >
+                                    Cancel
+                                </button>
+                            </>
+                        )}
+                        <div className={styles.av_hint} style={{ marginTop: 8 }}>
+                            Captures the live camera POV (with reactivity) + audio for the
+                            whole track. Move the camera before rendering to frame your shot.
+                        </div>
+                    </div>
 
                     {/* Footer */}
                     <div className={styles.av_section} style={{ borderBottom: 'none' }}>

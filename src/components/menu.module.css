@@ -5,7 +5,7 @@
     display: grid;
     min-height: 4vh;
     min-width: 100%;
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(7, 1fr);
     column-gap: 0px;
     justify-content: center;
     z-index: 3;
