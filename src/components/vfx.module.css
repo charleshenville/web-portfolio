@@ -428,6 +428,18 @@
     background: #000;
 }
 
+/* Pixel sorter result canvas: shown in place of the media element itself.
+   App.css globally applies `canvas { position: fixed; z-index: -1 }`, so both
+   must be overridden or the preview vanishes behind the page. */
+.vfx_canvas {
+    position: static;
+    z-index: 1;
+    display: block;
+    max-width: 100%;
+    max-height: calc(100vh - 4vh - 32px);
+    background: #000;
+}
+
 .vfx_overlay {
     /* App.css globally applies `canvas { position: fixed; z-index: -1 }`;
        both must be overridden here or the overlay hides behind the video. */

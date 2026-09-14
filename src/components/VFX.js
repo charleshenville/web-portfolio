@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
 import AsciiTool from './AsciiTool';
 import BlobTracker from './BlobTracker';
+import PixelSorter from './PixelSorter';
 import styles from './vfx.module.css';
 
 const TOOLS = [
     { id: 'blob', name: 'Blob Tracker', render: () => <BlobTracker /> },
+    { id: 'pixelsort', name: 'Pixel Sorter', render: () => <PixelSorter /> },
     { id: 'ascii', name: 'Ascii', render: () => <AsciiTool /> },
 ];
 
