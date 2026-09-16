@@ -1,0 +1,36 @@
+.logo {
+    width: 100%;
+    height: auto;
+    overflow: visible;
+}
+
+.face {
+    fill: var(--ink);
+}
+
+/* Walls sit exactly under the face and are hidden until extruded, so their
+   anti-aliased edges never fringe the flat mark. */
+.layer {
+    fill: var(--accent);
+    transform: translateY(0);
+    opacity: 0;
+    transition:
+        transform 0.25s linear,
+        opacity 0s linear 0.25s;
+}
+
+:global(a:hover) > .logo .layer,
+:global(a:focus-visible) > .logo .layer,
+.logo:hover .layer {
+    transform: translateY(var(--y));
+    opacity: 1;
+    transition:
+        transform 0.25s linear,
+        opacity 0s linear;
+}
+
+@media (hover: none) {
+    .layer {
+        display: none;
+    }
+}

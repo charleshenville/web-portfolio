@@ -1,41 +1,18 @@
-.header {
-    z-index: 1;
-    font-family: "SF Mono";
-    background-color: #00000000;
-    /* min-height: 100vh; */
-    position: absolute;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    font-size: calc(10px + 2vmin);
-    color: white;
-}
-
-.observe{
-    opacity: 1;
-    transition: opacity 1s ease-out;
-}
-
-.observeHidden{
-    opacity: 0;
-    transition: opacity 1s ease-out;
-}
-
 /* ---- AudioVisualizer minimal/technical controls ---- */
-/* Two colors: --fg (light) on --bg (near-black), monospace throughout. */
+/* Site design system tokens (index.css); mono controls, one accent. */
 .av {
-    --fg: #d4d4d4;
-    --bg: #0c0c0c;
-    --line: rgba(212, 212, 212, 0.16);
-    --hover: rgba(212, 212, 212, 0.08);
-    font-family: "SF Mono", ui-monospace, Menlo, Monaco, monospace;
+    --fg: var(--ink);
+    --bg: var(--paper);
+    --line: rgba(236, 235, 230, 0.18);
+    --hover: rgba(236, 235, 230, 0.07);
+    font-family: var(--mono);
 }
 
-/* Sits clear of the fixed top MenuBar (z-index 3, ~4vh tall). */
+/* Sits clear of the fixed site header (logo + menu). */
 .av_toggle {
     position: fixed;
-    top: calc(4vh + 18px);
-    right: 18px;
+    top: calc(var(--nav-h) + 8px);
+    right: var(--gutter);
     z-index: 30;
     width: 38px;
     height: 38px;
@@ -64,11 +41,11 @@
 
 .av_panel {
     position: fixed;
-    top: calc(4vh + 18px);
-    right: 18px;
+    top: calc(var(--nav-h) + 8px);
+    right: var(--gutter);
     z-index: 29;
     width: 296px;
-    max-height: calc(100vh - 4vh - 36px);
+    max-height: calc(100svh - var(--nav-h) - 8px - var(--gutter));
     overflow-y: auto;
     background: var(--bg);
     color: var(--fg);
@@ -96,9 +73,10 @@
 }
 
 .av_title {
-    font-size: 11px;
-    letter-spacing: 2px;
-    text-transform: uppercase;
+    font-family: var(--grotesk);
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
 }
 
 .av_iconBtn {
@@ -124,10 +102,10 @@
 }
 
 .av_sectionTitle {
-    font-size: 9px;
-    letter-spacing: 2px;
+    font-size: 10px;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
-    opacity: 0.55;
+    color: var(--ink-2);
     margin-bottom: 10px;
 }
 
@@ -175,7 +153,8 @@
 }
 
 .av_switchOn {
-    background: var(--fg);
+    background: var(--accent);
+    border-color: var(--accent);
 }
 
 .av_knob {
@@ -190,7 +169,7 @@
 
 .av_switchOn .av_knob {
     transform: translateX(16px);
-    background: var(--bg);
+    background: var(--on-accent);
 }
 
 .av_row {
@@ -354,8 +333,8 @@
 }
 
 .av_itemSel {
-    border-color: #d46a6a;
-    background: rgba(212, 106, 106, 0.08);
+    border-color: var(--accent);
+    background: rgba(0, 0, 255, 0.14);
 }
 
 .av_scopeTag {
@@ -422,8 +401,9 @@
 }
 
 .av_recActive {
-    border-color: #d46a6a;
-    color: #e89090;
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--on-accent);
 }
 
 .av_loading {
@@ -435,7 +415,7 @@
     color: var(--fg);
     background: var(--bg);
     border: 1px solid var(--line);
-    font-family: "SF Mono", ui-monospace, Menlo, Monaco, monospace;
+    font-family: var(--mono);
     font-size: 11px;
     letter-spacing: 2px;
     text-transform: uppercase;
@@ -452,7 +432,7 @@
 
 .av_progressFill {
     height: 100%;
-    background: var(--fg);
+    background: var(--accent);
     transition: width 0.2s linear;
 }
 
@@ -465,7 +445,7 @@
     justify-content: center;
     background: rgba(0, 0, 0, 0.62);
     backdrop-filter: blur(2px);
-    font-family: "SF Mono", ui-monospace, Menlo, Monaco, monospace;
+    font-family: var(--mono);
 }
 
 .av_renderCard {
@@ -498,4 +478,34 @@
     margin-bottom: 14px;
     font-size: 22px;
     letter-spacing: 1px;
+}
+/* ---- Site design system accents ---- */
+.av_panel {
+    border-color: var(--rule-strong);
+}
+
+.av_toggle {
+    border-color: var(--rule-strong);
+}
+
+.av_toggle:hover,
+.av_iconBtn:hover:not(:disabled) {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+}
+
+.av_slider:hover::-webkit-slider-thumb {
+    background: var(--accent);
+}
+
+.av_slider:hover::-moz-range-thumb {
+    background: var(--accent);
+}
+
+.av_select:focus-visible,
+.av_num:focus,
+.av_text:focus {
+    border-color: var(--accent);
+    outline: none;
 }

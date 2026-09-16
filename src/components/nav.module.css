@@ -1,0 +1,354 @@
+/* ---- Header bar ---- */
+.bar {
+    position: fixed;
+    inset: 0 0 auto 0;
+    z-index: 60;
+    height: var(--nav-h);
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    column-gap: var(--gutter);
+    padding-inline: var(--gutter);
+    border-bottom: 1px solid transparent;
+    background: rgba(12, 12, 12, 0.42);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+    transition: border-color 0.3s ease;
+    pointer-events: none;
+}
+
+.bar > * {
+    pointer-events: auto;
+}
+
+.barSolid {
+    border-bottom-color: var(--rule);
+}
+
+.logoLink {
+    display: block;
+    width: 62px;
+    /* the extrusion hangs below the flat mark */
+    margin-top: 12px;
+}
+
+.menuBtn {
+    grid-column: 3;
+    justify-self: end;
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    height: 40px;
+    padding: 0 14px 0 16px;
+    background: transparent;
+    border: 1px solid var(--rule-strong);
+    border-radius: 0;
+    cursor: pointer;
+    transition: background 0.25s ease, border-color 0.25s ease, color 0.25s ease;
+}
+
+.menuBtn:hover,
+.barOpen .menuBtn {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+}
+
+.menuWord {
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    min-width: 3.1em;
+    text-align: left;
+}
+
+.burger {
+    position: relative;
+    width: 18px;
+    height: 10px;
+}
+
+.burger span {
+    position: absolute;
+    left: 0;
+    width: 100%;
+    height: 1.5px;
+    background: currentColor;
+    transition: transform 0.35s var(--ease), top 0.35s var(--ease);
+}
+
+.burger span:first-child { top: 0; }
+.burger span:last-child { top: calc(100% - 1.5px); }
+
+.burgerOpen span:first-child {
+    top: calc(50% - 0.75px);
+    transform: rotate(45deg);
+}
+
+.burgerOpen span:last-child {
+    top: calc(50% - 0.75px);
+    transform: rotate(-45deg);
+}
+
+/* ---- Drawer ---- */
+.scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(0, 0, 0, 0.3);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.35s ease;
+}
+
+.scrimOpen {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.panel {
+    position: fixed;
+    inset: 0 0 0 auto;
+    z-index: 50;
+    width: min(620px, 100vw);
+    border-left: 1px solid var(--rule-strong);
+    /* frosted glass: blurs the page behind, with faint paper grain on top */
+    background: rgba(12, 12, 12, 0.55);
+    -webkit-backdrop-filter: blur(24px);
+    backdrop-filter: blur(24px);
+    transform: translateX(100%);
+    visibility: hidden;
+    transition: transform 0.5s var(--ease), visibility 0s linear 0.5s;
+}
+
+.panelOpen {
+    transform: none;
+    visibility: visible;
+    transition: transform 0.5s var(--ease), visibility 0s;
+}
+
+.panelScroll {
+    position: relative;
+    z-index: 1;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    padding-top: var(--nav-h);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.panelHead {
+    display: flex;
+    justify-content: space-between;
+    padding: 18px var(--gutter) 10px;
+}
+
+.panelBand {
+    position: relative;
+    height: 88px;
+    flex: 0 0 auto;
+}
+
+.panelBand > canvas {
+    opacity: 0.6;
+}
+
+.list {
+    padding: 8px var(--gutter) 0;
+}
+
+.item {
+    border-top: 1px solid var(--rule);
+}
+
+.item:last-child {
+    border-bottom: 1px solid var(--rule);
+}
+
+.row {
+    position: relative;
+    display: grid;
+    grid-template-columns: 56px 1fr auto;
+    align-items: center;
+    width: 100%;
+    padding: 10px 0 8px;
+    background: none;
+    border: 0;
+    text-align: left;
+    cursor: pointer;
+    color: var(--ink);
+}
+
+.idx {
+    align-self: start;
+    padding-top: 0.9em;
+    color: var(--ink-3);
+}
+
+.word {
+    font-size: clamp(2.2rem, 6vw, 3.6rem);
+    font-weight: 400;
+    letter-spacing: -0.045em;
+    line-height: 1;
+    transition: transform 0.35s var(--ease), color 0.2s ease;
+}
+
+.row:hover .word,
+.row:focus-visible .word {
+    transform: translateX(10px);
+}
+
+/* current page: accent square in the index column */
+.current .idx {
+    color: var(--ink);
+}
+
+.current .idx::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 8px;
+    background: var(--accent);
+    vertical-align: 1px;
+}
+
+.ext {
+    font-size: 1.6rem;
+    color: var(--ink-2);
+}
+
+.plus {
+    position: relative;
+    width: 22px;
+    height: 22px;
+}
+
+.plus::before,
+.plus::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: calc(50% - 0.75px);
+    width: 100%;
+    height: 1.5px;
+    background: currentColor;
+    transition: transform 0.35s var(--ease);
+}
+
+.plus::after {
+    transform: rotate(90deg);
+}
+
+.plusOpen::after {
+    transform: rotate(0deg);
+}
+
+/* expandable VFX group */
+.sub {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 0.45s var(--ease);
+}
+
+.subOpen {
+    grid-template-rows: 1fr;
+}
+
+.subList {
+    overflow: hidden;
+    min-height: 0;
+}
+
+.subList li:first-child {
+    padding-top: 2px;
+}
+
+.subList li:last-child {
+    padding-bottom: 14px;
+}
+
+.subRow {
+    display: grid;
+    grid-template-columns: 56px 1fr;
+    align-items: baseline;
+    padding: 5px 0 5px 56px;
+    color: var(--ink-2);
+    transition: color 0.2s ease;
+}
+
+.subRow .idx {
+    padding-top: 0;
+}
+
+.subRow:hover,
+.subRow.current {
+    color: var(--ink);
+}
+
+.subWord {
+    font-size: clamp(1.25rem, 2.6vw, 1.6rem);
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+    transition: transform 0.35s var(--ease);
+}
+
+.subRow:hover .subWord {
+    transform: translateX(8px);
+}
+
+.panelFoot {
+    margin-top: auto;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 16px;
+    padding: 40px var(--gutter) 22px;
+}
+
+.socials {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+}
+
+.socials a {
+    color: var(--ink);
+}
+
+@media (max-width: 720px) {
+    .logoLink {
+        width: 50px;
+        margin-top: 8px;
+    }
+    .row {
+        grid-template-columns: 40px 1fr auto;
+    }
+    .subRow {
+        grid-template-columns: 48px 1fr;
+        padding-left: 40px;
+    }
+}
+
+/* Tool pages: no bar, logo or glass; just the menu button pinned top right,
+   directly above the tool's own control column. */
+.barTool {
+    display: flex;
+    height: auto;
+    inset: var(--gutter) var(--gutter) auto auto;
+    padding: 0;
+    background: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    border: 0;
+}
+
+.barTool .menuBtn {
+    background: var(--paper);
+}
+
+.barTool .menuBtn:hover,
+.barTool.barOpen .menuBtn {
+    background: var(--accent);
+}

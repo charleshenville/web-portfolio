@@ -1,0 +1,22 @@
+[
+    {
+        "id": "maestro",
+        "title": "Maestro",
+        "type": "Single",
+        "year": 2026,
+        "art": "",
+        "audio": "assets/maestro.mp3",
+        "tracks": ["Maestro"],
+        "links": []
+    },
+    {
+        "id": "sleepy-cat",
+        "title": "Sleepy Cat",
+        "type": "Single",
+        "year": 2026,
+        "art": "",
+        "audio": "assets/sleepycat.mp3",
+        "tracks": ["Sleepy Cat"],
+        "links": []
+    }
+]

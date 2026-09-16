@@ -1,7 +1,7 @@
 {
   "name": "webprofile",
   "version": "1.6.2",
-  "homepage": "https://cmhenville.tech",
+  "homepage": "https://cmhnvl.net",
   "private": true,
   "dependencies": {
     "@emailjs/browser": "^3.11.0",

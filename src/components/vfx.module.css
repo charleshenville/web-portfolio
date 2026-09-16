@@ -1,13 +1,13 @@
-/* ---- VFX tools page ----
-   Same minimal/technical design system as the AudioVisualizer:
-   two colors (--fg on --bg), hairline borders, SF Mono, square corners. */
+/* ---- VFX tools ----
+   Follows the site design system (index.css): ink on black paper, mono
+   controls with grotesk titles, square corners and one accent for state. */
 
 .vfx {
-    --fg: #d4d4d4;
-    --bg: #0c0c0c;
-    --line: rgba(212, 212, 212, 0.16);
-    --hover: rgba(212, 212, 212, 0.08);
-    font-family: "SF Mono", ui-monospace, Menlo, Monaco, monospace;
+    --fg: var(--ink);
+    --bg: var(--paper);
+    --line: rgba(236, 235, 230, 0.18);
+    --hover: rgba(236, 235, 230, 0.07);
+    font-family: var(--mono);
     width: 100vw;
     height: 100vh;
     overflow: hidden;
@@ -15,11 +15,11 @@
     position: relative;
 }
 
-/* Sits clear of the fixed top MenuBar (z-index 3, ~4vh tall). */
+/* Sits clear of the fixed site header (logo + menu). */
 .vfx_toggle {
     position: fixed;
-    top: calc(4vh + 18px);
-    right: 18px;
+    top: calc(var(--nav-h) + 8px);
+    right: var(--gutter);
     z-index: 30;
     width: 38px;
     height: 38px;
@@ -48,11 +48,11 @@
 
 .vfx_panel {
     position: fixed;
-    top: calc(4vh + 18px);
-    right: 18px;
+    top: calc(var(--nav-h) + 8px);
+    right: var(--gutter);
     z-index: 29;
     width: 296px;
-    max-height: calc(100vh - 4vh - 36px);
+    max-height: calc(100svh - var(--nav-h) - 8px - var(--gutter));
     overflow-y: auto;
     background: var(--bg);
     color: var(--fg);
@@ -81,9 +81,10 @@
 }
 
 .vfx_title {
-    font-size: 11px;
-    letter-spacing: 2px;
-    text-transform: uppercase;
+    font-family: var(--grotesk);
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
 }
 
 .vfx_iconBtn {
@@ -114,10 +115,10 @@
 }
 
 .vfx_sectionTitle {
-    font-size: 9px;
-    letter-spacing: 2px;
+    font-size: 10px;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
-    opacity: 0.55;
+    color: var(--ink-2);
     margin-bottom: 10px;
 }
 
@@ -263,13 +264,14 @@
 
 .vfx_progressFill {
     height: 100%;
-    background: var(--fg);
+    background: var(--accent);
     transition: width 0.2s linear;
 }
 
 .vfx_recActive {
-    border-color: #d46a6a;
-    color: #e89090;
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--on-accent);
 }
 
 /* Bordered sub-card (per-light controls in the ascii tool) */
@@ -318,7 +320,8 @@
 }
 
 .vfx_switchOn {
-    background: var(--fg);
+    background: var(--accent);
+    border-color: var(--accent);
 }
 
 .vfx_knob {
@@ -333,7 +336,7 @@
 
 .vfx_switchOn .vfx_knob {
     transform: translateX(16px);
-    background: var(--bg);
+    background: var(--on-accent);
 }
 
 .vfx_color {
@@ -382,10 +385,11 @@
     background: var(--hover);
 }
 
-.vfx_segBtnOn {
-    background: var(--fg);
-    color: var(--bg);
-    border-color: var(--fg);
+.vfx_segBtnOn,
+.vfx_segBtnOn:hover {
+    background: var(--accent);
+    color: var(--on-accent);
+    border-color: var(--accent);
 }
 
 .vfx_hint {
@@ -402,6 +406,17 @@
     overflow: hidden;
 }
 
+/* Procedural ascii preview canvas. */
+.vfx_asciiCanvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 1;
+    display: block;
+    cursor: pointer;
+}
+
 /* ---- Blob tracker stage ---- */
 .vfx_stage {
     position: absolute;
@@ -409,7 +424,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: calc(4vh + 16px) 16px 16px;
+    padding: calc(var(--nav-h) + 8px) var(--gutter) var(--gutter);
     box-sizing: border-box;
 }
 
@@ -423,26 +438,22 @@
 .vfx_video {
     display: block;
     max-width: 100%;
-    max-height: calc(100vh - 4vh - 32px);
+    max-height: calc(100svh - var(--nav-h) - 8px - 2 * var(--gutter));
     cursor: pointer;
     background: #000;
 }
 
-/* Pixel sorter result canvas: shown in place of the media element itself.
-   App.css globally applies `canvas { position: fixed; z-index: -1 }`, so both
-   must be overridden or the preview vanishes behind the page. */
+/* Pixel sorter result canvas: shown in place of the media element itself. */
 .vfx_canvas {
     position: static;
     z-index: 1;
     display: block;
     max-width: 100%;
-    max-height: calc(100vh - 4vh - 32px);
+    max-height: calc(100svh - var(--nav-h) - 8px - 2 * var(--gutter));
     background: #000;
 }
 
 .vfx_overlay {
-    /* App.css globally applies `canvas { position: fixed; z-index: -1 }`;
-       both must be overridden here or the overlay hides behind the video. */
     position: absolute;
     inset: 0;
     width: 100%;
@@ -493,4 +504,48 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+/* ---- Site design system accents ---- */
+.vfx_panel {
+    border-color: var(--rule-strong);
+}
+
+.vfx_toggle {
+    border-color: var(--rule-strong);
+}
+
+.vfx_toggle:hover,
+.vfx_iconBtn:hover:not(:disabled) {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+}
+
+.vfx_slider:hover::-webkit-slider-thumb {
+    background: var(--accent);
+}
+
+.vfx_slider:hover::-moz-range-thumb {
+    background: var(--accent);
+}
+
+.vfx_select:focus-visible,
+.vfx_num:focus,
+.vfx_text:focus {
+    border-color: var(--accent);
+    outline: none;
+}
+
+.vfx_drop:hover,
+.vfx_dropActive {
+    border-color: var(--accent);
+    border-style: solid;
+}
+
+.vfx_dropTitle {
+    font-family: var(--grotesk);
+    font-size: 18px;
+    letter-spacing: -0.02em;
+    text-transform: none;
 }

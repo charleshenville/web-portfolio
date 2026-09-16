@@ -1,0 +1,36 @@
+.lost {
+    position: relative;
+    min-height: calc(100svh - var(--nav-h));
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    padding-bottom: 48px;
+}
+
+.lostField {
+    position: absolute;
+    inset: 0;
+}
+
+.lostField > canvas {
+    opacity: 0.5;
+}
+
+.lostCode {
+    position: relative;
+    font-size: clamp(8rem, 36vw, 32rem);
+    font-weight: 400;
+    letter-spacing: -0.08em;
+    line-height: 0.78;
+    margin-left: -0.06em;
+}
+
+.lostText {
+    position: relative;
+    margin-top: 24px;
+    font-size: var(--fs-lead);
+}
+
+.lost > :not(.lostField) {
+    position: relative;
+}

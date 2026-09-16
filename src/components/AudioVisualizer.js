@@ -1320,6 +1320,10 @@ function AudioVisualizer() {
             controls.dispose();
             sceneObjects.forEach((rec) => disposeRecord(rec));
             sceneObjects.clear();
+            // the site no longer reloads between routes, so free the GL context
+            composer.dispose();
+            renderer.dispose();
+            renderer.forceContextLoss();
         };
     }, [disposeRecord]);
 

@@ -1,0 +1,237 @@
+.download {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 40px;
+    margin-top: 28px;
+    padding: 14px 16px;
+    min-width: 260px;
+    font-size: 1rem;
+    text-indent: 0;
+    letter-spacing: -0.01em;
+    background: var(--accent);
+    color: var(--on-accent);
+    transition: background 0.2s ease, color 0.2s ease;
+}
+
+.download :global(.label) {
+    color: var(--on-accent);
+}
+
+.download:hover {
+    background: var(--ink);
+    color: var(--paper);
+}
+
+.download:hover :global(.label) {
+    color: var(--paper);
+}
+
+/* ---- Intro ---- */
+.intro {
+    margin-top: clamp(56px, 8vw, 112px);
+    row-gap: 40px;
+}
+
+.now {
+    grid-column: 1 / span 5;
+    align-self: end;
+}
+
+.now ul {
+    margin-top: 14px;
+    border-top: 1px solid var(--rule-strong);
+}
+
+.now li {
+    display: grid;
+    gap: 2px;
+    padding: 14px 0 16px;
+    border-bottom: 1px solid var(--rule);
+}
+
+.nowRole {
+    font-size: var(--fs-h3);
+    letter-spacing: -0.03em;
+    line-height: 1.1;
+}
+
+.nowOrg {
+    color: var(--ink-2);
+}
+
+.specimen {
+    grid-column: 7 / -1;
+}
+
+.specimenStage {
+    position: relative;
+    aspect-ratio: 4 / 3;
+    background: #000;
+}
+
+/* ---- Tables ---- */
+.table {
+    border-top: 1px solid var(--rule-strong);
+}
+
+.exp {
+    padding: 20px 0 28px;
+    border-bottom: 1px solid var(--rule);
+    row-gap: 16px;
+}
+
+.expWhen {
+    grid-column: 1 / span 2;
+    display: grid;
+    align-content: start;
+    gap: 4px;
+}
+
+.expWho {
+    grid-column: 3 / span 4;
+}
+
+.expOrg {
+    font-size: var(--fs-h3);
+    font-weight: 400;
+    letter-spacing: -0.03em;
+    line-height: 1.1;
+}
+
+.expRole {
+    margin-top: 4px;
+    color: var(--ink-2);
+}
+
+.skills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 16px;
+}
+
+.skills li {
+    padding: 2px 6px;
+    border: 1px solid var(--rule);
+    color: var(--ink);
+}
+
+.expWhat {
+    grid-column: 7 / -1;
+    display: grid;
+    gap: 10px;
+    counter-reset: bullet;
+}
+
+.expWhat li {
+    position: relative;
+    padding-left: 22px;
+    color: var(--ink-2);
+    max-width: 62ch;
+}
+
+.expWhat li::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0.62em;
+    width: 7px;
+    height: 1px;
+    background: var(--ink);
+}
+
+.expWhat strong {
+    font-weight: 500;
+    color: var(--ink);
+}
+
+/* ---- Languages ---- */
+.langHead,
+.lang {
+    display: grid;
+    grid-template-columns: 2fr 1fr 5fr 3fr 1fr;
+    column-gap: var(--gutter);
+    align-items: center;
+}
+
+.langHead {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--rule);
+}
+
+.lang {
+    padding: 12px 0;
+    border-bottom: 1px solid var(--rule);
+    transition: padding 0.3s var(--ease), background 0.2s ease;
+}
+
+.langName {
+    font-size: var(--fs-h3);
+    letter-spacing: -0.03em;
+}
+
+.langSubs {
+    color: var(--ink-2);
+    font-size: var(--fs-small);
+}
+
+.meter {
+    position: relative;
+    height: 10px;
+    background: repeating-linear-gradient(90deg, var(--rule) 0 1px, transparent 1px 10%);
+    border: 1px solid var(--rule);
+}
+
+.meter span {
+    position: absolute;
+    inset: 0;
+    background: var(--accent);
+    transform-origin: 0 50%;
+}
+
+.langGo {
+    text-align: right;
+}
+
+.lang:hover {
+    padding-left: 12px;
+    padding-right: 12px;
+    background: rgba(236, 235, 230, 0.05);
+}
+
+.lang:hover .meter span {
+    background: var(--ink);
+}
+
+@media (max-width: 600px) {
+    .now,
+    .specimen {
+        grid-column: 1 / -1;
+    }
+}
+
+@media (max-width: 900px) {
+    .expWhen {
+        grid-column: 1 / -1;
+        grid-template-columns: 40px 1fr;
+    }
+    .expWho,
+    .expWhat {
+        grid-column: 1 / -1;
+    }
+    .langHead {
+        display: none;
+    }
+    .lang {
+        grid-template-columns: 1fr 1fr auto;
+        row-gap: 8px;
+    }
+    .lang > :nth-child(2) {
+        display: none;
+    }
+    .langSubs {
+        grid-column: 1 / -1;
+        grid-row: 2;
+    }
+}

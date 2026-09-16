@@ -1,3 +1,3 @@
-# [cmhenville.tech](https://cmhenville.tech)
+# [cmhnvl.net](https://cmhnvl.net)
 
 This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).

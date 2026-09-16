@@ -1,0 +1,93 @@
+/* ---- Tool shell ---- */
+.shell {
+    /* tools offset their control column by --nav-h; here that is just the
+       menu button pinned top right (gutter + 40px button) */
+    --nav-h: calc(var(--gutter) + 40px);
+    position: relative;
+    min-height: 100svh;
+    background: #000;
+}
+
+/* ---- Index cards ---- */
+.cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
+    gap: var(--gutter);
+}
+
+.card {
+    border-top: 1px solid var(--rule-strong);
+}
+
+.cardLink {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.cardField {
+    position: relative;
+    aspect-ratio: 4 / 3;
+    margin-top: var(--gutter);
+    border: 1px solid var(--rule);
+    background: #000;
+    transition: border-color 0.25s ease;
+}
+
+.cardField > canvas {
+    opacity: 0.55;
+    transition: opacity 0.25s ease;
+}
+
+.cardLink:hover .cardField,
+.cardLink:focus-visible .cardField {
+    border-color: var(--accent);
+}
+
+.cardLink:hover .cardField > canvas,
+.cardLink:focus-visible .cardField > canvas {
+    opacity: 1;
+}
+
+.cardMeta {
+    display: grid;
+    grid-template-columns: 56px 1fr;
+    column-gap: 12px;
+    row-gap: 8px;
+    padding: 14px 0 24px;
+    flex: 1;
+}
+
+.cardTitle {
+    font-size: var(--fs-h2);
+    font-weight: 400;
+    letter-spacing: -0.045em;
+    line-height: 0.95;
+}
+
+.cardBlurb,
+.cardGo {
+    grid-column: 2;
+}
+
+.cardBlurb {
+    color: var(--ink-2);
+    max-width: 36ch;
+}
+
+.cardGo {
+    align-self: end;
+    justify-self: start;
+    margin-top: 8px;
+    padding: 4px 8px;
+    border: 1px solid var(--rule-strong);
+    font-size: var(--fs-small);
+    transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.cardLink:hover .cardGo,
+.cardLink:focus-visible .cardGo {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+}

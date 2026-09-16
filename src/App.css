@@ -1,36 +1,5 @@
-body,
-html {
-  height: 100%;
-  margin: 0;
-  padding: 0;
-  background-color: #18181800;
+/* Editorial pages sit below the fixed header. */
+.page {
+    padding-top: var(--nav-h);
+    min-height: 100svh;
 }
-
-canvas {
-  position: fixed;
-  top: 0;
-  left: 0;
-  z-index: -1;
-  width: 100%;
-}
-
-@font-face {
-  font-family: 'SF Mono';
-  src: url('../public/fonts/SFMono-Regular.otf') format('opentype');
-  font-weight: normal;
-}
-@font-face {
-  font-family: 'SF Mono';
-  src: url('../public/fonts/SFMono-Bold.otf') format('opentype');
-  font-weight: bold;
-}
-@font-face {
-  font-family: 'SF Mono';
-  src: url('../public/fonts/SFMono-Semibold.otf') format('opentype');
-  font-weight: 500;
-}
-
-.App {
-  text-align: center;
-}
-
