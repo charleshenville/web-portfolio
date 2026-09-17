@@ -3,12 +3,19 @@ import { Link } from 'react-router-dom';
 import AsciiField from '../ui/AsciiField';
 import Frame from '../ui/Frame';
 import Separator from '../ui/Separator';
+import RolePrism from '../ui/RolePrism';
+import PixelGlyph from '../ui/PixelGlyph';
 import items from '../projectitems.json';
 import { VFX_TOOLS, SITE_VERSION } from '../../data/nav';
 import { HERO_FIELD } from '../../data/frameStyle';
+import useMediaQuery from '../../lib/useMediaQuery';
 import styles from './home.module.css';
 
 const pad = (n) => String(n).padStart(2, '0');
+
+const toAbout = () => {
+    document.getElementById('about')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+};
 
 const DIRECTORY = [
     { to: '/projects', title: 'Projects', note: 'Hardware, software, hackathons' },
@@ -33,16 +40,19 @@ const ROLES = [
 function Home() {
     const [heroHover, setHeroHover] = useState(false);
     const { persistent: heroPersistent, ...heroField } = HERO_FIELD;
+    // no room for the roles list beside or below the portrait: the prism takes
+    // over above the headshot instead
+    const compact = useMediaQuery('(max-width: 600px)');
 
     return (
         <>
             {/* ---- Hero ---- */}
             <section className={`wrap ${styles.hero}`}>
-                <div className={`grid ${styles.heroMeta}`}>
-                    <span className="label bracket">Portfolio {SITE_VERSION}</span>
-                    <span className="label">Computer Engineer<br />University of Toronto</span>
-                    <span className="label">43.6629° N<br />79.3957° W</span>
-                    <span className={`label ${styles.alignRight}`}>Scroll ↓</span>
+                <div className={styles.heroMeta}>
+                    <span className="label bracket">{SITE_VERSION}</span>
+                    <span className="label">University of Toronto</span>
+                    <span className="label">43.6629° N 79.3957° W</span>
+                    {!compact && <span className="label">Scroll ↓ ↓ ↓</span>}
                 </div>
 
                 <div
@@ -56,14 +66,34 @@ function Home() {
                     </span>
                 </div>
 
-                <h1 className={styles.name}>
-                    <span>Charles</span>
-                    <span>Henville<span className={styles.stop}>.</span></span>
-                </h1>
+                <div className={styles.heroFoot}>
+                    <h1 className={styles.name}>
+                        <span>Charles</span>
+                        <span>Henville<span className={styles.stop}>.</span></span>
+                    </h1>
+                    {/* {compact && (
+                        <button
+                            type="button"
+                            className={`label ${styles.scrollCue}`}
+                            onClick={toAbout}
+                            aria-label="Scroll to content"
+                        >
+                            <PixelGlyph />
+                        </button>
+                    )} */}
+                    <button
+                        type="button"
+                        className={`label ${styles.scrollCue}`}
+                        onClick={toAbout}
+                        aria-label="Scroll to content"
+                    >
+                        <PixelGlyph />
+                    </button>
+                </div>
             </section>
 
             {/* ---- About ---- */}
-            <Separator index="01" title="About" meta="Toronto, Canada" rows={1} />
+            <Separator id="about" index="01" title="About" meta="Toronto, Canada" rows={1} />
             <section className={`wrap grid ${styles.about}`}>
                 <p className={styles.statement}>
                     I’m Charles, a computer engineer at the University of Toronto. I’m passionate
@@ -72,6 +102,7 @@ function Home() {
                 </p>
 
                 <div className={styles.portrait}>
+                    {compact && <RolePrism items={ROLES} className={styles.portraitRoles} />}
                     <Frame>
                         <img
                             className={styles.headshot}
@@ -83,15 +114,17 @@ function Home() {
                     </Frame>
                 </div>
 
-                <ol className={styles.roles}>
-                    {ROLES.map((r, i) => (
-                        <li key={r.word} className={styles.role}>
-                            <span className="label">{pad(i + 1)}</span>
-                            <span className={styles.roleWord}>{r.word}</span>
-                            <span className={styles.roleNote}>{r.note}</span>
-                        </li>
-                    ))}
-                </ol>
+                {!compact && (
+                    <ol className={styles.roles}>
+                        {ROLES.map((r, i) => (
+                            <li key={r.word} className={styles.role}>
+                                <span className={`label ${styles.roleIndex}`}>{pad(i + 1)}</span>
+                                <span className={styles.roleWord}>{r.word}</span>
+                                <span className={styles.roleNote}>{r.note}</span>
+                            </li>
+                        ))}
+                    </ol>
+                )}
             </section>
 
             {/* ---- Work: a small freeform gallery ---- */}

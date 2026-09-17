@@ -17,10 +17,20 @@ import styles from './ui.module.css';
 // cols x rows buffer for pixels), a shared rAF ticker capped
 // at `fps`, and nothing runs while the canvas is off screen, the tab is
 // hidden, `animate` is false or the viewer prefers reduced motion.
+//
+// The grid is also capped at `maxCells` cells. `cell` is in CSS pixels, so
+// zooming out (cmd/ctrl -) hands the canvas a bigger CSS box and would
+// otherwise quadruple the glyph count for every halving of the zoom. Past the
+// cap the cell grows instead, which keeps the work per frame bounded and the
+// glyphs at a steady physical size, on huge displays as well as at low zoom.
 
 const FONT_STACK = '"SF Mono", ui-monospace, Menlo, Monaco, monospace';
 const ROW_RATIO = 1.8; // row height / column width
 const MAX_DT = 0.1;
+// Ceilings on cols x rows, per frame. Ascii pays a fillText per row per colour
+// and is the expensive one; pixels go through a single ImageData blit.
+const MAX_CELLS_ASCII = 20000;
+const MAX_CELLS_PIXELS = 250000;
 
 const DEFAULTS = {
     mode: 'fill',          // 'fill' | 'frame' | 'spill'
@@ -31,6 +41,7 @@ const DEFAULTS = {
     palette: [null, 'var(--paper)', 'var(--accent)', 'var(--ink)'], // pixels
     dither: 'bayer',       // pixels: 'bayer' | 'noise' | 'none'
     cell: 8,               // css px per character column
+    maxCells: 0,           // cap on cols x rows; 0 = the per-render default
     thickness: 2,          // frame depth in cells
     ramp: ' .·:-=+*#%@',
     scale: 9,              // noise feature size, in cells
@@ -104,9 +115,15 @@ function AsciiField({ animate = true, interactive = false, className = '', style
             st.dpr = Math.min(window.devicePixelRatio || 1, 2);
             canvas.width = Math.round(st.W * st.dpr);
             canvas.height = Math.round(st.H * st.dpr);
-            st.cw = s.cell;
+            // grow the cell uniformly rather than draw more than `maxCells` of them
+            const budget = s.maxCells > 0 ? s.maxCells
+                : (s.render === 'pixels' ? MAX_CELLS_PIXELS : MAX_CELLS_ASCII);
+            const rowRatio = s.render === 'pixels' ? 1 : ROW_RATIO;
+            const want = (st.W / s.cell) * (st.H / (s.cell * rowRatio));
+            const grow = want > budget ? Math.sqrt(want / budget) : 1;
+            st.cw = s.cell * grow;
             if (s.render === 'pixels') {
-                st.ch = s.cell;
+                st.ch = st.cw;
                 st.cols = Math.max(1, Math.ceil(st.W / st.cw));
                 st.rows = Math.max(1, Math.ceil(st.H / st.ch));
                 st.x0 = 0;
@@ -117,7 +134,7 @@ function AsciiField({ animate = true, interactive = false, className = '', style
                 st.bctx = st.buf.getContext('2d');
                 st.img = st.bctx.createImageData(st.cols, st.rows);
             } else {
-                st.ch = s.cell * ROW_RATIO;
+                st.ch = st.cw * ROW_RATIO;
                 st.cols = Math.max(1, Math.floor(st.W / st.cw));
                 st.rows = Math.max(1, Math.floor(st.H / st.ch));
                 st.x0 = (st.W - st.cols * st.cw) / 2;

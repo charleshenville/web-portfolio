@@ -52,6 +52,8 @@
 .separator {
     position: relative;
     margin-block: clamp(56px, 9vw, 128px) clamp(28px, 4vw, 56px);
+    /* scrolled to by id (the hero's scroll prompt): clear the fixed header */
+    scroll-margin-top: var(--nav-h);
 }
 
 .sepHead {
@@ -96,6 +98,23 @@
     }
 }
 
+/* ---- PixelGlyph ----
+   A whole-pixel hop: steps(1, end) holds each offset for its whole segment and
+   jumps at the end of it, so the glyph is only ever drawn at a whole multiple
+   of its cell, never between two. */
+.pixelHop {
+    display: inline-block;
+    animation: pixelHop 1.6s steps(1, end) infinite;
+}
+
+@keyframes pixelHop {
+    0%, 50% { transform: translateY(0); }
+    62% { transform: translateY(var(--cell)); }
+    74% { transform: translateY(calc(var(--cell) * 2)); }
+    86% { transform: translateY(var(--cell)); }
+    100% { transform: translateY(0); }
+}
+
 /* ---- Loading ---- */
 .loading {
     display: flex;
@@ -131,4 +150,73 @@
     display: block;
     width: 100%;
     height: 100%;
+}
+
+/* ---- RolePrism ----
+   One face of a turning prism at a time. Clipping the wrapper keeps the faces
+   swinging past from reaching whatever sits above and below. */
+.prism {
+    /* tall enough for the word plus a two line note, so neighbouring faces
+       never swing into the live one */
+    --face-h: clamp(70px, 18vw, 84px);
+    overflow: hidden;
+    /* a hair of side room for the perspective spill, taken back off the margin
+       so the words still line up with the grid column */
+    padding: 26px 6px 34px;
+    margin-inline: -6px;
+}
+
+.prismStage {
+    position: relative;
+    height: var(--face-h);
+    perspective: 1000px;
+}
+
+.prismCage {
+    position: absolute;
+    inset: 0;
+    transform-style: preserve-3d;
+    /* the whole prism sits back by its own radius, so the live face lands at
+       z = 0 and the perspective leaves it at its natural size instead of
+       scaling it up out of the clip */
+    transform: translateZ(calc(-1 * var(--radius, 0px))) rotateX(var(--spin, 0deg));
+    transition: transform 850ms var(--ease);
+    will-change: transform;
+}
+
+.prismFace {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 3px;
+    backface-visibility: hidden;
+    transform: rotateX(var(--face, 0deg)) translateZ(var(--radius, 0px));
+    opacity: 0.18;
+    transition: opacity 600ms var(--ease);
+}
+
+.prismFaceLive {
+    opacity: 1;
+}
+
+.prismWord {
+    font-size: clamp(1.8rem, 9vw, 2.4rem);
+    letter-spacing: -0.05em;
+    line-height: 0.9;
+}
+
+.prismNote {
+    font-size: calc(var(--fs-label) - 1px);
+    line-height: 1.25;
+    color: var(--ink-2);
+}
+
+/* reduced motion: the words on one line, nothing turning */
+.prismFlat {
+    padding-block: 10px 22px;
+    font-size: clamp(1rem, 4.4vw, 1.2rem);
+    letter-spacing: -0.03em;
+    line-height: 1.2;
 }

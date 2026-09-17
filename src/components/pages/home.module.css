@@ -7,18 +7,23 @@
     padding-bottom: clamp(16px, 2vw, 28px);
 }
 
+/* One line, always: version at the left, the school in the middle, the
+   coordinates at the right. */
 .heroMeta {
-    row-gap: 8px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: clamp(10px, 2vw, var(--gutter));
     padding-bottom: 14px;
     border-bottom: 1px solid var(--rule-strong);
 }
 
+/* Nothing here wraps and nothing is ever dropped: the labels shed a little
+   size on narrow viewports instead. */
 .heroMeta > * {
-    grid-column: span 3;
-}
-
-.alignRight {
-    text-align: right;
+    white-space: nowrap;
+    font-size: min(var(--fs-label), 2.2vw);
+    letter-spacing: 0.05em;
 }
 
 .heroField {
@@ -34,6 +39,42 @@
     bottom: 0;
     padding: 6px 10px 0 0;
     background: var(--paper);
+}
+
+/* The name, and on the narrow layout the scroll prompt beside it. */
+.heroFoot {
+    display: flex;
+    align-items: stretch;
+    gap: var(--gutter);
+}
+
+/* Full width, so "Henville." still lands on the right edge of the page. */
+/* .heroFoot > .name {
+    flex: 1 1 auto;
+    min-width: 0;
+} */
+
+/* Under 600px the name left-aligns and frees the block to its right: the
+   prompt to keep scrolling moves out of the meta row and into it, a hopping
+   pixel glyph on the right edge of the container. Wider than that there is no
+   such gap, and the meta row carries the prompt instead. */
+.scrollCue {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: flex-end;
+    justify-content: flex-end;
+    /* room under the glyph for the bottom of its hop */
+    padding: 0 0 calc(2 * 6px);
+    border: 0;
+    background: none;
+    color: var(--ink);
+    cursor: pointer;
+    transition: color 0.2s ease;
+}
+
+.scrollCue:hover,
+.scrollCue:focus-visible {
+    color: var(--ink);
 }
 
 .name {
@@ -74,6 +115,11 @@
     grid-column: 1 / span 5;
 }
 
+/* the role prism, above the headshot on the narrow layout */
+.portraitRoles {
+    margin-bottom: 4px;
+}
+
 .headshot {
     width: 100%;
     aspect-ratio: 4 / 5;
@@ -107,10 +153,30 @@
     grid-column: 2;
     margin-top: 8px;
     font-family: var(--mono);
-    font-size: calc(var(--fs-label) - 2px);
+    font-size: calc(var(--fs-label) - 0.3vh);
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: var(--ink-2);
+}
+
+/* Wide enough for the roles column to carry a rhythm: every other row flips to
+   the right edge, index and all. */
+@media (min-width: 950px) {
+    .role:nth-child(even) {
+        grid-template-columns: 1fr 48px;
+        text-align: right;
+    }
+    .role:nth-child(even) .roleIndex {
+        grid-column: 2;
+        grid-row: 1;
+    }
+    .role:nth-child(even) .roleWord {
+        grid-column: 1;
+        grid-row: 1;
+    }
+    .role:nth-child(even) .roleNote {
+        grid-column: 1;
+    }
 }
 
 /* ---- Work gallery ---- */
@@ -207,12 +273,6 @@
 }
 
 @media (max-width: 900px) {
-    .heroMeta > * {
-        grid-column: span 6;
-    }
-    .heroMeta > :nth-child(4) {
-        display: none;
-    }
     .statement {
         grid-column: 1 / -1;
         text-indent: 1.6em;
@@ -236,11 +296,20 @@
     .roles {
         grid-column: 1 / -1;
     }
+    /* cropped to the top half of the frame, which is the face */
+    .headshot {
+        aspect-ratio: 8 / 5;
+        object-position: center top;
+    }
     .piece {
         width: calc(var(--w) * 0.8);
         margin-top: calc(var(--dy) * 0.5);
     }
     .name > span:last-child {
         align-self: flex-start;
+    }
+    /* content width, so the cue gets the rest of the row */
+    .heroFoot > .name {
+        flex: 0 0 auto;
     }
 }

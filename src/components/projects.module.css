@@ -21,6 +21,18 @@
     background: #000;
 }
 
+/* hairline rule around the thumbnail that goes accent on hover, matching the
+   VFX tool cards. Drawn as an overlay so it stays crisp above the frame spill. */
+.media::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    pointer-events: none;
+    border: 1px solid var(--rule);
+    transition: border-color 0.25s ease;
+}
+
 .media img,
 .media video {
     position: absolute;
@@ -42,6 +54,11 @@
 
 .tile:hover .media img {
     filter: none;
+}
+
+.tile:hover .media::after,
+.tileLink:focus-visible .media::after {
+    border-color: var(--accent);
 }
 
 .tile:hover .media video,

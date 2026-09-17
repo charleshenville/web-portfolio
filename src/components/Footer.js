@@ -1,7 +1,8 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import AsciiField from './ui/AsciiField';
+import ProceduralField from './ui/ProceduralField';
 import { NAV, SITE_VERSION } from '../data/nav';
+import footerField from '../data/footerField';
 import socials from './socials.json';
 import styles from './footer.module.css';
 
@@ -13,7 +14,7 @@ function Footer() {
     return (
         <footer className={styles.footer}>
             <div className={styles.band}>
-                <AsciiField cell={8} fadeY density={-0.05} contrast={1.15} accentAt={0.98} seed={11} />
+                <ProceduralField settings={footerField} />
             </div>
 
             <div className={`wrap grid ${styles.body}`}>

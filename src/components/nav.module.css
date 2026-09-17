@@ -40,8 +40,8 @@
 .logoLink {
     display: block;
     width: 62px;
-    /* the extrusion hangs below the flat mark */
-    margin-top: 12px;
+    /* the extrusion rises above the flat mark */
+    margin-bottom: 12px;
 }
 
 .menuBtn {
@@ -65,8 +65,8 @@
 }
 
 .menuWord {
-    font-size: 15px;
-    font-weight: 500;
+    font-size: 16px;
+    font-weight: 400;
     letter-spacing: -0.01em;
     min-width: 3.1em;
     text-align: left;
@@ -198,8 +198,8 @@
 }
 
 .word {
-    font-size: clamp(2.2rem, 6vw, 3.6rem);
-    font-weight: 400;
+    font-size: calc(clamp(2.2rem, 6vw, 3.6rem) - 12px);
+    font-weight: 100;
     letter-spacing: -0.045em;
     line-height: 1;
     transition: transform 0.35s var(--ease), color 0.2s ease;
@@ -299,7 +299,7 @@
 }
 
 .subWord {
-    font-size: clamp(1.25rem, 2.6vw, 1.6rem);
+    font-size: calc(clamp(1.25rem, 2.6vw, 1.6rem) - 12px);
     letter-spacing: -0.02em;
     line-height: 1.2;
     transition: transform 0.35s var(--ease);
@@ -331,7 +331,7 @@
 @media (max-width: 720px) {
     .logoLink {
         width: 50px;
-        margin-top: 8px;
+        margin-bottom: 8px;
     }
     .row {
         grid-template-columns: 40px 1fr auto;
