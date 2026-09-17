@@ -66,25 +66,25 @@ function Nav() {
         };
     }, [open]);
 
-    const barClass = [
-        styles.bar,
-        scrolled && !isTool ? styles.barSolid : '',
-        open ? styles.barOpen : '',
-        isTool ? styles.barTool : '',
-    ].join(' ');
+    const barClass = `${styles.bar} ${scrolled ? styles.barSolid : ''}`;
 
     return (
         <>
-            <header className={barClass}>
-                {!isTool && (
+            {!isTool && (
+                <header className={barClass}>
                     <Link to="/" className={styles.logoLink} aria-label="Charles Miguel Henville, home">
                         <Logo />
                     </Link>
-                )}
+                </header>
+            )}
+
+            {/* The button lives outside the bar so it can stack above the open drawer,
+                which in turn covers the bar. */}
+            <div className={`${styles.dock} ${isTool ? styles.dockTool : ''}`}>
                 <button
                     ref={buttonRef}
                     type="button"
-                    className={styles.menuBtn}
+                    className={`${styles.menuBtn} ${open ? styles.menuBtnOn : ''}`}
                     aria-expanded={open}
                     aria-controls="site-menu"
                     onClick={() => setOpen((o) => !o)}
@@ -95,7 +95,7 @@ function Nav() {
                         <span />
                     </span>
                 </button>
-            </header>
+            </div>
 
             <div
                 className={`${styles.scrim} ${open ? styles.scrimOpen : ''}`}

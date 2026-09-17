@@ -43,9 +43,18 @@
     color: var(--ink-2);
 }
 
+.leadRow {
+    margin-top: clamp(28px, 4vw, 56px);
+    row-gap: 32px;
+    align-items: start;
+}
+
+.aside {
+    grid-column: 1 / span 5;
+}
+
 .lead {
     grid-column: 7 / -1;
-    margin-top: clamp(28px, 4vw, 56px);
     font-size: var(--fs-lead);
     line-height: 1.22;
     letter-spacing: -0.02em;
@@ -60,8 +69,12 @@
         text-align: left;
         grid-column: auto / span 5;
     }
-    .lead {
+    .lead,
+    .aside {
         grid-column: 1 / -1;
+    }
+    .aside {
+        order: 1;
     }
 }
 

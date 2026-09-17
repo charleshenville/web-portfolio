@@ -95,7 +95,7 @@ function Home() {
             </section>
 
             {/* ---- Work: a small freeform gallery ---- */}
-            {/* <Separator index="02" title="Work" meta={<Link className="link" to="/projects">All projects →</Link>} rows={2} />
+            {/* <Separator index="02" title="Work" meta={<Link className="link" to="/projects">All projects →</Link>} rows={1} />
             <section className="wrap" aria-label="Projects">
                 <ul className={styles.gallery}>
                     {items.map((item, i) => (
@@ -113,7 +113,7 @@ function Home() {
             </section> */}
 
             {/* ---- Directory ---- */}
-            <Separator index="02" title="Directory" meta={`${DIRECTORY.length} sections`} rows={2} />
+            <Separator index="02" title="Directory" meta={`${DIRECTORY.length} sections`} rows={1} />
             <nav className="wrap" aria-label="Directory">
                 <ol className={styles.directory}>
                     {DIRECTORY.map((d, i) => (

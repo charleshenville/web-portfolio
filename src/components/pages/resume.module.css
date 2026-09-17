@@ -27,17 +27,7 @@
     color: var(--paper);
 }
 
-/* ---- Intro ---- */
-.intro {
-    margin-top: clamp(56px, 8vw, 112px);
-    row-gap: 40px;
-}
-
-.now {
-    grid-column: 1 / span 5;
-    align-self: end;
-}
-
+/* ---- Currently (header aside) ---- */
 .now ul {
     margin-top: 14px;
     border-top: 1px solid var(--rule-strong);
@@ -58,16 +48,6 @@
 
 .nowOrg {
     color: var(--ink-2);
-}
-
-.specimen {
-    grid-column: 7 / -1;
-}
-
-.specimenStage {
-    position: relative;
-    aspect-ratio: 4 / 3;
-    background: #000;
 }
 
 /* ---- Tables ---- */
@@ -202,13 +182,6 @@
 
 .lang:hover .meter span {
     background: var(--ink);
-}
-
-@media (max-width: 600px) {
-    .now,
-    .specimen {
-        grid-column: 1 / -1;
-    }
 }
 
 @media (max-width: 900px) {

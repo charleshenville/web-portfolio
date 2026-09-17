@@ -21,6 +21,18 @@
     pointer-events: auto;
 }
 
+/* Menu button: above the drawer (70), which sits above the bar (60). */
+.dock {
+    position: fixed;
+    top: 0;
+    right: 0;
+    z-index: 80;
+    height: var(--nav-h);
+    display: flex;
+    align-items: center;
+    padding-inline: var(--gutter);
+}
+
 .barSolid {
     border-bottom-color: var(--rule);
 }
@@ -33,8 +45,6 @@
 }
 
 .menuBtn {
-    grid-column: 3;
-    justify-self: end;
     display: inline-flex;
     align-items: center;
     gap: 12px;
@@ -48,7 +58,7 @@
 }
 
 .menuBtn:hover,
-.barOpen .menuBtn {
+.menuBtnOn {
     background: var(--accent);
     border-color: var(--accent);
     color: var(--on-accent);
@@ -94,7 +104,7 @@
 .scrim {
     position: fixed;
     inset: 0;
-    z-index: 40;
+    z-index: 65;
     background: rgba(0, 0, 0, 0.3);
     opacity: 0;
     pointer-events: none;
@@ -109,7 +119,7 @@
 .panel {
     position: fixed;
     inset: 0 0 0 auto;
-    z-index: 50;
+    z-index: 70;
     width: min(620px, 100vw);
     border-left: 1px solid var(--rule-strong);
     /* frosted glass: blurs the page behind, with faint paper grain on top */
@@ -137,6 +147,7 @@
     overflow-y: auto;
     overscroll-behavior: contain;
 }
+
 
 .panelHead {
     display: flex;
@@ -333,22 +344,18 @@
 
 /* Tool pages: no bar, logo or glass; just the menu button pinned top right,
    directly above the tool's own control column. */
-.barTool {
-    display: flex;
+.dockTool {
+    top: var(--gutter);
+    right: var(--gutter);
     height: auto;
-    inset: var(--gutter) var(--gutter) auto auto;
     padding: 0;
-    background: none;
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
-    border: 0;
 }
 
-.barTool .menuBtn {
+.dockTool .menuBtn {
     background: var(--paper);
 }
 
-.barTool .menuBtn:hover,
-.barTool.barOpen .menuBtn {
+.dockTool .menuBtn:hover,
+.dockTool .menuBtnOn {
     background: var(--accent);
 }

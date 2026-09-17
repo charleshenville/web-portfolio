@@ -4,8 +4,8 @@ import styles from './page.module.css';
 // Editorial page opener:
 //   [ 02 ]          META / META / META
 //   Title(10)
-//                                  lead paragraph in the right six columns
-function PageHeader({ index, title, count, meta = [], lead, children }) {
+//   aside (optional)               lead paragraph in the right six columns
+function PageHeader({ index, title, count, meta = [], lead, aside, children }) {
     return (
         <header className={`wrap ${styles.head}`}>
             <div className={`grid ${styles.metaRow}`}>
@@ -19,7 +19,8 @@ function PageHeader({ index, title, count, meta = [], lead, children }) {
                 {count !== undefined && <sup className={styles.count}>({count})</sup>}
             </h1>
             {(lead || children) && (
-                <div className="grid">
+                <div className={`grid ${styles.leadRow}`}>
+                    {aside && <div className={styles.aside}>{aside}</div>}
                     <div className={styles.lead}>
                         {lead && <p>{lead}</p>}
                         {children}

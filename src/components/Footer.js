@@ -5,6 +5,8 @@ import { NAV, SITE_VERSION } from '../data/nav';
 import socials from './socials.json';
 import styles from './footer.module.css';
 
+const LABELS = { linkedin: 'LinkedIn', github: 'GitHub', soundcloud: 'SoundCloud' };
+
 function Footer() {
     const year = new Date().getFullYear();
 
@@ -37,7 +39,8 @@ function Footer() {
                         {socials.filter((s) => s.name !== 'cell').map((s) => (
                             <li key={s.id}>
                                 <a className="link" href={s.url} target="_blank" rel="noreferrer">
-                                    {s.name === 'email' ? s.handle : s.name[0].toUpperCase() + s.name.slice(1)}
+                                    {/* {s.name === 'email' ? s.handle : s.name[0].toUpperCase() + s.name.slice(1)} */}
+                                    {LABELS[s.name] || s.name[0].toUpperCase() + s.name.slice(1)}
                                 </a>
                             </li>
                         ))}

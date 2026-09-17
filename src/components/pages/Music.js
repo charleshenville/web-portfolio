@@ -2,8 +2,15 @@ import React, { useEffect, useRef, useState } from 'react';
 import PageHeader from '../ui/PageHeader';
 import Separator from '../ui/Separator';
 import AsciiField from '../ui/AsciiField';
+import Oscilloscope from '../ui/Oscilloscope';
+import socials from '../socials.json';
 import releases from '../../data/discography.json';
 import styles from './music.module.css';
+
+const PROFILES = [
+    { name: 'soundcloud', label: 'SoundCloud' },
+    { name: 'spotify', label: 'Spotify' },
+].map((p) => ({ ...p, ...socials.find((s) => s.name === p.name) })).filter((p) => p.url);
 
 const pad = (n) => String(n).padStart(2, '0');
 const hash = (s) => Array.from(s).reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 7);
@@ -38,6 +45,8 @@ function Cover({ release, playing }) {
 function Music() {
     const sorted = [...releases].sort((a, b) => b.year - a.year);
     const audioRef = useRef(null);
+    const audioCtxRef = useRef(null);
+    const [analyser, setAnalyser] = useState(null);
     const [current, setCurrent] = useState(null);
     const [playing, setPlaying] = useState(false);
     const [time, setTime] = useState({ t: 0, d: 0 });
@@ -47,6 +56,7 @@ function Music() {
             audioRef.current.pause();
             audioRef.current.src = '';
         }
+        if (audioCtxRef.current) audioCtxRef.current.close().catch(() => {});
     }, []);
 
     const toggle = (release) => {
@@ -59,6 +69,20 @@ function Music() {
             audio.addEventListener('pause', () => setPlaying(false));
             audio.addEventListener('ended', () => setPlaying(false));
             audioRef.current = audio;
+        }
+        // The graph is built on the first click so the AudioContext starts
+        // inside a user gesture. A media element can only be wired up once.
+        if (!audioCtxRef.current && (window.AudioContext || window.webkitAudioContext)) {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const node = ctx.createAnalyser();
+            node.fftSize = 2048;
+            ctx.createMediaElementSource(audio).connect(node);
+            node.connect(ctx.destination);
+            audioCtxRef.current = ctx;
+            setAnalyser(node);
+        }
+        if (audioCtxRef.current && audioCtxRef.current.state === 'suspended') {
+            audioCtxRef.current.resume().catch(() => {});
         }
         if (current === release.id) {
             if (audio.paused) audio.play().catch(() => {});
@@ -81,9 +105,18 @@ function Music() {
                 count={releases.length}
                 meta={['Discography', 'Original work', `${Math.min(...years)} — ${Math.max(...years)}`]}
                 lead="Releases and works in progress. Press play to listen to a preview in the page."
-            />
+            >
+                <div className={styles.profiles}>
+                    {PROFILES.map((p) => (
+                        <a key={p.name} className={styles.profile} href={p.url} target="_blank" rel="noreferrer">
+                            <span>{p.label}</span>
+                            <span className="label">↗</span>
+                        </a>
+                    ))}
+                </div>
+            </PageHeader>
 
-            <Separator index="03.1" title="Discography" meta={`${releases.length} releases`} rows={2} />
+            <Separator index="03.1" title="Discography" meta={`${releases.length} releases`} rows={1} />
 
             <ol className={`wrap ${styles.list}`}>
                 {sorted.map((r, i) => {
@@ -102,7 +135,12 @@ function Music() {
                                     <span className="label">{r.type}</span>
                                     <span className="label">{r.year}</span>
                                 </div>
-                                <h2 className={styles.title}>{r.title}</h2>
+                                <div className={styles.titleRow}>
+                                    <h2 className={styles.title}>{r.title}</h2>
+                                    <div className={styles.scope}>
+                                        <Oscilloscope analyser={isCurrent ? analyser : null} active={isPlaying} color={r.scopeColor} />
+                                    </div>
+                                </div>
 
                                 <ol className={styles.tracks}>
                                     {r.tracks.map((t, k) => (

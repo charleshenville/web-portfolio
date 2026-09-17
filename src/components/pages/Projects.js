@@ -43,7 +43,7 @@ function Projects() {
                 </div>
             </section>
 
-            <Separator index="02.2" title="Archive" meta={`${archive.length} works`} rows={2} />
+            <Separator index="02.2" title="Archive" meta={`${archive.length} works`} rows={1} />
             <section className="wrap" aria-label="Project archive" onPointerMove={movePreview}>
                 <div className={styles.archive} role="table">
                     <div className={styles.archiveHead} role="row">

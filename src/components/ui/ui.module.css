@@ -126,12 +126,9 @@
     to { background-position: -100% 0; }
 }
 
-/* ---- PointCloud ---- */
-.cloud {
-    opacity: 0;
-    transition: opacity 1.2s ease;
-}
-
-.cloudLoaded {
-    opacity: 1;
+/* ---- Oscilloscope ---- */
+.scope {
+    display: block;
+    width: 100%;
+    height: 100%;
 }

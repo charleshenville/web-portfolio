@@ -22,5 +22,17 @@
         "name": "cell",
         "url": "tel:647-640-2442",
         "handle": "6476402442"
+    },
+    {
+        "id": 4,
+        "name": "soundcloud",
+        "url": "https://soundcloud.com/aqichah",
+        "handle": "aqichah"
+    },
+    {
+        "id": 5,
+        "name": "spotify",
+        "url": "https://open.spotify.com/artist/57sQY6nZJMyhgaQZBRreVF",
+        "handle": "Artist profile"
     }
 ]

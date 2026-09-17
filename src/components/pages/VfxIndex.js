@@ -51,7 +51,7 @@ function VfxIndex() {
                 meta={['Browser tools', 'Canvas / WebGL', 'Runs locally']}
                 lead="Small instruments for making images move. Everything runs in your browser; nothing is uploaded."
             />
-            <Separator index="04.0" title="Tools" meta="Select an instrument" rows={2} />
+            <Separator index="04.0" title="Tools" meta="Select an instrument" rows={1} />
             <ol className={`wrap ${styles.cards}`}>
                 {VFX_TOOLS.map((tool, i) => (
                     <ToolCard key={tool.slug} tool={tool} index={i + 1} signature={SIGNATURES[i % SIGNATURES.length]} />
