@@ -1,22 +1,19 @@
 [
     {
-        "id": "maestro",
-        "title": "Maestro",
-        "type": "Single",
+        "id": "demos",
+        "title": "Demos",
+        "type": "Unreleased",
         "year": 2026,
         "art": "",
-        "audio": "assets/maestro.mp3",
-        "tracks": ["Maestro"],
-        "links": []
-    },
-    {
-        "id": "sleepy-cat",
-        "title": "Sleepy Cat",
-        "type": "Single",
-        "year": 2026,
-        "art": "",
-        "audio": "assets/sleepycat.mp3",
-        "tracks": ["Sleepy Cat"],
+        "tracks": [
+            { "title": "Maestro", "audio": "assets/maestro.mp3" },
+            { "title": "Sleepy Cat", "audio": "assets/sleepycat.mp3" },
+            { "title": "Euro", "audio": "assets/euro.mp3" },
+            { "title": "Happy Clanker Army", "audio": "assets/happyclankerarmy.mp3" },
+            { "title": "Chemong", "audio": "assets/chemong.mp3" },
+            { "title": "CO2", "audio": "assets/co2.mp3" },
+            { "title": "SD", "audio": "assets/sd.mp3" }
+        ],
         "links": []
     }
 ]

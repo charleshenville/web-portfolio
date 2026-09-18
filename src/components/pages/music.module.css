@@ -131,11 +131,52 @@
 }
 
 .tracks li {
-    display: grid;
-    grid-template-columns: 48px 1fr;
-    align-items: baseline;
-    padding: 6px 0;
     border-top: 1px solid var(--rule);
+}
+
+.track {
+    display: grid;
+    grid-template-columns: 48px 1fr auto;
+    align-items: baseline;
+    gap: 12px;
+    width: 100%;
+    padding: 8px 8px 8px 0;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.2s ease, color 0.2s ease, padding 0.2s ease;
+}
+
+.track:hover:not(:disabled) {
+    background: var(--accent);
+    color: var(--on-accent);
+    padding-left: 8px;
+}
+
+.track:hover:not(:disabled) :global(.label) {
+    color: var(--on-accent);
+}
+
+.track:disabled {
+    cursor: default;
+    opacity: 0.5;
+}
+
+.track > :last-child {
+    text-align: right;
+}
+
+.trackOn .track {
+    background: var(--accent);
+    color: var(--on-accent);
+    padding-left: 8px;
+}
+
+.trackOn .track :global(.label) {
+    color: var(--on-accent);
 }
 
 .actions {
@@ -197,11 +238,28 @@
     color: var(--ink);
 }
 
+/* A tall, transparent grab area around a hairline bar: easy to hit with a
+   finger without thickening the rule itself. */
+.scrub {
+    margin-top: 6px;
+    padding: 10px 0;
+    touch-action: none;
+}
+
+.scrubLive {
+    cursor: pointer;
+}
+
+.scrubLive:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 4px;
+}
+
 .progress {
+    position: relative;
     height: 2px;
-    margin-top: 16px;
     background: var(--rule);
-    overflow: hidden;
+    transition: height 0.15s ease, background 0.15s ease;
 }
 
 .progress span {
@@ -210,6 +268,35 @@
     background: var(--accent);
     transform-origin: 0 50%;
     transition: transform 0.25s linear;
+}
+
+.scrubLive:hover .progress,
+.scrubLive:focus-visible .progress,
+.scrubbing .progress {
+    height: 6px;
+}
+
+/* The pointer owns the position mid-drag; easing would lag behind it. */
+.scrubbing .progress span,
+.scrubbing .knob {
+    transition: none;
+}
+
+.knob {
+    position: absolute;
+    top: 50%;
+    width: 2px;
+    height: 16px;
+    margin-left: -1px;
+    background: var(--accent);
+    transform: translateY(-50%) scaleY(0);
+    transition: transform 0.15s ease, left 0.25s linear;
+}
+
+.scrubLive:hover .knob,
+.scrubLive:focus-visible .knob,
+.scrubbing .knob {
+    transform: translateY(-50%) scaleY(1);
 }
 
 @media (max-width: 900px) {

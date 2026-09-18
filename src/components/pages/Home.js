@@ -32,9 +32,9 @@ const GALLERY_DROPS = [0, 36, 12, 52, 20, 4, 44, 16, 60, 28];
 const ROLES = [
     { word: 'Developer', note: 'React, three.js, Python, C/C++, k8s, Distributed Systems' },
     { word: 'Engineer', note: 'FPGAs, Embedded Systems, PCBs, ROS' },
-    { word: 'Creator', note: 'Generative art, procedural visuals, Davinci Resolve' },
+    { word: 'Creator/Designer', note: 'UI/UX, branding, illustration, Figma, Davinci Resolve' },
     { word: 'Musician', note: 'FL Studio and Ableton Live' },
-    { word: 'Designer', note: 'UI/UX, branding, illustration, Figma' },
+    { word: 'Founder', note: 'Digital Media :)' },
 ];
 
 function Home() {

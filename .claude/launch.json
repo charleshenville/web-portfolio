@@ -3,6 +3,8 @@
   "configurations": [
     {
       "name": "webprofile",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["start"],
       "url": "http://localhost:3000",
       "port": 3000
     }
