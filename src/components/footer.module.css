@@ -8,9 +8,13 @@
     height: 120px;
 }
 
+/* Solid where the band meets the rule above it, fading out into the body
+   below. Two stops on purpose: written as `transparent, #000 0%, #000 60%,
+   transparent` this looks identical in dev but not in a production build,
+   where the minifier drops the `0%` it reads as redundant and the top of the
+   band gains a fade of its own. Autoprefixer supplies -webkit-mask-image. */
 .band > canvas {
-    -webkit-mask-image: linear-gradient(transparent, #000 0%, #000 60%, transparent);
-    mask-image: linear-gradient(transparent, #000 0%, #000 60%, transparent);
+    mask-image: linear-gradient(#000 60%, transparent);
 }
 
 .body {

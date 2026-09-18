@@ -3,7 +3,15 @@ import { AsciiEffect } from './AsciiEffect.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { SVGLoader } from 'three/examples/jsm/loaders/SVGLoader.js';
 import React, { useEffect, useRef } from 'react';
+import { subscribe } from '../lib/ticker';
 
+// The ascii renderer: a three.js scene rasterised to characters by AsciiEffect.
+//
+// It mounts into `container` (a ref) when one is given, otherwise into
+// #asterParent, and fills whatever that element measures. `active` stops the
+// render loop without tearing the scene down, `fps` caps it, and a static
+// scene only redraws when something actually changed, so a card-sized preview
+// (and the idle tool) cost close to nothing.
 function AsterDynamic({
     characters = ' .:-=+*#%@',
     cameraPos = { x: 0, y: 0, z: 5 },
@@ -14,7 +22,11 @@ function AsterDynamic({
     autoRotate = false,
     rotationSpeed = { y: 0.001, z: 0.0004 },
     uploadedFile = null,
-    fileType = null
+    fileType = null,
+    container = null,
+    active = true,
+    fps = 60,
+    color = true,
 }) {
     const sceneRef = useRef();
     const rendererRef = useRef();
@@ -22,13 +34,19 @@ function AsterDynamic({
     const effectRef = useRef();
     const currentObjectRef = useRef();
     const lightsArrayRef = useRef([]);
-    const animationIdRef = useRef();
     const isInitializedRef = useRef(false);
     const loadingRef = useRef(false); // Add loading state to prevent race conditions
-    
+
     // Store current prop values in refs so they're accessible in the animation loop
     const autoRotateRef = useRef(autoRotate);
     const rotationSpeedRef = useRef(rotationSpeed);
+    // A still scene is only redrawn after something changes it.
+    const dirtyRef = useRef(true);
+    const invalidate = () => { dirtyRef.current = true; };
+
+    // Where the ascii table lives. Without a container this is the tool's
+    // full-viewport stage, kept on its id so its markup can be exported.
+    const getMount = () => container?.current || document.getElementById('asterParent');
 
     // Initialize scene only once
     useEffect(() => {
@@ -45,6 +63,7 @@ function AsterDynamic({
     // Update autoRotate ref when prop changes
     useEffect(() => {
         autoRotateRef.current = autoRotate;
+        invalidate();
     }, [autoRotate]);
 
     // Update rotationSpeed ref when prop changes
@@ -87,11 +106,25 @@ function AsterDynamic({
         }
     }, [uploadedFile, fileType]);
 
-    const cleanup = () => {
-        if (animationIdRef.current) {
-            cancelAnimationFrame(animationIdRef.current);
-        }
+    // The render loop: one subscription to the shared ticker, dropped
+    // entirely while inactive so an off-screen preview costs no frames.
+    useEffect(() => {
+        if (!active) return undefined;
+        invalidate();
+        return subscribe(renderFrame, fps);
+    }, [active, fps]);
 
+    // Follow the size of whatever we are mounted in (the tool's stage tracks
+    // the viewport; a card tracks the grid).
+    useEffect(() => {
+        const mount = getMount();
+        if (!mount) return undefined;
+        const ro = new ResizeObserver(onResize);
+        ro.observe(mount);
+        return () => ro.disconnect();
+    }, []);
+
+    const cleanup = () => {
         // Clean up lights
         lightsArrayRef.current.forEach(light => {
             if (light.dispose) light.dispose();
@@ -108,15 +141,10 @@ function AsterDynamic({
             rendererRef.current.dispose();
         }
 
-        if (effectRef.current && effectRef.current.domElement) {
-            const asterElement = document.getElementById('aster');
-            if (asterElement) {
-                asterElement.remove();
-            }
+        const asciiElement = effectRef.current?.domElement;
+        if (asciiElement && asciiElement.parentNode) {
+            asciiElement.parentNode.removeChild(asciiElement);
         }
-
-        // Remove resize listener
-        window.removeEventListener('resize', onWindowResize);
     };
 
     const disposeObject = (obj) => {
@@ -147,16 +175,35 @@ function AsterDynamic({
 
     // Preview fills its container (falls back to the full window).
     const getStageSize = () => {
-        const parent = document.getElementById('asterParent');
+        const mount = getMount();
         return {
-            width: parent?.clientWidth || window.innerWidth,
-            height: parent?.clientHeight || window.innerHeight,
+            width: mount?.clientWidth || window.innerWidth,
+            height: mount?.clientHeight || window.innerHeight,
         };
     };
 
+    // The ascii table, styled to fill the mount. Only the tool's own stage
+    // gets the #aster id, so a preview on the same page can't duplicate it.
+    const makeEffect = (renderer, width, height) => {
+        const effect = new AsciiEffect(renderer, characters, { color, invert: true });
+        effect.setSize(width, height);
+        if (!container) effect.domElement.id = 'aster';
+        effect.domElement.style.color = '#ffffff';
+        effect.domElement.style.backgroundColor = 'black';
+        effect.domElement.style.width = '100%';
+        effect.domElement.style.height = '100%';
+        effect.domElement.style.left = '0';
+        effect.domElement.style.position = 'relative';
+        effect.domElement.style.zIndex = '0';
+        effect.domElement.style.overflow = 'hidden';
+        return effect;
+    };
+
     const initializeScene = () => {
+        const mount = getMount();
+
         // Remove existing element if it exists
-        const existingElement = document.getElementById('aster');
+        const existingElement = mount?.querySelector('#aster') || (container ? null : document.getElementById('aster'));
         if (existingElement) {
             existingElement.remove();
         }
@@ -173,35 +220,17 @@ function AsterDynamic({
         rendererRef.current = renderer;
 
         // Setup ASCII effect
-        let effect = new AsciiEffect(renderer, characters, { color: true, invert: true });
-        effect.setSize(width, height);
-        effect.domElement.id = 'aster';
-        effect.domElement.style.color = '#ffffff';
-        effect.domElement.style.backgroundColor = 'black';
-        effect.domElement.style.width = '100%';
-        effect.domElement.style.height = '100%';
-        effect.domElement.style.left = '0';
-        effect.domElement.style.position = 'relative';
-        effect.domElement.style.zIndex = '0';
-        effect.domElement.style.overflow = 'hidden';
-
+        const effect = makeEffect(renderer, width, height);
         effectRef.current = effect;
 
-        const asterParentElem = document.getElementById('asterParent');
-        if (asterParentElem) {
-            asterParentElem.appendChild(effect.domElement);
+        if (mount) {
+            mount.appendChild(effect.domElement);
         }
 
         // Setup initial state
         setupLights();
         loadObject();
         updateCameraPosition();
-
-        // Setup resize handler
-        window.addEventListener('resize', onWindowResize);
-
-        // Start animation
-        animate();
     };
 
     const updateCharacters = () => {
@@ -210,26 +239,17 @@ function AsterDynamic({
         // Create new effect with updated characters
         const oldEffect = effectRef.current;
         const { width, height } = getStageSize();
-        const newEffect = new AsciiEffect(rendererRef.current, characters, { color: false, invert: true });
-        newEffect.setSize(width, height);
-        newEffect.domElement.id = 'aster';
-        newEffect.domElement.style.color = '#ffffff';
-        newEffect.domElement.style.backgroundColor = 'black';
-        newEffect.domElement.style.width = '100%';
-        newEffect.domElement.style.height = '100%';
-        newEffect.domElement.style.left = '0';
-        newEffect.domElement.style.position = 'relative';
-        newEffect.domElement.style.zIndex = '0';
-        newEffect.domElement.style.overflow = 'hidden';
+        const newEffect = makeEffect(rendererRef.current, width, height);
 
         // Replace the old element with the new one
-        const asterParentElem = document.getElementById('asterParent');
-        if (asterParentElem && oldEffect.domElement) {
-            asterParentElem.removeChild(oldEffect.domElement);
-            asterParentElem.appendChild(newEffect.domElement);
+        const mount = getMount();
+        if (mount && oldEffect.domElement) {
+            mount.removeChild(oldEffect.domElement);
+            mount.appendChild(newEffect.domElement);
         }
 
         effectRef.current = newEffect;
+        invalidate();
     };
 
     const setupLights = () => {
@@ -249,6 +269,7 @@ function AsterDynamic({
             sceneRef.current.add(pointLight);
             lightsArrayRef.current.push(pointLight);
         });
+        invalidate();
     };
 
     const updateCameraPosition = () => {
@@ -256,6 +277,7 @@ function AsterDynamic({
             cameraRef.current.position.set(cameraPos.x, cameraPos.y, cameraPos.z);
             const origin = new THREE.Vector3(0, 0, 0);
             cameraRef.current.lookAt(origin);
+            invalidate();
         }
     };
 
@@ -264,6 +286,7 @@ function AsterDynamic({
             currentObjectRef.current.position.set(objectPos.x, objectPos.y, objectPos.z);
             currentObjectRef.current.rotation.set(objectRot.x, objectRot.y, objectRot.z);
             currentObjectRef.current.scale.set(objectScale.x, objectScale.y, objectScale.z);
+            invalidate();
         }
     };
 
@@ -290,6 +313,7 @@ function AsterDynamic({
                     updateObjectTransform();
                     sceneRef.current.add(currentObjectRef.current);
                     loadingRef.current = false;
+                    invalidate();
                 }, undefined, (error) => {
                     console.error('Error loading GLTF:', error);
                     loadDefaultObject();
@@ -327,6 +351,7 @@ function AsterDynamic({
                     updateObjectTransform();
                     sceneRef.current.add(currentObjectRef.current);
                     loadingRef.current = false;
+                    invalidate();
                 }, undefined, (error) => {
                     console.error('Error loading SVG:', error);
                     loadDefaultObject();
@@ -335,7 +360,7 @@ function AsterDynamic({
         } else {
             // Load default asterisk object
             const loader = new GLTFLoader();
-            loader.load('assets/asterisk.gltf', (gltf) => {
+            loader.load('/assets/asterisk.gltf', (gltf) => {
                 // Double-check that we haven't started loading something else
                 if (!loadingRef.current) return;
 
@@ -344,6 +369,7 @@ function AsterDynamic({
                 updateObjectTransform();
                 sceneRef.current.add(currentObjectRef.current);
                 loadingRef.current = false;
+                invalidate();
             }, undefined, (error) => {
                 console.error('Error loading default asterisk:', error);
                 loadDefaultObject();
@@ -364,23 +390,26 @@ function AsterDynamic({
         updateObjectTransform();
         sceneRef.current.add(currentObjectRef.current);
         loadingRef.current = false;
+        invalidate();
     };
 
-    const animate = () => {
+    const renderFrame = () => {
         // Use refs instead of props to get the current values
-        if (autoRotateRef.current && currentObjectRef.current) {
+        const spinning = autoRotateRef.current && currentObjectRef.current;
+        if (spinning) {
             currentObjectRef.current.rotation.y += rotationSpeedRef.current.y;
             currentObjectRef.current.rotation.z += rotationSpeedRef.current.z;
         }
 
+        if (!spinning && !dirtyRef.current) return;
+        dirtyRef.current = false;
+
         if (effectRef.current && sceneRef.current && cameraRef.current) {
             effectRef.current.render(sceneRef.current, cameraRef.current);
         }
-
-        animationIdRef.current = requestAnimationFrame(animate);
     };
 
-    const onWindowResize = () => {
+    const onResize = () => {
         if (!cameraRef.current || !rendererRef.current || !effectRef.current) return;
 
         const { width, height } = getStageSize();
@@ -388,6 +417,7 @@ function AsterDynamic({
         cameraRef.current.updateProjectionMatrix();
         rendererRef.current.setSize(width, height);
         effectRef.current.setSize(width, height);
+        invalidate();
     };
 
     return null; // This component doesn't render anything directly

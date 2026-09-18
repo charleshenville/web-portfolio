@@ -21,7 +21,7 @@ const GLYPH = [
     '....#....',
 ];
 
-const CELL = 6;
+const CELL = 8;
 
 function PixelGlyph({ className = '', delayMs = 0, flip = false }) {
     const cols = GLYPH[0].length;

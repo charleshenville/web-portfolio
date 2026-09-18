@@ -7,7 +7,7 @@ function E404() {
     return (
         <section className={`wrap ${styles.lost}`}>
             <div className={styles.lostField}>
-                <AsciiField cell={10} fractal="turbulence" scale={8} density={-0.2} contrast={1.15} accentAt={0.93} seed={404} />
+                <AsciiField cell={10} fractal="vorticity" ramp=" .:|" speed={0.1} scale={80} density={-0.2} contrast={1.15} accentAt={0.93} seed={404} />
             </div>
             <p className="label bracket">Error</p>
             <h1 className={styles.lostCode}>404</h1>

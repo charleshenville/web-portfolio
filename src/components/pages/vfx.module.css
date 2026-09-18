@@ -34,7 +34,11 @@
     transition: border-color 0.25s ease;
 }
 
-.cardField > canvas {
+/* Whatever the preview is - a noise canvas, a clip, or the ascii engine's own
+   stage - it sits flush in the frame and lifts out of the dim on hover. */
+.cardField > canvas,
+.cardField > video,
+.cardField > div {
     opacity: 0.55;
     transition: opacity 0.25s ease;
 }
@@ -45,7 +49,11 @@
 }
 
 .cardLink:hover .cardField > canvas,
-.cardLink:focus-visible .cardField > canvas {
+.cardLink:focus-visible .cardField > canvas,
+.cardLink:hover .cardField > video,
+.cardLink:focus-visible .cardField > video,
+.cardLink:hover .cardField > div,
+.cardLink:focus-visible .cardField > div {
     opacity: 1;
 }
 
@@ -90,4 +98,14 @@
     background: var(--accent);
     border-color: var(--accent);
     color: var(--on-accent);
+}
+
+/* Touch: there is no hover to lift a preview out of the dim, so the clips and
+   the ascii engine play at full strength instead. */
+@media (hover: none) {
+    .cardField > canvas,
+    .cardField > video,
+    .cardField > div {
+        opacity: 1;
+    }
 }

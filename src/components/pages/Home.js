@@ -71,16 +71,6 @@ function Home() {
                         <span>Charles</span>
                         <span>Henville<span className={styles.stop}>.</span></span>
                     </h1>
-                    {/* {compact && (
-                        <button
-                            type="button"
-                            className={`label ${styles.scrollCue}`}
-                            onClick={toAbout}
-                            aria-label="Scroll to content"
-                        >
-                            <PixelGlyph />
-                        </button>
-                    )} */}
                     <button
                         type="button"
                         className={`label ${styles.scrollCue}`}

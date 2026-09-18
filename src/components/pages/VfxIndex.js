@@ -1,21 +1,66 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { Link } from 'react-router-dom';
 import PageHeader from '../ui/PageHeader';
 import Separator from '../ui/Separator';
 import AsciiField from '../ui/AsciiField';
+import VideoField from '../ui/VideoField';
 import { VFX_TOOLS } from '../../data/nav';
 import styles from './vfx.module.css';
 
-// A distinct noise signature per tool card; they only animate on hover.
-const SIGNATURES = [
-    { fractal: 'turbulence', scale: 7, density: -0.1 },
-    { fractal: 'fbm', scale: 4, density: 0, driftX: 1.4 },
-    { fractal: 'ridged', scale: 10, density: -0.3 },
-    { fractal: 'fbm', scale: 14, density: -0.05, octaves: 5 },
-    { fractal: 'turbulence', scale: 18, density: 0.05, driftY: 0.3 },
-];
+// The ascii card runs the real renderer, so three.js stays out of this
+// page's chunk until a card asks for it.
+const AsciiEnginePreview = lazy(() => import('../AsciiEnginePreview'));
 
-function ToolCard({ tool, index, signature }) {
+// What each card shows: a clip of the tool's own output, the live engine, or
+// a noise signature for the ones with nothing recorded yet. Clips and the
+// engine run by themselves; noise fields only animate on hover.
+const PREVIEWS = {
+    'blob-tracker': { kind: 'video', clip: 'blob-tracker' },
+    'pixel-sorter': { kind: 'video', clip: 'pixel-sorter' },
+    ascii: { kind: 'engine' },
+    procedural: { kind: 'video', clip: 'procedural' },
+    visualizer: {
+        kind: 'noise',
+        signature: { fractal: 'turbulence', scale: 18, density: 0.05, driftY: 0.3 },
+    },
+};
+
+const FALLBACK = {
+    kind: 'noise',
+    signature: { fractal: 'fbm', scale: 9, density: 0 },
+};
+
+function Preview({ tool, index, active }) {
+    const preview = PREVIEWS[tool.slug] || FALLBACK;
+    if (preview.kind === 'video') {
+        return (
+            <VideoField
+                src={`/VfxVids/${preview.clip}.mp4`}
+                poster={`/VfxVids/${preview.clip}.jpg`}
+            />
+        );
+    }
+    if (preview.kind === 'engine') {
+        return (
+            <Suspense fallback={null}>
+                <AsciiEnginePreview />
+            </Suspense>
+        );
+    }
+    return (
+        <AsciiField
+            cell={7}
+            animate={active}
+            fps={20}
+            contrast={1.15}
+            accentAt={0.97}
+            seed={index * 17 + 2}
+            {...preview.signature}
+        />
+    );
+}
+
+function ToolCard({ tool, index }) {
     const [active, setActive] = React.useState(false);
     return (
         <li className={styles.card}>
@@ -28,7 +73,7 @@ function ToolCard({ tool, index, signature }) {
                 onBlur={() => setActive(false)}
             >
                 <div className={styles.cardField}>
-                    <AsciiField cell={7} animate={active} fps={20} contrast={1.15} accentAt={0.97} seed={index * 17 + 2} {...signature} />
+                    <Preview tool={tool} index={index} active={active} />
                 </div>
                 <div className={styles.cardMeta}>
                     <span className="label">04.{index}</span>
@@ -54,7 +99,7 @@ function VfxIndex() {
             <Separator index="04.0" title="Tools" meta="Select an instrument" rows={1} />
             <ol className={`wrap ${styles.cards}`}>
                 {VFX_TOOLS.map((tool, i) => (
-                    <ToolCard key={tool.slug} tool={tool} index={i + 1} signature={SIGNATURES[i % SIGNATURES.length]} />
+                    <ToolCard key={tool.slug} tool={tool} index={i + 1} />
                 ))}
             </ol>
         </>

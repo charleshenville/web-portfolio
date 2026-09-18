@@ -104,6 +104,10 @@
    of its cell, never between two. */
 .pixelHop {
     display: inline-block;
+    /* the hop is a transform and so takes no space of its own: the padding is
+       the room underneath for the bottom of it, which keeps the cell size a
+       detail of this component rather than a number its callers repeat */
+    padding-bottom: calc(var(--cell) * 2);
     animation: pixelHop 1.6s steps(1, end) infinite;
 }
 
@@ -219,4 +223,12 @@
     font-size: clamp(1rem, 4.4vw, 1.2rem);
     letter-spacing: -0.03em;
     line-height: 1.2;
+}
+
+/* ---- Video field ---- */
+/* Fills the same box AsciiField does; the clips are cropped, not letterboxed,
+   so a card reads as one surface whatever the source aspect was. */
+.videoField {
+    object-fit: cover;
+    display: block;
 }

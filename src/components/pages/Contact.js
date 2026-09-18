@@ -1,7 +1,7 @@
 import React from 'react';
-import PageHeader from '../ui/PageHeader';
-import Separator from '../ui/Separator';
+import ProceduralField from '../ui/ProceduralField';
 import socials from '../socials.json';
+import contactField from '../../data/contactField';
 import styles from './contact.module.css';
 
 const LINK_LABELS = { linkedin: 'LinkedIn', github: 'GitHub', email: 'Email', cell: 'Phone', soundcloud: 'SoundCloud', spotify: 'Spotify' };
@@ -10,14 +10,28 @@ const EMAIL = socials.find((s) => s.name === 'email');
 function Contact() {
     return (
         <>
-            <PageHeader
-                index="06"
-                title="Contact"
-                meta={['Toronto, Canada', 'EST / EDT', 'Email / LinkedIn / GitHub / Music']}
-                lead="Let’s get in touch. Collaborations, questions, opportunities or just a hello."
-            />
+            {/* ---- Masthead: the page opener over a live fluid field ---- */}
+            <header className={styles.hero}>
+                <div className={styles.heroField}>
+                    <ProceduralField settings={contactField} fps={24} viewAspect={0.7} />
+                </div>
+                <div className={styles.heroScrim} aria-hidden="true" />
 
-            <Separator index="06.1" title="Reach" meta={`${socials.length} channels`} rows={1} />
+                <div className={`wrap ${styles.heroInner}`}>
+                    <div className={`grid ${styles.heroMeta}`}>
+                        <span className={`label bracket ${styles.heroIndex}`}>06</span>
+                        <span className={`label ${styles.heroItem}`}>Toronto, Canada</span>
+                        <span className={`label ${styles.heroItem}`}>EST / EDT</span>
+                        <span className={`label ${styles.heroItem}`}>{socials.length} channels</span>
+                    </div>
+                    <h1 className={styles.heroTitle}>
+                        Contact<span className={styles.stop}>.</span>
+                    </h1>
+                    <p className={styles.heroLead}>
+                        Let’s get in touch. Collaborations, questions, opportunities or just a hello.
+                    </p>
+                </div>
+            </header>
 
             <section className={`wrap ${styles.layout}`}>
                 {EMAIL && (

@@ -24,7 +24,7 @@ export const FRAME_STYLE = {
     dither: 'bayer',
 
     // Pixel grid
-    cell: 2,               // css px per noise pixel
+    cell: 4,               // css px per noise pixel
     bleed: 0,              // px the effect extends outside the media
 
     // Hover behaviour
@@ -32,14 +32,14 @@ export const FRAME_STYLE = {
     fadeIn: 100,           // ms
     fadeOut: 100,          // ms
     fps: 20,               // animation frame cap while hovered
-    speed: 0.35,           // time multiplier for all motion (1 = normal)
+    speed: 0.15,           // time multiplier for all motion (1 = normal)
 
     // Noise simulation (fractal Perlin, same as the Procedural VFX tool)
     fractal: 'fbm',        // 'fbm' | 'turbulence' | 'ridged'
-    scale: 400,              // feature size, in pixels (cells)
+    scale: 100,              // feature size, in pixels (cells)
     octaves: 4,
-    evolve: 0.8,           // how fast the pattern morphs
-    loop: 30,              // seconds before the morph loops
+    evolve: 0.1,           // how fast the pattern morphs
+    loop: 10,              // seconds before the morph loops
     driftX: 0,           // scroll speed, noise units / second
     driftY: 0,
     contrast: 2,         // > 1 pushes values towards the ends of the palette
@@ -47,7 +47,7 @@ export const FRAME_STYLE = {
     seed: 21,
 
     // Spill shape: strong at the edges, fading towards the middle
-    spread: 1,           // edge band, as a fraction of the short side
+    spread: 0.5,           // edge band, as a fraction of the short side
     centre: 0,          // noise strength left in the middle (0..1)
     bias: 5,            // how hard the middle is pulled to the first colour
 
@@ -86,5 +86,16 @@ export const HERO_FIELD = {
 
     // pointer glow
     glow: 0.55,            // brightening under the cursor (0 = off)
-    glowRadius: 160,       // px
+    glowRadius: 80,       // px
+
+    // Click ripple: a ring travelling out from wherever the field is clicked.
+    // `ripple` is added straight to the noise, so it is read against `density`
+    // and `accentAt` above: at 0.7 the crest rides the top of the glyph ramp
+    // and only tips into the accent where the noise was already bright. Push it
+    // past ~0.85 and the whole crest goes accent, which reads as a blue splash
+    // rather than a wave.
+    ripple: 0.7,           // height of the ring (0 = off)
+    rippleSpeed: 200,      // px/s it travels outwards
+    rippleWidth: 100,       // px from the crest to the trough behind it
+    rippleDecay: 1.3,      // seconds for it to fade to about a third
 };

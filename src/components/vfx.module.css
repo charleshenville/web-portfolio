@@ -549,3 +549,13 @@
     letter-spacing: -0.02em;
     text-transform: none;
 }
+
+/* Card-sized stage for the ascii engine on the VFX index. The effect mounts
+   its own table in here and fills it. */
+.vfx_cardStage {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    background: #000;
+    pointer-events: none;
+}

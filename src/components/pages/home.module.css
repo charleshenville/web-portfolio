@@ -41,40 +41,28 @@
     background: var(--paper);
 }
 
-/* The name, and on the narrow layout the scroll prompt beside it. */
+/* The name, and the scroll prompt beside it. */
 .heroFoot {
     display: flex;
     align-items: stretch;
     gap: var(--gutter);
 }
 
-/* Full width, so "Henville." still lands on the right edge of the page. */
-/* .heroFoot > .name {
-    flex: 1 1 auto;
-    min-width: 0;
-} */
-
-/* Under 600px the name left-aligns and frees the block to its right: the
-   prompt to keep scrolling moves out of the meta row and into it, a hopping
-   pixel glyph on the right edge of the container. Wider than that there is no
-   such gap, and the meta row carries the prompt instead. */
+/* The prompt to keep scrolling: a hopping pixel glyph on the right edge of the
+   container, sitting on the bottom of the hero. The name is content width, so
+   the cue takes whatever is left of the row. Under 600px the meta row drops
+   its "Scroll" label and this is the only prompt on the page. Room under the
+   glyph for the bottom of its hop comes from the glyph itself. */
 .scrollCue {
     flex: 1 1 auto;
     display: flex;
     align-items: flex-end;
     justify-content: flex-end;
-    /* room under the glyph for the bottom of its hop */
-    padding: 0 0 calc(2 * 6px);
+    padding: 0;
     border: 0;
     background: none;
     color: var(--ink);
     cursor: pointer;
-    transition: color 0.2s ease;
-}
-
-.scrollCue:hover,
-.scrollCue:focus-visible {
-    color: var(--ink);
 }
 
 .name {
@@ -307,9 +295,5 @@
     }
     .name > span:last-child {
         align-self: flex-start;
-    }
-    /* content width, so the cue gets the rest of the row */
-    .heroFoot > .name {
-        flex: 0 0 auto;
     }
 }

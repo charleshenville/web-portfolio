@@ -13,10 +13,17 @@ import styles from './ui.module.css';
 // in the middle so it eats in from the edges over whatever sits underneath
 // (the media frames).
 //
+// interactive adds the pointer to the field: `glow` brightens what is under
+// the cursor, and `ripple` sends a ring out from a click, like a stone into
+// water. Both are read off the parent element, because the canvas itself is
+// pointer-events: none.
+//
 // Performance: one fillText per row per colour (or one scaled drawImage of a
 // cols x rows buffer for pixels), a shared rAF ticker capped
 // at `fps`, and nothing runs while the canvas is off screen, the tab is
-// hidden, `animate` is false or the viewer prefers reduced motion.
+// hidden, `animate` is false or the viewer prefers reduced motion. A ripple
+// keeps the ticker alive for its own lifetime even when `animate` is false,
+// without advancing the noise.
 //
 // The grid is also capped at `maxCells` cells. `cell` is in CSS pixels, so
 // zooming out (cmd/ctrl -) hands the canvas a bigger CSS box and would
@@ -31,6 +38,12 @@ const MAX_DT = 0.1;
 // and is the expensive one; pixels go through a single ImageData blit.
 const MAX_CELLS_ASCII = 20000;
 const MAX_CELLS_PIXELS = 250000;
+// Ripples: how many can be in flight, how far either side of the ring's centre
+// the wave packet reaches (in `rippleWidth`s), and how many decay constants it
+// is followed for before it is written off as gone.
+const MAX_RIPPLES = 4;
+const RIPPLE_REACH = 3;
+const RIPPLE_LIFE = 3.5;
 
 const DEFAULTS = {
     mode: 'fill',          // 'fill' | 'frame' | 'spill'
@@ -58,6 +71,10 @@ const DEFAULTS = {
     fadeY: false,
     glow: 0,               // pointer brightening (interactive)
     glowRadius: 140,
+    ripple: 0,             // height of the ring a click sends out (0 = off)
+    rippleSpeed: 420,      // px/s the ring travels outwards
+    rippleWidth: 48,       // px from the crest to the trough behind it
+    rippleDecay: 1.1,      // seconds for the ring to fade to about a third
     seed: 1,
     fps: 15,
     speed: 1,              // time multiplier for all motion (morph + drift)
@@ -104,7 +121,7 @@ function AsciiField({ animate = true, interactive = false, className = '', style
             fontSize: 12, ink: '#ecebe6', accent: '#0000ff',
             t: (cfg.current.seed % 97) * 1.37, last: null,
             visible: false, px: -1e6, py: -1e6, unsub: null, pending: 0,
-            levelsKey: '', lo: -0.5, span: 1,
+            levelsKey: '', lo: -0.5, span: 1, ripples: [],
         };
 
         const measure = () => {
@@ -169,7 +186,69 @@ function AsciiField({ animate = true, interactive = false, className = '', style
             st.span = Math.max(1e-6, samples[Math.floor(0.98 * (n - 1))] - st.lo);
         };
 
-        const drawPixels = (s, p, kind, phase) => {
+        // ---- click ripples ----
+        // A ring travelling out from the click, added to the field the same
+        // way `glow` is. The profile is a cosine under a Gaussian window: one
+        // crest with a trough either side, so it reads as a wave front rather
+        // than a spreading disc. Amplitude decays with age rather than with
+        // distance, which here is the same thing at a constant speed.
+        //
+        // Ripples run on the wall clock, not `st.t`: they should travel at the
+        // same rate whatever `speed` the noise is set to, and should still play
+        // out when the noise is paused.
+
+        // Drop the ones that have faded out or run off the canvas.
+        const pruneRipples = (now) => {
+            if (!st.ripples.length) return;
+            const s = cfg.current;
+            const reach = RIPPLE_REACH * s.rippleWidth;
+            const gone = Math.hypot(st.W, st.H) + reach;
+            st.ripples = st.ripples.filter((rp) => {
+                const age = now - rp.t;
+                return age < RIPPLE_LIFE * s.rippleDecay && age * s.rippleSpeed < gone;
+            });
+        };
+
+        // Per-frame form of the live ripples, with the bounds that let the
+        // inner loop reject a cell on its squared distance, before the sqrt.
+        const prepRipples = (now) => {
+            if (!st.ripples.length) return null;
+            const s = cfg.current;
+            const reach = RIPPLE_REACH * s.rippleWidth;
+            const invWidth = 1 / s.rippleWidth;
+            return st.ripples.map((rp) => {
+                const age = now - rp.t;
+                const radius = age * s.rippleSpeed;
+                const near = Math.max(0, radius - reach);
+                const far = radius + reach;
+                return {
+                    x: rp.x,
+                    y: rp.y,
+                    radius,
+                    invWidth,
+                    amp: s.ripple * Math.exp(-age / s.rippleDecay),
+                    near2: near * near,
+                    far2: far * far,
+                };
+            });
+        };
+
+        // Height of every live ring at a point on the canvas, in field units.
+        const rippleAt = (rips, x, y) => {
+            let v = 0;
+            for (let i = 0; i < rips.length; i++) {
+                const rp = rips[i];
+                const dx = x - rp.x;
+                const dy = y - rp.y;
+                const d2 = dx * dx + dy * dy;
+                if (d2 < rp.near2 || d2 > rp.far2) continue;
+                const u = (Math.sqrt(d2) - rp.radius) * rp.invWidth;
+                v += rp.amp * Math.exp(-u * u) * Math.cos(Math.PI * u);
+            }
+            return v;
+        };
+
+        const drawPixels = (s, p, kind, phase, rips) => {
             const { cols, rows, lo, span } = st;
             const data = st.img.data;
             const key = s.palette.join('|');
@@ -190,9 +269,11 @@ function AsciiField({ animate = true, interactive = false, className = '', style
                 const ny = r * inv + oy;
                 const dy = Math.min(r + 0.5, rows - r - 0.5);
                 const b = (r & 7) * 8;
+                const cy = (r + 0.5) * st.ch;
                 for (let c = 0; c < cols; c++) {
                     const n = (fractalNoise(c * inv + ox, ny, phase, p, s.seed, kind) - lo) / span;
                     let v = (n - 0.5) * s.contrast + 0.5 + s.density;
+                    if (rips) v += rippleAt(rips, (c + 0.5) * st.cw, cy);
                     if (spill) {
                         // 0 at the edge .. 1 once `spread` inside it (smoothstep)
                         let e = Math.min(c + 0.5, cols - c - 0.5, dy) / band;
@@ -240,8 +321,11 @@ function AsciiField({ animate = true, interactive = false, className = '', style
             const phase = (((st.t / s.loop) % 1) + 1) % 1;
             const kind = FRACTAL_KIND[s.fractal] || 0;
             ensureLevels(s, p, kind);
+            const now = performance.now() / 1000;
+            pruneRipples(now);
+            const rips = prepRipples(now);
             if (s.render === 'pixels') {
-                drawPixels(s, p, kind, phase);
+                drawPixels(s, p, kind, phase, rips);
                 return;
             }
             const { lo, span } = st;
@@ -281,10 +365,14 @@ function AsciiField({ animate = true, interactive = false, className = '', style
                     if (s.fadeX) v *= Math.sin((Math.PI * (c + 0.5)) / cols) ** 0.7;
                     v *= ey;
                     if (frame) v *= 1 - depth * 0.45;
-                    if (glow) {
-                        const dx = x0 + (c + 0.5) * cw - st.px;
-                        const dy = cy - st.py;
-                        v += glow * Math.exp(-(dx * dx + dy * dy) / r2);
+                    if (glow || rips) {
+                        const cx = x0 + (c + 0.5) * cw;
+                        if (glow) {
+                            const dx = cx - st.px;
+                            const dy = cy - st.py;
+                            v += glow * Math.exp(-(dx * dx + dy * dy) / r2);
+                        }
+                        if (rips) v += rippleAt(rips, cx, cy);
                     }
                     const q = clamp((v * levels) | 0, 0, top);
                     const g = chars[q];
@@ -310,9 +398,13 @@ function AsciiField({ animate = true, interactive = false, className = '', style
         };
 
         const tick = (now) => {
-            if (st.last !== null) st.t += Math.min(MAX_DT, now - st.last) * cfg.current.speed;
+            if (st.last !== null && animateRef.current) {
+                st.t += Math.min(MAX_DT, now - st.last) * cfg.current.speed;
+            }
             st.last = now;
             draw();
+            // draw() prunes, so this is the frame the last ripple died on
+            if (!animateRef.current && !st.ripples.length) sync();
         };
 
         const requestDraw = () => {
@@ -324,7 +416,7 @@ function AsciiField({ animate = true, interactive = false, className = '', style
         };
 
         const sync = () => {
-            const run = animateRef.current && st.visible && !reduced;
+            const run = (animateRef.current || st.ripples.length > 0) && st.visible && !reduced;
             if (run && !st.unsub) {
                 st.last = null;
                 st.unsub = subscribe(tick, cfg.current.fps);
@@ -364,7 +456,26 @@ function AsciiField({ animate = true, interactive = false, className = '', style
             st.py = e.clientY - rect.top;
             if (!st.unsub) requestDraw();
         };
+
+        // A ripple is motion and nothing else, so a viewer who asked for less
+        // of it gets none: one frozen ring would be worse than no ring at all.
+        const onDown = (e) => {
+            if (reduced || !cfg.current.ripple) return;
+            const rect = canvas.getBoundingClientRect();
+            st.ripples.push({
+                x: e.clientX - rect.left,
+                y: e.clientY - rect.top,
+                t: performance.now() / 1000,
+            });
+            if (st.ripples.length > MAX_RIPPLES) st.ripples.shift();
+            sync();
+            requestDraw(); // don't wait up to a frame interval for the first ring
+        };
+
+        // the canvas is pointer-events: none, so the parent is what gets clicked
+        const host = interactive ? canvas.parentElement : null;
         if (interactive) window.addEventListener('pointermove', onPointer, { passive: true });
+        if (host) host.addEventListener('pointerdown', onDown);
 
         api.current = { sync, requestDraw };
 
@@ -375,6 +486,7 @@ function AsciiField({ animate = true, interactive = false, className = '', style
             if (st.unsub) st.unsub();
             if (st.pending) cancelAnimationFrame(st.pending);
             window.removeEventListener('pointermove', onPointer);
+            if (host) host.removeEventListener('pointerdown', onDown);
             api.current = null;
         };
         // setup runs once; live props are read through cfg / animateRef

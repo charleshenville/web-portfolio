@@ -1,124 +1,165 @@
 [
     {
-        "id": "C#",
-        "ext": "cs",
-        "proficiency": 0.5,
-        "subs":[
-            "Unity"
-        ],
-        "repo":"https://github.com/charleshenville/dot-render"
-    },
-    {
-        "id": "C++",
-        "ext": "cpp",
-        "proficiency": 0.8,
-        "subs":[
-            "Arduino"
-        ],
-        "repo":"https://github.com/charleshenville/ocad-interactive-arduino-reactjs/blob/main/sketches/interactive_sketch/interactive_sketch.ino"
-    },
-    {
-        "id": "C",
-        "ext": "c",
-        "proficiency": 0.8,
-        "subs":[
-            "Standard Libraries"
-        ],
-        "repo":"https://github.com/charleshenville/reversi-ai"
-    },
-    {
-        "id": "Java",
-        "ext": "java",
-        "proficiency": 0.5,
-        "subs":[
-            "Swing"
-        ],
-        "repo":"https://github.com/charleshenville/infinite-sudoku"
-    },
-    {
         "id": "Python",
         "ext": "py",
         "proficiency": 1,
-        "subs":[
+        "subs": [
             "Flask",
+            "Django",
+            "PyTorch",
             "NumPy",
             "Pandas",
-            "Pyodb",
-            "Tkinter"
+            "Scikit-Learn"
         ],
-        "repo":"https://github.com/charleshenville/cds-idea-generator"
+        "repo": "https://github.com/charleshenville/cds-idea-generator"
     },
     {
         "id": "JavaScript",
         "ext": "js",
-        "proficiency": 0.8,
-        "subs":[
+        "proficiency": 0.9,
+        "subs": [
             "React",
-            "Three"
+            "Three.js",
+            "WebGL / WebGPU"
         ],
-        "repo":"https://github.com/charleshenville/web-portfolio"
+        "repo": "https://github.com/charleshenville/web-portfolio"
     },
     {
         "id": "HTML",
         "ext": "html",
         "proficiency": 0.9,
-        "subs":[
+        "subs": [
             "With React"
         ],
-        "repo":"https://github.com/charleshenville/web-portfolio"
+        "repo": "https://github.com/charleshenville/web-portfolio"
     },
     {
         "id": "CSS",
         "ext": "css",
         "proficiency": 0.9,
-        "subs":[
+        "subs": [
             "With React",
             "Tailwind",
             "Figma"
         ],
-        "repo":"https://github.com/charleshenville/web-portfolio"
+        "repo": "https://github.com/charleshenville/web-portfolio"
+    },
+    {
+        "id": "C++",
+        "ext": "cpp",
+        "proficiency": 0.85,
+        "subs": [
+            "Arduino",
+            "ESP32",
+            "ROS"
+        ],
+        "repo": "https://github.com/charleshenville/ocad-interactive-arduino-reactjs/blob/main/sketches/interactive_sketch/interactive_sketch.ino"
+    },
+    {
+        "id": "C",
+        "ext": "c",
+        "proficiency": 0.8,
+        "subs": [
+            "Standard Libraries",
+            "ARM9 Embedded"
+        ],
+        "repo": "https://github.com/charleshenville/embedded-physics-engine"
+    },
+    {
+        "id": "TypeScript",
+        "ext": "ts",
+        "proficiency": 0.8,
+        "subs": [
+            "React",
+            "Node"
+        ],
+        "repo": "https://github.com/charleshenville/audio-automata"
     },
     {
         "id": "SQL",
         "ext": "sql",
         "proficiency": 0.8,
-        "subs":[
-            "MySQL",
+        "subs": [
+            "PostgreSQL",
             "SQL Server",
-            "PostgreSQL"
+            "MySQL"
         ],
-        "repo":"https://github.com/charleshenville/web-portfolio"
+        "repo": "https://github.com/charleshenville/web-portfolio"
     },
     {
         "id": "Verilog",
         "ext": "v",
         "proficiency": 0.8,
-        "subs":[
+        "subs": [
             "SystemVerilog",
             "DE1-SoC FPGA (Altera)",
             "ModelSim"
         ],
-        "repo":"https://github.com/charleshenville/verilog-gpu"
-    }, 
+        "repo": "https://github.com/charleshenville/verilog-gpu"
+    },
+    {
+        "id": "Bash",
+        "ext": "sh",
+        "proficiency": 0.7,
+        "subs": [
+            "Linux",
+            "Docker",
+            "Kubernetes",
+            "AWS"
+        ]
+    },
     {
         "id": "Assembly",
         "ext": "s",
         "proficiency": 0.6,
-        "subs":[
-            "NOISII",
+        "subs": [
+            "NIOS II",
             "RISC-V"
         ],
-        "repo":"https://github.com/charleshenville/niosii-asm"
-    }, 
+        "repo": "https://github.com/charleshenville/niosii-asm"
+    },
+    {
+        "id": "C#",
+        "ext": "cs",
+        "proficiency": 0.5,
+        "subs": [
+            "Unity"
+        ],
+        "repo": "https://github.com/charleshenville/dot-render"
+    },
+    {
+        "id": "Java",
+        "ext": "java",
+        "proficiency": 0.5,
+        "subs": [
+            "Swing"
+        ],
+        "repo": "https://github.com/charleshenville/infinite-sudoku"
+    },
+    {
+        "id": "MATLAB",
+        "ext": "m",
+        "proficiency": 0.5,
+        "subs": [
+            "Signals & Systems",
+            "Linear Algebra"
+        ]
+    },
+    {
+        "id": "Go",
+        "ext": "go",
+        "proficiency": 0.4,
+        "subs": [
+            "Standard Library"
+        ]
+    },
     {
         "id": "Rust",
         "ext": "rs",
         "proficiency": 0.2,
-        "subs":[
+        "subs": [
             "Cargo",
             "Polars"
-        ],
-        "repo":"https://github.com/charleshenville/niosii-asm"
+        ]
     }
-
 ]

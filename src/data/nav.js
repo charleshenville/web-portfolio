@@ -12,14 +12,14 @@ export const VFX_TOOLS = [
         blurb: 'Threshold-masked pixel sorting for stills and video.',
     },
     {
-        slug: 'ascii',
-        label: 'ASCII Render',
-        blurb: 'Lit 3D models (glTF / SVG) rasterised to live ascii.',
+        slug: 'procedural',
+        label: 'Procedural Art',
+        blurb: 'Fractal Perlin noise and fluid flow as ascii or pixels.',
     },
     {
-        slug: 'procedural',
-        label: 'Procedural',
-        blurb: 'Fractal Perlin noise and fluid flow as ascii or pixels.',
+        slug: 'ascii',
+        label: 'ASCII Renderer',
+        blurb: 'Lit 3D models (glTF / SVG) rasterised to live ascii.',
     },
     {
         slug: 'visualizer',
