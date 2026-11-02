@@ -12,8 +12,8 @@ import VfxNumberField from './VfxNumberField';
 import {
     ASSETS, CURVES, MUSIC_ASSETS, PARAM_GROUPS, GEOM_KEYS, CURVE_GEOM_KEYS,
     fibonacciSphere, makeItem, makeCurveItem, buildPointCloudRecord,
-    buildCurveRecord, applyAudioReactivity, applyRecordTransform,
-    disposeRecord, loadPlyPoints, computeSpectrogram,
+    buildCurveRecord, applyAudioReactivity, applyCloudReactivity,
+    applyRecordTransform, disposeRecord, loadPlyPoints, computeSpectrogram,
 } from '../lib/audioScene';
 import styles from './vfx.module.css';
 
@@ -52,6 +52,16 @@ const DEFAULT_LAYERS = {
     cloudOpacity: 1,
     cloudDensity: 0.6,        // fraction of the 300k sampled points drawn
     cloudAttenuate: true,
+    // The scan's own points react to the music like any placed cloud. Kept in
+    // the layer stack rather than beside the scene objects so a cut can turn
+    // the object itself into the thing that moves.
+    cloudReact: 0,            // 0 leaves the scan geometrically true
+    cloudScatter: 0.002,
+    cloudFreqLow: 0,
+    cloudFreqHigh: 1,
+    cloudPulseX: 0,
+    cloudPulseY: 0,
+    cloudPulseZ: 0,
 
     meshOn: false,
     meshShading: 'matte',
@@ -657,6 +667,18 @@ function ScanCompositor() {
 
                 cloudGeo.computeBoundingSphere();
 
+                // Keep the scan's true positions; audio displacement is always
+                // computed from these, never from the previous frame, so it
+                // cannot accumulate drift.
+                t.cloudReact = {
+                    base: Float32Array.from(cloudGeo.getAttribute('position').array),
+                    dirs: null,
+                    dists: null,
+                    freqIndex: null,
+                    key: null,
+                    dirty: false,
+                };
+
                 // Frame the free-orbit camera on the scan so switching to it
                 // lands on the object rather than somewhere off in space.
                 const sphere = cloudGeo.boundingSphere;
@@ -878,6 +900,30 @@ function ScanCompositor() {
         }
     }, [poseAt, applyIntrinsics]);
 
+    // Push the spectrum through the scan's own point cloud. Only the points
+    // actually being drawn are touched, so the density slider doubles as the
+    // cost control on a 300k-point cloud.
+    const driveCloud = useCallback((frequencyData, playing) => {
+        const t = three.current;
+        const L = layersRef.current;
+        if (!t.cloud || !t.cloudReact) return;
+        const attr = t.cloud.geometry.getAttribute('position');
+        const drawn = t.cloud.geometry.drawRange.count;
+        const count = Number.isFinite(drawn) && drawn > 0
+            ? drawn : attr.count;
+        applyCloudReactivity(
+            t.cloudReact, attr,
+            {
+                reactivity: L.cloudOn ? L.cloudReact : 0,
+                scatter: L.cloudScatter,
+                freqLow: L.cloudFreqLow,
+                freqHigh: L.cloudFreqHigh,
+                ox: L.cloudPulseX, oy: L.cloudPulseY, oz: L.cloudPulseZ,
+            },
+            frequencyData, playing, count,
+        );
+    }, []);
+
     // Cuts drive the look during playback: the active preset is whichever cut
     // the playhead has most recently passed.
     const presetForTime = useCallback((time) => {
@@ -911,10 +957,9 @@ function ScanCompositor() {
                 freq = dataArrayRef.current;
             }
             const audioEl = audioRef.current;
-            applyAudioReactivity(
-                sceneObjectsRef.current, freq, dt,
-                !!audioEl && !audioEl.paused,
-            );
+            const audioLive = !!audioEl && !audioEl.paused;
+            applyAudioReactivity(sceneObjectsRef.current, freq, dt, audioLive);
+            driveCloud(freq, audioLive);
 
             if (followCutsRef.current) {
                 const want = presetForTime(time);
@@ -932,7 +977,7 @@ function ScanCompositor() {
         };
         t.raf = requestAnimationFrame(tick);
         return () => cancelAnimationFrame(t.raf);
-    }, [renderFrame, presetForTime, track]);
+    }, [renderFrame, presetForTime, driveCloud, track]);
 
     // ---- Presets & cuts --------------------------------------------------
 
@@ -1089,7 +1134,10 @@ function ScanCompositor() {
         // decoded samples up front so each frame gets the spectrum it would
         // have had in the preview.
         let spectrum = null;
-        if (audioBufferRef.current && sceneItemsRef.current.length) {
+        const cloudReacts = layersRef.current.cloudOn
+            && layersRef.current.cloudReact > 0;
+        if (audioBufferRef.current
+            && (sceneItemsRef.current.length || cloudReacts)) {
             setStatus('Analysing audio...');
             spectrum = computeSpectrogram(audioBufferRef.current, {
                 fps, frameCount: totalFrames,
@@ -1173,6 +1221,7 @@ function ScanCompositor() {
                     1 / fps,
                     !!spectrum,
                 );
+                driveCloud(spectrum ? spectrum[i] : null, !!spectrum);
 
                 if (t.videoTexture) t.videoTexture.needsUpdate = true;
                 renderFrame(time);
@@ -1226,7 +1275,8 @@ function ScanCompositor() {
             // eslint-disable-next-line no-alert
             window.alert(`Export failed: ${encodeFailed.message || encodeFailed}`);
         }
-    }, [clipId, exportScale, renderFrame, applyLayers, presetForTime]);
+    }, [clipId, exportScale, renderFrame, applyLayers, presetForTime,
+        driveCloud]);
 
     // ---- Control helpers -------------------------------------------------
 
@@ -1344,8 +1394,8 @@ function ScanCompositor() {
                     type="button"
                     aria-label="Open scene controls"
                     onClick={() => setSceneOpen(true)}
-                    // Clears the primary panel when it is open, otherwise sits
-                    // beside the primary toggle.
+                    // Clears the compositor panel when that is open, otherwise
+                    // just sits beside its toggle.
                     style={menuOpen ? { right: 'calc(var(--gutter) + 306px)' } : undefined}
                     className={`${styles.vfx_toggle} ${styles.vfx_toggleSecondary} ${styles.vfx_visible}`}
                 >
@@ -1354,7 +1404,11 @@ function ScanCompositor() {
             )}
 
             {sceneOpen && (
-                <div className={`${styles.vfx_panel} ${styles.vfx_panelSecondary}`}>
+                <div
+                    // Only steps aside when the compositor panel is actually
+                    // open; on its own it takes the usual right-hand column.
+                    className={`${styles.vfx_panel} ${menuOpen ? styles.vfx_panelSecondary : ''}`}
+                >
                     <div className={styles.vfx_head}>
                         <span className={styles.vfx_title}>Scene</span>
                         <button
@@ -1683,6 +1737,29 @@ function ScanCompositor() {
                         {slider('Density', 'cloudDensity', 0.01, 1, 0.01)}
                         {slider('Opacity', 'cloudOpacity', 0, 1, 0.01)}
                         {toggle('Perspective size', 'cloudAttenuate')}
+                    </div>
+
+                    {/* The scan's own points, driven by whatever is loaded in
+                        the Scene panel. Lives in the layer stack, so a cut can
+                        switch the object itself into motion. */}
+                    <div className={styles.vfx_section}>
+                        <div className={styles.vfx_sectionTitle}>Point reactivity</div>
+                        {slider('Amount', 'cloudReact', 0, 3, 0.01)}
+                        {layers.cloudReact > 0 && (
+                            <>
+                                {slider('Scatter', 'cloudScatter', 0, 1, 0.001)}
+                                {slider('Freq low', 'cloudFreqLow', 0, 1, 0.01)}
+                                {slider('Freq high', 'cloudFreqHigh', 0, 1, 0.01)}
+                                {slider('Pulse X', 'cloudPulseX', -4, 4, 0.01)}
+                                {slider('Pulse Y', 'cloudPulseY', -4, 4, 0.01)}
+                                {slider('Pulse Z', 'cloudPulseZ', -4, 4, 0.01)}
+                            </>
+                        )}
+                        <div className={styles.vfx_hint}>
+                            {layers.cloudReact > 0
+                                ? 'Points push out from the pulse point by the band their distance maps to.'
+                                : 'Load a track in the Scene panel, then raise this to make the scanned object itself move.'}
+                        </div>
                     </div>
 
                     {/* Mesh */}

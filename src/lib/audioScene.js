@@ -749,3 +749,102 @@ export function computeSpectrogram(audioBuffer, {
     }
     return out;
 }
+
+/**
+ * Drive a plain THREE.Points cloud from the spectrum.
+ *
+ * The placed assets above are InstancedMeshes, but a scan's own point cloud is
+ * a BufferGeometry of raw positions, so it needs its own writer. The motion is
+ * deliberately the same: every point pushes out along its direction from a
+ * pulse origin, by an amount read from the FFT bin its resting distance maps
+ * to, so the cloud blooms outward in rings rather than swelling uniformly.
+ *
+ * Distances are normalised by the cloud's own extent rather than the fixed
+ * divisor the instanced path uses, because a scan is a couple of units across
+ * where a visualizer scene is tens - without that the whole cloud would read a
+ * single low bin.
+ *
+ * @param {object} state cache held by the caller: { base, dirs, dists,
+ *   freqIndex, key, dirty }
+ * @param {THREE.BufferAttribute} attr the geometry's position attribute
+ * @param {object} op { reactivity, scatter, freqLow, freqHigh, ox, oy, oz }
+ * @param {Uint8Array|null} frequencyData FFT bins, or null when silent
+ * @param {boolean} playing whether audio is actually running
+ * @param {number} count how many points to touch (respects the draw range)
+ * @returns {boolean} whether the attribute was written
+ */
+export function applyCloudReactivity(state, attr, op, frequencyData, playing,
+    count) {
+    const base = state.base;
+    if (!base || !attr) return false;
+
+    const live = playing && !!frequencyData && op.reactivity > 0;
+    const n = Math.min(count ?? base.length / 3, base.length / 3);
+    const arr = attr.array;
+
+    if (!live) {
+        // Settle back to the scan's true shape exactly once.
+        if (!state.dirty) return false;
+        arr.set(base);
+        attr.needsUpdate = true;
+        state.dirty = false;
+        return true;
+    }
+
+    const bins = frequencyData.length;
+    const key = `${op.ox}|${op.oy}|${op.oz}|${op.freqLow}|${op.freqHigh}|${bins}`;
+    if (state.key !== key || !state.dirs) {
+        const total = base.length / 3;
+        const dirs = new Float32Array(total * 3);
+        const dists = new Float32Array(total);
+        const freqIndex = new Uint16Array(total);
+
+        const fLo = Math.max(0, Math.min(1, op.freqLow ?? 0));
+        const fHi = Math.max(0, Math.min(1, op.freqHigh ?? 1));
+        const loBin = Math.round(Math.min(fLo, fHi) * (bins - 1));
+        const hiBin = Math.round(Math.max(fLo, fHi) * (bins - 1));
+        const bandSpan = Math.max(1, hiBin - loBin);
+
+        let maxDist = 0;
+        for (let i = 0; i < total; i++) {
+            const dx = base[i * 3] - op.ox;
+            const dy = base[i * 3 + 1] - op.oy;
+            const dz = base[i * 3 + 2] - op.oz;
+            const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            dists[i] = dist;
+            if (dist > maxDist) maxDist = dist;
+            if (dist > 1e-9) {
+                dirs[i * 3] = dx / dist;
+                dirs[i * 3 + 1] = dy / dist;
+                dirs[i * 3 + 2] = dz / dist;
+            }
+        }
+        const inv = maxDist > 1e-9 ? 1 / maxDist : 0;
+        for (let i = 0; i < total; i++) {
+            let fidx = loBin + Math.floor(dists[i] * inv * bandSpan);
+            if (fidx > hiBin) fidx = hiBin;
+            else if (fidx < loBin) fidx = loBin;
+            freqIndex[i] = fidx;
+        }
+
+        state.dirs = dirs;
+        state.dists = dists;
+        state.freqIndex = freqIndex;
+        state.key = key;
+    }
+
+    const { dirs, dists, freqIndex } = state;
+    const react = op.reactivity;
+    const scatter = op.scatter || 0;
+    for (let i = 0; i < n; i++) {
+        const freq = frequencyData[freqIndex[i]] / 255;
+        const randomFactor = 0.5 + (Math.random() - 0.5) * scatter;
+        const d = dists[i] * (1 + react * (freq * randomFactor));
+        arr[i * 3] = op.ox + dirs[i * 3] * d;
+        arr[i * 3 + 1] = op.oy + dirs[i * 3 + 1] * d;
+        arr[i * 3 + 2] = op.oz + dirs[i * 3 + 2] * d;
+    }
+    attr.needsUpdate = true;
+    state.dirty = true;
+    return true;
+}
