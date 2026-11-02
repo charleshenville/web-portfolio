@@ -4,7 +4,7 @@ Takes a video of an object and the GLB you scanned it into, and works out where
 the camera was for every frame **in the GLB's own coordinate system**. The web
 tool at `/vfx/scan-compositor` then renders the scan through that camera, so the
 mesh, its wireframe or its point cloud sit locked onto the real object in the
-footage, and you can cut between them.
+footage, and exports the result with its sound.
 
 ## Why it does not use structure from motion
 
@@ -82,6 +82,27 @@ The other check is the tool itself: open the take, leave the footage on with the
 wireframe over it, and scrub. If the overlay sits slightly off, the panel's
 **Alignment nudge** trims it by hand without re-solving.
 
+## What the web tool does with a take
+
+Worth knowing, because it shapes what the pipeline has to publish:
+
+- **It loops.** *Ping-pong* runs the take backwards to its start rather than
+  cutting back to it, which turns three seconds of footage into a seamless
+  loop - and the clip's own sound is reversed along with the picture. That
+  means the published mp4 is seeked to, frame by frame, in both directions,
+  which is why it is encoded with a keyframe every fifteen frames rather than
+  libx264's default 250. A long GOP makes every backwards step decode from
+  far away, and the preview crawls.
+- **It exports sound.** The take's own audio and whatever music is loaded in
+  the Scene panel are mixed over the same frame list the picture uses, so they
+  cannot drift, and muxed into the mp4 as AAC. The pipeline carries the
+  source's audio into the published copy for exactly this reason.
+- **It exports the loop.** *Full track* writes as many cycles as the loaded
+  music needs and stops on the last beat of it; *Cycles* writes a set number.
+  Either can run to thousands of frames, so an export larger than about half a
+  gigabyte is streamed straight to a file you choose rather than assembled in
+  memory.
+
 ## Running it
 
 Everything uses `backend/venv` (Python 3.13):
@@ -126,6 +147,13 @@ Knobs worth knowing when a take misbehaves:
   iPhone 14 Pro main camera at 1920x1440.
 - `--smooth` (on `localize.py`) sets the trajectory smoothing window. Per-frame
   PnP is drift-free but jittery; 7 frames suits a handheld phone.
+- `--min-anchor` (on `localize.py`) is the inlier count an anchor must reach
+  before it is trusted, 12 by default. An anchor located on a handful of
+  matches will still densify to a thousand points - densification believes
+  whatever pose it is handed - and would then outvote good anchors on sheer
+  point count. Anchors below the floor are skipped, as is any anchor whose
+  correspondences will not re-solve; a take is no longer thrown away because
+  one of its twenty-five anchors landed badly.
 
 A healthy take solves nearly every frame with a median inlier count in the
 hundreds; the three current ones sit at 1177, 1185 and 140. A median below

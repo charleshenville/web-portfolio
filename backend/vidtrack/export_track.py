@@ -188,6 +188,11 @@ def undistort_video(work_dir: Path, out_mp4: Path, fps: float,
             subprocess.run([
                 "ffmpeg", "-v", "error", "-y", "-i", str(source_mov),
                 "-c:v", "libx264", "-preset", "slow", "-crf", "18",
+                # A keyframe four times a second. The web tool seeks every
+                # single frame - to export, to scrub, and to run the clip
+                # backwards for a ping-pong loop - and a default 250-frame
+                # GOP makes each of those seeks decode from far away.
+                "-g", "15", "-keyint_min", "5",
                 "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
                 "-movflags", "+faststart", str(out_mp4)], check=True)
             print(f"[export] wrote {out_mp4} "
@@ -222,9 +227,52 @@ def undistort_video(work_dir: Path, out_mp4: Path, fps: float,
         cmd += ["-i", str(source_mov), "-map", "0:v:0", "-map", "1:a:0?",
                 "-c:a", "aac", "-b:a", "192k"]
     cmd += ["-c:v", "libx264", "-preset", "slow", "-crf", "18",
+            "-g", "15", "-keyint_min", "5",
             "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out_mp4)]
     subprocess.run(cmd, check=True)
     print(f"[export] wrote {out_mp4} ({out_mp4.stat().st_size / 1e6:.1f} MB)")
+
+
+def has_audio(path: Path) -> bool:
+    """Whether a file carries an audio stream."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)],
+        check=False, capture_output=True, text=True).stdout
+    return bool(out.strip())
+
+
+def write_reverse(src: Path, dst: Path) -> None:
+    """
+    Write a reversed copy of the published clip, sound included.
+
+    Ping-pong in the web tool plays this file forwards instead of seeking the
+    forward clip backwards. Stepping a video element back frame by frame means
+    one seek per frame, each decoding from the keyframe before it, and a new
+    seek cancels whichever one is still in flight - so it is both slower than
+    real time and visibly coarse. A reversed file is just playback: full rate,
+    correct sound, and no special case anywhere in the player.
+
+    ffmpeg's `reverse` filter buffers every decoded frame in memory, about 3MB
+    a frame at 1080x1920 - roughly 6GB for a thirty-second take. That is the
+    price of a frame-exact reversal; a take much longer than that would want
+    reversing in chunks instead.
+
+    Args:
+        src: the published forward clip
+        dst: where the reversed copy goes
+    """
+    print(f"[export] reversing {src.name} -> {dst.name}")
+    cmd = ["ffmpeg", "-v", "error", "-y", "-i", str(src), "-vf", "reverse"]
+    if has_audio(src):
+        cmd += ["-af", "areverse", "-c:a", "aac", "-b:a", "192k"]
+    else:
+        cmd += ["-an"]
+    cmd += ["-c:v", "libx264", "-preset", "slow", "-crf", "18",
+            "-g", "15", "-keyint_min", "5", "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart", str(dst)]
+    subprocess.run(cmd, check=True)
+    print(f"[export] wrote {dst} ({dst.stat().st_size / 1e6:.1f} MB)")
 
 
 def main():
@@ -237,10 +285,18 @@ def main():
                     help="original video, for its audio track")
     ap.add_argument("--no-video", action="store_true",
                     help="write the track only, skip undistort/encode")
+    ap.add_argument("--reverse-only", action="store_true",
+                    help="only write the reversed copy of an already "
+                         "published clip, and nothing else")
     args = ap.parse_args()
 
     name = args.work_dir.name
     args.out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.reverse_only:
+        write_reverse(args.out_dir / f"{name}.mp4",
+                      args.out_dir / f"{name}_rev.mp4")
+        return
 
     track = build_track(args.work_dir, args.fps)
     out_json = args.out_dir / "track.json"
@@ -250,6 +306,8 @@ def main():
     if not args.no_video:
         undistort_video(args.work_dir, args.out_dir / f"{name}.mp4", args.fps,
                         args.source_mov)
+        write_reverse(args.out_dir / f"{name}.mp4",
+                      args.out_dir / f"{name}_rev.mp4")
     print("[export] done")
 
 

@@ -52,6 +52,11 @@ RATIO = 0.82
 # OpenCV camera axes (+Z forward, Y down) -> OpenGL view axes (-Z forward, Y up).
 CV_TO_GL = np.diag([1.0, -1.0, -1.0, 1.0])
 
+# An anchor located on this few inliers is not worth tracking from. It will
+# happily densify to a thousand points, because densification trusts the pose
+# it is given, and then win frames off good anchors on sheer point count.
+MIN_ANCHOR_INLIERS = 12
+
 
 def load_scan(glb_path: Path):
     """
@@ -143,17 +148,28 @@ def solve_pose(obj: np.ndarray, img: np.ndarray, K: np.ndarray,
     empty = np.empty(0, int)
     if len(obj) < 6:
         return None, None, empty
-    ok, rvec, tvec, inliers = cv2.solvePnPRansac(
-        obj.reshape(-1, 1, 3), img.reshape(-1, 1, 2), K, None,
-        iterationsCount=2000, reprojectionError=reproj, confidence=0.999,
-        flags=cv2.SOLVEPNP_EPNP)
-    if not ok or inliers is None or len(inliers) < 6:
-        return None, None, empty
-    idx = inliers.ravel()
-    rvec, tvec = cv2.solvePnPRefineLM(
-        obj[idx].reshape(-1, 1, 3), img[idx].reshape(-1, 1, 2), K, None,
-        rvec, tvec)
-    return rvec, tvec, idx
+    obj_in = np.ascontiguousarray(obj, dtype=np.float64).reshape(-1, 1, 3)
+    img_in = np.ascontiguousarray(img, dtype=np.float64).reshape(-1, 1, 2)
+
+    # EPNP is the fast answer and the usual one. SQPnP is tried after it
+    # because EPNP reports plain failure on the near-degenerate spreads a
+    # densified set throws up - a face of the scan seen almost flat-on, say -
+    # and losing a whole anchor to that is not worth the microseconds saved.
+    for flags in (cv2.SOLVEPNP_EPNP, cv2.SOLVEPNP_SQPNP):
+        try:
+            ok, rvec, tvec, inliers = cv2.solvePnPRansac(
+                obj_in, img_in, K, None, iterationsCount=2000,
+                reprojectionError=reproj, confidence=0.999, flags=flags)
+        except cv2.error:
+            continue
+        if not ok or inliers is None or len(inliers) < 6:
+            continue
+        idx = inliers.ravel()
+        rvec, tvec = cv2.solvePnPRefineLM(
+            obj[idx].reshape(-1, 1, 3), img[idx].reshape(-1, 1, 2), K, None,
+            rvec, tvec)
+        return rvec, tvec, idx
+    return None, None, empty
 
 
 def gl_view_from_pose(rvec: np.ndarray, tvec: np.ndarray) -> np.ndarray:
@@ -386,7 +402,12 @@ def track_and_solve(paths, key_idx, obj, img, K, reproj, win=31, levels=4,
 
     rvec, tvec, inl = solve_pose(obj, img, K, reproj)
     if rvec is None:
-        raise SystemExit("[track] keyframe correspondences do not solve")
+        # One unusable anchor is not a dead run. The others each cover their
+        # own stretch of the take, so this segment is simply dropped - which
+        # beats throwing away a solve that got twenty-four anchors right.
+        print(f"[track] anchor {key_idx}: correspondences do not solve, "
+              "skipping this segment")
+        return {}
     out[key_idx] = (rvec, tvec, len(inl))
 
     for direction in (-1, 1):
@@ -443,7 +464,8 @@ def smooth_poses(frames: list, window: int) -> list:
 
 def localise(work_dir: Path, glb: Path, n_views: int, render_w: int,
              reproj: float, smooth: int, focal: float | None,
-             keyframe: int | None, anchors: int) -> dict:
+             keyframe: int | None, anchors: int,
+             min_anchor: int = MIN_ANCHOR_INLIERS) -> dict:
     """Solve a pose for every frame and write it out in COLMAP's layout."""
     paths = sorted((work_dir / "frames").glob("*.jpg"))
     if not paths:
@@ -502,6 +524,10 @@ def localise(work_dir: Path, glb: Path, n_views: int, render_w: int,
             if rvec is None:
                 print(f"[loc] anchor {ki}: could not locate, skipping")
                 continue
+            if n < min_anchor:
+                print(f"[loc] anchor {ki}: only {n} inliers "
+                      f"(< {min_anchor}), skipping")
+                continue
             d_obj, d_img, d_n = densify(renderer, rvec, tvec, gray, focal,
                                         render_wh, K, reproj)
             if d_n > n:
@@ -515,6 +541,7 @@ def localise(work_dir: Path, glb: Path, n_views: int, render_w: int,
 
     if not seeds:
         raise SystemExit("[loc] could not locate the camera on any keyframe")
+    print(f"[loc] {len(seeds)} usable anchor(s) of {len(key_idxs)}")
 
     # Each anchor votes for the frames it reaches; the one with the most
     # inliers on a given frame wins it.
@@ -606,11 +633,13 @@ def main():
     ap.add_argument("--anchors", type=int, default=0,
                     help="independently located keyframes; 0 picks one per "
                          "~70 frames, 1 forces a single anchor")
+    ap.add_argument("--min-anchor", type=int, default=MIN_ANCHOR_INLIERS,
+                    help="inliers an anchor needs before it is trusted")
     args = ap.parse_args()
 
     localise(args.work_dir, args.glb, args.views, args.render_width,
              args.reproj, args.smooth, args.focal, args.keyframe,
-             args.anchors)
+             args.anchors, args.min_anchor)
 
 
 if __name__ == "__main__":

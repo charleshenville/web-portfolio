@@ -10,5 +10,9 @@
     {
         "id": "bins",
         "label": "Bins"
+    },
+    {
+        "id": "studio",
+        "label": "Studio"
     }
 ]

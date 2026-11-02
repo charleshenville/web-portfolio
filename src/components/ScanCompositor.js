@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
-    Play, Pause, SlidersHorizontal, X, Download, Scissors,
+    Play, Pause, SlidersHorizontal, X, Download,
     Camera, Trash2, RotateCcw, Save, Plus, Music, Boxes, Spline, Upload,
 } from 'lucide-react';
 import * as THREE from 'three';
@@ -10,7 +10,9 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
-import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
+import {
+    Muxer, ArrayBufferTarget, FileSystemWritableFileStreamTarget,
+} from 'mp4-muxer';
 import VfxNumberField from './VfxNumberField';
 import useMediaQuery from '../lib/useMediaQuery';
 import {
@@ -18,11 +20,12 @@ import {
     fibonacciSphere, makeItem, makeCurveItem, buildPointCloudRecord,
     buildCurveRecord, applyAudioReactivity, applyCloudReactivity,
     applyWireReactivity, buildWireTopology, applyRecordTransform,
-    disposeRecord, loadPlyPoints, computeSpectrogram,
+    disposeRecord, loadPlyPoints, computeSpectrogram, bandLevel,
+    envelopeFollow, applySceneOpacity,
 } from '../lib/audioScene';
 import styles from './vfx.module.css';
 
-// Camera poses come from backend/vidtrack: COLMAP solves a pose per frame, and
+// Camera poses come from backend/vidtrack: a pose is solved per frame, and
 // align.py carries those poses into the GLB's own coordinate frame. So the scan
 // sits at the origin untransformed and the camera is what moves. The footage is
 // undistorted by the same pipeline, which is what lets a plain pinhole frustum
@@ -48,10 +51,42 @@ const EXPORT_SCALES = [
     { id: 0.5, name: '0.5x' },
     { id: 1, name: '1x' },
     { id: 1.5, name: '1.5x' },
+    { id: 2, name: '2x' },
 ];
 
-// The layer stack. Everything here is snapshotted into a preset, so a cut can
-// switch any of it mid-clip.
+// Bits per pixel per frame. The old exporter was fixed at 0.25, which is thin
+// for a frame full of points and thin lines - exactly the high-frequency
+// detail H.264 throws away first - and is the main reason an export looked
+// softer and blockier than the preview.
+const EXPORT_QUALITY = [
+    { id: 0.18, name: 'Draft' },
+    { id: 0.4, name: 'High' },
+    { id: 0.85, name: 'Max' },
+];
+
+// How the clip behaves when it reaches its end: stop, jump back to the start,
+// or run backwards to it. A bounce never repeats the turnaround frame, so a
+// short take reads as one continuous move rather than a stutter on the end.
+const LOOP_MODES = [
+    { id: 'off', name: 'Once' },
+    { id: 'loop', name: 'Loop' },
+    { id: 'bounce', name: 'Ping-pong' },
+];
+
+// How much of the loop an export covers.
+const EXPORT_LENGTHS = [
+    { id: 'clip', name: 'One cycle' },
+    { id: 'audio', name: 'Full track' },
+    { id: 'loops', name: 'Cycles' },
+];
+
+// Supersample factor for the export, applied on top of the output scale: the
+// scene is drawn this much larger and filtered down, which is what stops a
+// point cloud crawling and a one-pixel wireframe breaking up.
+const EXPORT_SS = 2;
+
+// The layer stack. All of it is snapshotted into a view, so one key can
+// swap the whole look of the shot.
 const DEFAULT_LAYERS = {
     bgColor: '#000000',
 
@@ -89,10 +124,30 @@ const DEFAULT_LAYERS = {
     // the same weight of line rather than the same number of pixels.
     wireThickness: 0.0015,
     wireReact: 0,
+
+    // Placed objects as one group, so the Scene panel's contents can be faded
+    // in and out of a shot without editing each item.
+    sceneOpacity: 1,
+
+    // One envelope, read off a chosen slice of the spectrum, multiplying the
+    // opacity of whichever layers opt in. In 'band' it breathes with the
+    // level above a floor; in 'gate' it snaps on when the band crosses the
+    // threshold, which is how you get points flashing on the beat.
+    opacityReact: 0,
+    opacityMode: 'band',      // 'band' | 'gate'
+    opacityFreqLow: 0,
+    opacityFreqHigh: 0.12,
+    opacityThreshold: 0.25,
+    opacityInvert: false,
+    opacitySmooth: 0.4,
+    opacityPoints: true,
+    opacityWire: false,
+    opacityMesh: false,
+    opacityScene: false,
 };
 
-// Kept out of presets: these describe the solve, not the look, so a cut should
-// never change them.
+// Kept out of the views: these describe the solve, not the look, so recalling
+// a view should never disturb them.
 const DEFAULT_RIG = {
     cameraMode: 'tracked',    // 'tracked' | 'free'
     offsetX: 0, offsetY: 0, offsetZ: 0,
@@ -101,6 +156,11 @@ const DEFAULT_RIG = {
     // Pushes the overlays off the surface so the mesh does not clip through
     // them. The mesh itself stays at 1, so the scan keeps its true size.
     overscale: 1,
+    // Shifts the points and wireframe bodily off the mesh. Swell can only
+    // move them along the line from the centre; this detaches them in a
+    // direction of your choosing, which is what a drifting double image of
+    // the object needs.
+    overlayX: 0, overlayY: 0, overlayZ: 0,
 };
 
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
@@ -108,6 +168,9 @@ const clamp01 = (v) => Math.max(0, Math.min(1, v));
 function ScanCompositor() {
     const mountRef = useRef(null);
     const videoRef = useRef(null);
+    // The take reversed, published beside it. Ping-pong plays this forwards
+    // rather than seeking the take backwards, which no browser does well.
+    const revVideoRef = useRef(null);
 
     const [clips, setClips] = useState([]);
     const [clipId, setClipId] = useState(null);
@@ -120,22 +183,29 @@ function ScanCompositor() {
 
     const [presets, setPresets] = useState(() => Array(9).fill(null));
     const [activePreset, setActivePreset] = useState(null);
-    const [cuts, setCuts] = useState([]);
-    const [followCuts, setFollowCuts] = useState(true);
 
     const [isPlaying, setIsPlaying] = useState(false);
     const [currentTime, setCurrentTime] = useState(0);
     const [duration, setDuration] = useState(0);
-    const [loop, setLoop] = useState(true);
+    const [loopMode, setLoopMode] = useState('loop');
     // Jump over stretches the solver could not place a camera for, rather than
     // showing a frozen camera drifting against moving footage.
     const [skipUnsolved, setSkipUnsolved] = useState(true);
-    const [muted, setMuted] = useState(true);
+    const [muted, setMuted] = useState(false);
+    const [revReady, setRevReady] = useState(false);
+    const revReadyRef = useRef(false);
+    // Set while a turnaround waits for the incoming copy's first frame.
+    const handoverRef = useRef(null);
+    useEffect(() => { revReadyRef.current = revReady; }, [revReady]);
     const [speed, setSpeed] = useState(1);
 
     const [isExporting, setIsExporting] = useState(false);
     const [exportProgress, setExportProgress] = useState(0);
+    const [exportStage, setExportStage] = useState('');
     const [exportScale, setExportScale] = useState(1);
+    const [exportQuality, setExportQuality] = useState(0.4);
+    const [exportLength, setExportLength] = useState('clip');
+    const [exportLoops, setExportLoops] = useState(2);
 
     // ---- Audio-reactive scene (shared engine with the Audio Visualizer) ----
     const [sceneOpen, setSceneOpen] = useState(false);
@@ -161,6 +231,13 @@ function ScanCompositor() {
     const sceneItemsRef = useRef(sceneItems);
     const spectrogramRef = useRef(null);
     const lastTickRef = useRef(0);
+    // The clip's own soundtrack, decoded out of its mp4 so the exporter can
+    // mux it. Only fetched when something actually asks for it.
+    const clipAudioRef = useRef({ id: null, buffer: null, promise: null });
+    // Opacity envelope state. Held outside React so the render loop can
+    // advance it without a re-render, and reset before an export so the
+    // result does not depend on what the preview was doing beforehand.
+    const opacityEnvRef = useRef({ v: 0 });
 
     useEffect(() => { sceneItemsRef.current = sceneItems; }, [sceneItems]);
 
@@ -169,18 +246,14 @@ function ScanCompositor() {
     const layersRef = useRef(layers);
     const rigRef = useRef(rig);
     const trackRef = useRef(null);
-    const cutsRef = useRef(cuts);
     const presetsRef = useRef(presets);
-    const followCutsRef = useRef(followCuts);
     const activePresetRef = useRef(activePreset);
     const exportingRef = useRef(false);
     const exportCanceledRef = useRef(false);
 
     useEffect(() => { layersRef.current = layers; }, [layers]);
     useEffect(() => { rigRef.current = rig; }, [rig]);
-    useEffect(() => { cutsRef.current = cuts; }, [cuts]);
     useEffect(() => { presetsRef.current = presets; }, [presets]);
-    useEffect(() => { followCutsRef.current = followCuts; }, [followCuts]);
     useEffect(() => { activePresetRef.current = activePreset; }, [activePreset]);
 
     // three.js objects, built once and mutated in place.
@@ -260,10 +333,17 @@ function ScanCompositor() {
 
     const coverageRef = useRef(coverage);
     const skipUnsolvedRef = useRef(skipUnsolved);
-    const loopRef = useRef(loop);
+    const loopModeRef = useRef(loopMode);
+    const speedRef = useRef(speed);
+    // Transport state the tick owns. Running backwards means the video element
+    // is paused and its clock is being driven by hand, so the element's own
+    // paused flag can no longer say whether the transport is rolling.
+    const playingRef = useRef(false);
+    // Which copy of the clip is on screen: 1 the take, -1 its reversed copy.
+    const dirRef = useRef(1);
     useEffect(() => { coverageRef.current = coverage; }, [coverage]);
     useEffect(() => { skipUnsolvedRef.current = skipUnsolved; }, [skipUnsolved]);
-    useEffect(() => { loopRef.current = loop; }, [loop]);
+    useEffect(() => { speedRef.current = speed; }, [speed]);
 
     // Some parameters only apply to the generated sphere, not to a loaded PLY.
     const selectedAssetType = useMemo(() => (
@@ -440,9 +520,12 @@ function ScanCompositor() {
             // preview and the export looking identical; without it the size is
             // in screen pixels and so depends on the output resolution.
             m.sizeAttenuation = L.cloudAttenuate;
+            // A screen-space size is in drawing-buffer pixels, so it has to
+            // follow the export's supersample factor or the points would come
+            // out smaller than previewed once the frame is filtered down.
             m.size = L.cloudAttenuate
                 ? (L.cloudSize / 1000) * 4
-                : L.cloudSize * 1.5;
+                : L.cloudSize * 1.5 * (t.ss || 1);
             m.opacity = L.cloudOpacity;
             m.transparent = L.cloudOpacity < 1;
             m.depthWrite = L.cloudOpacity >= 1;
@@ -456,10 +539,15 @@ function ScanCompositor() {
 
         // Swell the overlays slightly off the surface. Scaling happens about
         // the model root, which a scan is centred on, so points and edges lift
-        // away from the mesh evenly instead of sliding to one side.
-        const over = rigRef.current.overscale ?? 1;
-        if (t.cloud) t.cloud.scale.setScalar(over);
-        if (t.wire) t.wire.scale.setScalar(over);
+        // away from the mesh evenly instead of sliding to one side. The offset
+        // then slides them as a body, which swell cannot do.
+        const R = rigRef.current;
+        const over = R.overscale ?? 1;
+        [t.cloud, t.wire].forEach((o) => {
+            if (!o) return;
+            o.scale.setScalar(over);
+            o.position.set(R.overlayX ?? 0, R.overlayY ?? 0, R.overlayZ ?? 0);
+        });
 
         t.renderer.setClearColor(new THREE.Color(L.bgColor), 1);
         t.needsRender = true;
@@ -886,19 +974,160 @@ function ScanCompositor() {
 
     // ---- Video element / texture ----------------------------------------
 
-    const attachVideo = useCallback((el) => {
-        videoRef.current = el;
-        const t = three.current;
-        if (!el || !t.bgQuad) return;
-        if (t.videoTexture) t.videoTexture.dispose();
+    // Each element gets its own texture; turning around swaps which one the
+    // background quad samples.
+    const makeTexture = (el) => {
         const tex = new THREE.VideoTexture(el);
         tex.colorSpace = THREE.SRGBColorSpace;
         tex.minFilter = THREE.LinearFilter;
         tex.magFilter = THREE.LinearFilter;
-        t.videoTexture = tex;
-        t.bgQuad.material.map = tex;
-        t.bgQuad.material.needsUpdate = true;
+        return tex;
+    };
+
+    const showVideo = useCallback((dir) => {
+        const t = three.current;
+        handoverRef.current = null;
+        dirRef.current = dir;
+        const tex = dir < 0 ? t.texRev : t.texFwd;
+        if (tex && t.bgQuad) {
+            t.videoTexture = tex;
+            t.bgQuad.material.map = tex;
+            t.bgQuad.material.needsUpdate = true;
+        }
+        t.videoDirty = 3;
+        t.needsRender = true;
     }, []);
+
+    const attachVideo = useCallback((el) => {
+        videoRef.current = el;
+        const t = three.current;
+        if (!el || !t.bgQuad) return;
+        t.texFwd?.dispose();
+        t.texFwd = makeTexture(el);
+        if (dirRef.current > 0) {
+            t.videoTexture = t.texFwd;
+            t.bgQuad.material.map = t.texFwd;
+            t.bgQuad.material.needsUpdate = true;
+        }
+    }, []);
+
+    const attachRevVideo = useCallback((el) => {
+        revVideoRef.current = el;
+        const t = three.current;
+        if (!el) return;
+        t.texRev?.dispose();
+        t.texRev = makeTexture(el);
+    }, []);
+
+    // The reversed copy runs on its own clock, so its position has to be read
+    // back as a position in the take. Scaled by the two durations rather than
+    // subtracted outright, so a copy that lands a frame short still maps onto
+    // the take exactly at both ends.
+    const takeTime = useCallback((el) => {
+        if (!el) return 0;
+        if (dirRef.current >= 0) return el.currentTime;
+        const d = videoRef.current?.duration || el.duration || 0;
+        const rd = el.duration || d || 1;
+        return Math.max(0, d - (el.currentTime * d) / rd);
+    }, []);
+
+    // Put the playhead at a position in the take, whichever copy is running.
+    const seekTake = useCallback((at) => {
+        const fwd = videoRef.current;
+        const rev = revVideoRef.current;
+        if (dirRef.current < 0 && rev) {
+            const d = fwd?.duration || rev.duration || 1;
+            const rd = rev.duration || d;
+            rev.currentTime = Math.max(0, ((d - at) * rd) / d);
+        } else if (fwd) {
+            fwd.currentTime = at;
+        }
+    }, []);
+
+    // Put the other copy on screen only once it has a frame of its own up.
+    // Switching straight away uploads whatever that element last decoded -
+    // the far end of the take - under the turnaround's pose for a frame or
+    // two. Until then the outgoing copy holds its last frame, and the
+    // playhead with it. `after` runs once the switch is made.
+    const handOver = useCallback((el, dir, after) => {
+        const token = {};
+        handoverRef.current = token;
+        const finish = () => {
+            if (handoverRef.current !== token) return;
+            handoverRef.current = null;
+            showVideo(dir);
+            after?.();
+        };
+        if (el.requestVideoFrameCallback) {
+            el.requestVideoFrameCallback(finish);
+        } else {
+            el.addEventListener('seeked', finish, { once: true });
+            el.addEventListener('playing', finish, { once: true });
+        }
+        // A paused element presents nothing new, so don't wait on it forever.
+        setTimeout(finish, 300);
+    }, [showVideo]);
+
+    // Hand the clip back to the take, from the top.
+    const goForward = useCallback(() => {
+        const fwd = videoRef.current;
+        const rev = revVideoRef.current;
+        if (handoverRef.current) return;
+        rev?.pause();
+        if (!fwd) { showVideo(1); return; }
+        // Normally parked there already, and re-seeking would only make the
+        // decoder fetch the same frame again.
+        if (fwd.currentTime > 0.001) fwd.currentTime = 0;
+        if (playingRef.current && !exportingRef.current) {
+            fwd.play().catch(() => {});
+        }
+        // Park the reversed copy at its start, ready for the next way back.
+        handOver(fwd, 1, () => { if (rev) rev.currentTime = 0; });
+    }, [showVideo, handOver]);
+
+    // The take ran out going forwards. In ping-pong the reversed copy takes
+    // over; in the other modes this is simply the end.
+    //
+    // `from` is where in the take to turn around, which is the end of the
+    // clip when it played all the way out, but the end of the solved footage
+    // when a take's tail has no camera and the gap skipper got there first.
+    const goBackward = useCallback((from) => {
+        const rev = revVideoRef.current;
+        if (exportingRef.current || !playingRef.current) return;
+        if (loopModeRef.current === 'bounce' && rev && revReadyRef.current) {
+            if (dirRef.current < 0 || handoverRef.current) return;
+            const fwd = videoRef.current;
+            const d = fwd?.duration || rev.duration || 1;
+            const rd = rev.duration || d;
+            const at = Number.isFinite(from) ? Math.min(from, d) : d;
+            fwd?.pause();
+            const target = Math.max(0, ((d - at) * rd) / d);
+            if (Math.abs(rev.currentTime - target) > 0.001) {
+                rev.currentTime = target;
+            }
+            rev.playbackRate = speedRef.current;
+            rev.play().catch(() => {});
+            // Park the take at its top, ready for the way forward again.
+            handOver(rev, -1, () => { if (fwd) fwd.currentTime = 0; });
+            return;
+        }
+        if (loopModeRef.current === 'off') {
+            playingRef.current = false;
+            setIsPlaying(false);
+        }
+    }, [handOver]);
+
+    // A video element reaches its last frame a little short of the duration
+    // it reports, so the end has to be tested with some room.
+    const atEnd = useCallback(
+        (v) => v.ended || v.currentTime >= v.duration - 0.05, [],
+    );
+
+    useEffect(() => {
+        loopModeRef.current = loopMode;
+        // Leaving ping-pong mid-return hands the clip back to the take.
+        if (loopMode !== 'bounce' && dirRef.current < 0) goForward();
+    }, [loopMode, goForward]);
 
     // ---- Sizing ----------------------------------------------------------
     // The canvas is locked to the footage's aspect and letterboxed, so image
@@ -1012,10 +1241,18 @@ function ScanCompositor() {
         // callbacks, which never fire while paused or mid-seek - so a still
         // frame can leave the quad showing an empty (white) texture. Upload
         // explicitly whenever the frame could have changed.
-        const vid = videoRef.current;
+        //
+        // The time comparison alone is not enough: an upload taken the instant
+        // a seek lands can read a frame the decoder has not produced yet, and
+        // since the time now matches, nothing ever uploads again and the
+        // footage stays blank until playback resumes. So a settled seek asks
+        // for several uploads and the texture is certain to catch up.
+        const vid = dirRef.current < 0 ? revVideoRef.current : videoRef.current;
         if (t.videoTexture && vid && vid.readyState >= 2) {
-            if (!vid.paused || t.lastVideoTime !== vid.currentTime) {
+            const forced = (t.videoDirty || 0) > 0;
+            if (!vid.paused || forced || t.lastVideoTime !== vid.currentTime) {
                 t.videoTexture.needsUpdate = true;
+                t.videoDirty = forced ? t.videoDirty - 1 : 0;
                 t.lastVideoTime = vid.currentTime;
             }
         }
@@ -1089,16 +1326,57 @@ function ScanCompositor() {
         );
     }, []);
 
-    // Cuts drive the look during playback: the active preset is whichever cut
-    // the playhead has most recently passed.
-    const presetForTime = useCallback((time) => {
-        const list = cutsRef.current;
-        let found = null;
-        for (let i = 0; i < list.length; i++) {
-            if (list[i].t <= time + 1e-6) found = list[i].preset;
-            else break;
+    // Fade layers with the music. One envelope off a chosen band drives every
+    // layer that opted in, so points, wireframe, mesh and the placed scene
+    // breathe or flash together rather than drifting apart.
+    const driveOpacity = useCallback((frequencyData, playing) => {
+        const t = three.current;
+        const L = layersRef.current;
+        const live = playing && !!frequencyData && L.opacityReact > 0;
+
+        let mult = 1;
+        if (live) {
+            const level = bandLevel(
+                frequencyData, L.opacityFreqLow, L.opacityFreqHigh,
+            );
+            const env = envelopeFollow(opacityEnvRef.current, level, {
+                mode: L.opacityMode,
+                threshold: L.opacityThreshold,
+                invert: L.opacityInvert,
+                smooth: L.opacitySmooth,
+            });
+            // Depth: at 1 the layer goes all the way out on a quiet band.
+            mult = 1 - clamp01(L.opacityReact) * (1 - env);
+        } else {
+            opacityEnvRef.current.v = 0;
         }
-        return found;
+
+        if (t.cloud) {
+            const v = clamp01(L.cloudOpacity * (L.opacityPoints ? mult : 1));
+            const m = t.cloud.material;
+            m.opacity = v;
+            m.transparent = v < 1;
+            m.depthWrite = v >= 1;
+        }
+        if (t.wire) {
+            // Fat lines are always blended; only the level moves.
+            t.wire.material.opacity = clamp01(
+                L.wireOpacity * (L.opacityWire ? mult : 1),
+            );
+        }
+        if (t.mesh && L.meshOn) {
+            const v = clamp01(L.meshOpacity * (L.opacityMesh ? mult : 1));
+            const m = t.mesh.material;
+            m.opacity = v;
+            m.transparent = v < 1;
+            m.depthWrite = v >= 1;
+        }
+        if (sceneObjectsRef.current.size) {
+            applySceneOpacity(
+                sceneObjectsRef.current,
+                L.sceneOpacity * (L.opacityScene ? mult : 1),
+            );
+        }
     }, []);
 
     useEffect(() => {
@@ -1109,36 +1387,59 @@ function ScanCompositor() {
             t.raf = requestAnimationFrame(tick);
             if (exportingRef.current) return;
 
-            const video = videoRef.current;
-            let time = video ? video.currentTime : 0;
+            const now = performance.now();
+            const dt = Math.min(0.1, (now - (lastTickRef.current || now)) / 1000);
+            lastTickRef.current = now;
+
+            const cov = coverageRef.current;
+            const trackData = trackRef.current;
+            const back = dirRef.current < 0;
+            const video = back ? revVideoRef.current : videoRef.current;
+            // Both copies are played forwards by the element itself, so the
+            // only thing to work out is where in the take we are.
+            let time = takeTime(video);
 
             // Hop over unsolved stretches. Checked every frame rather than on
             // seek, because a gap can be reached by playing into it, by
             // looping round, or by the user scrubbing into it.
-            const cov = coverageRef.current;
-            const trackData = trackRef.current;
             if (video && skipUnsolvedRef.current && cov.unsolved && cov.mask
-                && trackData && !exportingRef.current) {
+                && trackData && !handoverRef.current) {
                 const fps = trackData.fps;
                 const idx = Math.floor(time * fps);
                 if (idx >= cov.mask.length || !cov.mask[idx]) {
-                    const next = cov.spans.find((s) => s[0] > idx);
-                    const target = next || (loopRef.current ? cov.spans[0] : null);
-                    if (target) {
+                    // Running the reversed copy, the next solved frame is the
+                    // one behind the playhead rather than ahead of it.
+                    const span = back
+                        ? [...cov.spans].reverse().find((sp) => sp[1] < idx)
+                        : cov.spans.find((sp) => sp[0] > idx);
+                    const looping = loopModeRef.current !== 'off';
+                    if (span) {
                         // Land just inside the span so rounding cannot drop
                         // the playhead back into the gap.
-                        time = (target[0] + 0.25) / fps;
-                        video.currentTime = time;
-                    } else if (!video.paused) {
+                        time = (back ? span[1] - 0.25 : span[0] + 0.25) / fps;
+                        seekTake(time);
+                    } else if (back) {
+                        goForward();
+                        time = 0;
+                    } else if (loopModeRef.current === 'bounce'
+                        && revReadyRef.current && playingRef.current
+                        && cov.spans.length) {
+                        // The solved footage has run out rather than the
+                        // clip: turn around here instead of cutting back.
+                        time = cov.spans[cov.spans.length - 1][1] / fps;
+                        goBackward(time);
+                    } else if (looping && cov.spans.length) {
+                        time = (cov.spans[0][0] + 0.25) / fps;
+                        seekTake(time);
+                    } else if (playingRef.current) {
+                        playingRef.current = false;
                         video.pause();
+                        setIsPlaying(false);
                     }
                 }
             }
 
             // Advance the placed objects from whatever the analyser hears.
-            const now = performance.now();
-            const dt = Math.min(0.1, (now - (lastTickRef.current || now)) / 1000);
-            lastTickRef.current = now;
             let freq = null;
             if (analyserRef.current && dataArrayRef.current) {
                 analyserRef.current.getByteFrequencyData(dataArrayRef.current);
@@ -1148,26 +1449,16 @@ function ScanCompositor() {
             const audioLive = !!audioEl && !audioEl.paused;
             applyAudioReactivity(sceneObjectsRef.current, freq, dt, audioLive);
             driveCloud(freq, audioLive);
-
-            if (followCutsRef.current) {
-                const want = presetForTime(time);
-                if (want != null && want !== activePresetRef.current) {
-                    const snap = presetsRef.current[want];
-                    if (snap) {
-                        activePresetRef.current = want;
-                        setActivePreset(want);
-                        setLayers(snap);
-                    }
-                }
-            }
+            driveOpacity(freq, audioLive);
 
             renderFrame(time);
         };
         t.raf = requestAnimationFrame(tick);
         return () => cancelAnimationFrame(t.raf);
-    }, [renderFrame, presetForTime, driveCloud, track]);
+    }, [renderFrame, driveCloud, driveOpacity, track, takeTime, seekTake,
+        goForward, goBackward]);
 
-    // ---- Presets & cuts --------------------------------------------------
+    // ---- Views -----------------------------------------------------------
 
     const savePreset = useCallback((i) => {
         setPresets((prev) => {
@@ -1185,26 +1476,13 @@ function ScanCompositor() {
         setActivePreset(i);
     }, []);
 
-    const addCut = useCallback(() => {
-        const video = videoRef.current;
-        const i = activePresetRef.current;
-        if (!video || i == null) return;
-        const at = video.currentTime;
-        setCuts((prev) => [...prev.filter((c) => Math.abs(c.t - at) > 1e-3),
-            { t: at, preset: i }].sort((a, b) => a.t - b.t));
-    }, []);
-
-    const removeCut = useCallback((at) => {
-        setCuts((prev) => prev.filter((c) => c.t !== at));
-    }, []);
-
-    // Editing while a cut is live should edit that cut, which is what makes
-    // the panel feel like it is editing the shot under the playhead.
+    // Editing a recalled view edits that view, so the slots behave like saved
+    // looks you keep refining rather than snapshots that drift out of date.
     const setLayer = useCallback((key) => (value) => {
         setLayers((prev) => {
             const next = { ...prev, [key]: value };
             const i = activePresetRef.current;
-            if (followCutsRef.current && i != null && presetsRef.current[i]) {
+            if (i != null && presetsRef.current[i]) {
                 setPresets((ps) => {
                     const copy = [...ps];
                     copy[i] = next;
@@ -1224,26 +1502,32 @@ function ScanCompositor() {
     // One transport for both: the clip is a few seconds and loops, the music
     // runs its own length underneath, and they start and stop together.
     const togglePlay = useCallback(() => {
-        const v = videoRef.current;
+        const v = dirRef.current < 0 ? revVideoRef.current : videoRef.current;
         const a = audioRef.current;
         if (!v || exportingRef.current) return;
-        if (v.paused) {
-            v.play().catch(() => {});
-            if (a && a.src) {
-                attachAnalyser();
-                audioCtxRef.current?.resume?.();
-                a.play().catch(() => {});
-            }
-        } else {
+        if (playingRef.current) {
+            playingRef.current = false;
             v.pause();
             a?.pause();
+            setIsPlaying(false);
+            return;
+        }
+        playingRef.current = true;
+        setIsPlaying(true);
+        v.play().catch(() => {});
+        if (a && a.src) {
+            attachAnalyser();
+            audioCtxRef.current?.resume?.();
+            a.play().catch(() => {});
         }
     }, [attachAnalyser]);
 
     useEffect(() => {
-        const v = videoRef.current;
-        if (v) v.playbackRate = speed;
+        [videoRef.current, revVideoRef.current].forEach((v) => {
+            if (v) v.playbackRate = speed;
+        });
     }, [speed, clipId]);
+
 
     useEffect(() => {
         const onKey = (e) => {
@@ -1271,10 +1555,114 @@ function ScanCompositor() {
     }, [togglePlay, savePreset, recallPreset, setLayer, setRigKey]);
 
     // ---- Export ----------------------------------------------------------
-    // Frame-accurate: seek the video one frame at a time, pose the camera from
-    // the solve for exactly that frame, apply whichever cut is live, render and
-    // encode. Nothing depends on realtime playback, so the result never drops
-    // or doubles a frame.
+    // Frame-accurate and independent of playback: the list of frames to write
+    // is built first - the take, the way back if it is ping-ponging, repeated
+    // to fill the music - and then each entry is seeked to, posed from the
+    // solve for exactly that frame, rendered and encoded. The soundtrack is
+    // encoded from the decoded samples over the same list, so picture and
+    // sound cannot drift however long the render takes.
+
+    // The clip's own audio, which lives in the take's mp4. Decoded once per
+    // take and kept, since the only thing that wants it is the exporter.
+    const clipAudio = useCallback(() => {
+        const id = clipId;
+        const slot = clipAudioRef.current;
+        if (!id) return Promise.resolve(null);
+        if (slot.id === id) return slot.promise || Promise.resolve(slot.buffer);
+
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        const ctx = audioCtxRef.current || new Ctx();
+        audioCtxRef.current = ctx;
+        const promise = fetch(`${process.env.PUBLIC_URL}/mv/${id}/${id}.mp4`)
+            .then((r) => r.arrayBuffer())
+            .then((buf) => ctx.decodeAudioData(buf))
+            .then((decoded) => {
+                clipAudioRef.current = { id, buffer: decoded, promise: null };
+                return decoded;
+            })
+            .catch(() => {
+                // A take published before the pipeline started carrying audio
+                // simply has none; that is not an error.
+                clipAudioRef.current = { id, buffer: null, promise: null };
+                return null;
+            });
+        clipAudioRef.current = { id, buffer: null, promise };
+        return promise;
+    }, [clipId]);
+
+    // Lay out the export's soundtrack sample by sample.
+    //
+    // The clip's own sound is written per output frame, which is what keeps it
+    // locked to the picture through everything the frame list can do: dropped
+    // unsolved frames, repeats, and the reversed half of a ping-pong, where
+    // the frame's audio is reversed with it. Music is read straight through
+    // and wraps round, exactly as the <audio> element does in the preview.
+    const buildExportAudio = useCallback(({
+        frames, dirs, fps, music, musicOffset, clip: clipBuf,
+    }) => {
+        const rate = (music || clipBuf).sampleRate;
+        const channels = Math.min(2, Math.max(
+            music ? music.numberOfChannels : 1,
+            clipBuf ? clipBuf.numberOfChannels : 1,
+        ));
+        const step = rate / fps;
+        const total = Math.round(frames.length * step);
+        if (!total) return null;
+
+        const out = [];
+        for (let c = 0; c < channels; c++) out.push(new Float32Array(total));
+
+        if (music) {
+            const src = [];
+            for (let c = 0; c < channels; c++) {
+                src.push(music.getChannelData(Math.min(c, music.numberOfChannels - 1)));
+            }
+            const start = Math.round(musicOffset * rate);
+            const len = music.length;
+            for (let i = 0; i < total; i++) {
+                // Wrap rather than run out: the preview loops the track.
+                const idx = ((start + i) % len + len) % len;
+                for (let c = 0; c < channels; c++) out[c][i] += src[c][idx];
+            }
+        }
+
+        if (clipBuf) {
+            const src = [];
+            for (let c = 0; c < channels; c++) {
+                src.push(clipBuf.getChannelData(
+                    Math.min(c, clipBuf.numberOfChannels - 1),
+                ));
+            }
+            const len = clipBuf.length;
+            for (let k = 0; k < frames.length; k++) {
+                const from = Math.round(k * step);
+                const to = Math.round((k + 1) * step);
+                const span = to - from;
+                const base = Math.round(frames[k] * step);
+                const back = dirs[k] < 0;
+                for (let j = 0; j < span; j++) {
+                    const local = back ? span - 1 - j : j;
+                    const idx = base + local;
+                    if (idx < 0 || idx >= len) continue;
+                    for (let c = 0; c < channels; c++) {
+                        out[c][from + j] += src[c][idx];
+                    }
+                }
+            }
+        }
+
+        // Two sources summed can exceed full scale; clip rather than let the
+        // encoder wrap it round.
+        for (let c = 0; c < channels; c++) {
+            const a = out[c];
+            for (let i = 0; i < a.length; i++) {
+                if (a[i] > 1) a[i] = 1;
+                else if (a[i] < -1) a[i] = -1;
+            }
+        }
+        return { data: out, sampleRate: rate, channels, length: total };
+    }, []);
+
     const startExport = useCallback(async () => {
         const video = videoRef.current;
         const trackData = trackRef.current;
@@ -1291,25 +1679,84 @@ function ScanCompositor() {
         const w = Math.max(2, Math.round((intr.width * exportScale) / 2) * 2);
         const h = Math.max(2, Math.round((intr.height * exportScale) / 2) * 2);
         const fps = trackData.fps;
+
         // Exporting an unsolved frame would bake a frozen camera over moving
-        // footage, so by default those frames are left out and the result is
-        // simply shorter.
+        // footage, so by default those frames are left out.
         const cov = coverageRef.current;
-        const frameList = (skipUnsolvedRef.current && cov.unsolved && cov.mask)
+        const solved = (skipUnsolvedRef.current && cov.unsolved && cov.mask)
             ? Array.from(cov.mask).reduce((acc, ok, i) => {
                 if (ok) acc.push(i);
                 return acc;
             }, [])
             : Array.from({ length: trackData.frame_count }, (_, i) => i);
-        const totalFrames = frameList.length;
-        if (!totalFrames) {
+        if (!solved.length) {
+            // eslint-disable-next-line no-alert
             window.alert('Nothing to export: no frames in this take are solved.');
             return;
         }
 
+        // One cycle of the loop. Ping-pong adds the way back without
+        // repeating either turnaround frame, so cycles butt together
+        // seamlessly however many of them are written.
+        const cycle = loopMode === 'bounce' && solved.length > 2
+            ? solved.concat(solved.slice(1, -1).reverse())
+            : solved.slice();
+
+        const music = audioBufferRef.current;
+        const musicOffset = music && audioRef.current
+            ? Math.min(audioRef.current.currentTime, music.duration)
+            : 0;
+        let wanted = cycle.length;
+        if (exportLength === 'audio' && music) {
+            wanted = Math.max(1, Math.round((music.duration - musicOffset) * fps));
+        } else if (exportLength === 'loops') {
+            wanted = cycle.length * Math.max(1, Math.round(exportLoops));
+        }
+
+        const frames = new Int32Array(wanted);
+        for (let i = 0; i < wanted; i++) frames[i] = cycle[i % cycle.length];
+        // Which way the clip is running at each output frame, so the audio can
+        // be reversed along with the picture. Read forwards where there is a
+        // next frame to compare against - looking back instead would call the
+        // first frame of a new cycle a reversal, since the frame before it is
+        // the end of the last one.
+        const dirs = new Int8Array(wanted);
+        for (let i = 0; i < wanted; i++) {
+            const a = frames[i];
+            const b = i + 1 < wanted ? frames[i + 1] : a;
+            if (b !== a) dirs[i] = b < a ? -1 : 1;
+            else dirs[i] = i > 0 && a < frames[i - 1] ? -1 : 1;
+        }
+        const totalFrames = wanted;
+
+        const bitrate = Math.min(
+            120_000_000, Math.round(w * h * fps * exportQuality),
+        );
+
+        // A long render is far larger than anything worth holding in memory,
+        // so write it straight to disk when the browser can. The picker has to
+        // be opened while the click that started the export is still fresh,
+        // which is why it comes before the codec probe.
+        const estBytes = (bitrate / 8) * (totalFrames / fps);
+        let fileStream = null;
+        if (estBytes > 500_000_000 && window.showSaveFilePicker) {
+            try {
+                const handle = await window.showSaveFilePicker({
+                    suggestedName: `${clipId}-composite.mp4`,
+                    types: [{
+                        description: 'MP4 video',
+                        accept: { 'video/mp4': ['.mp4'] },
+                    }],
+                });
+                fileStream = await handle.createWritable();
+            } catch (e) {
+                // Cancelled picker: fall back to assembling it in memory.
+                fileStream = null;
+            }
+        }
+
         const codecCandidates = ['avc1.640034', 'avc1.640033', 'avc1.640028',
             'avc1.64001f', 'avc1.4d0028', 'avc1.42e01e'];
-        const bitrate = Math.min(80_000_000, Math.round(w * h * fps * 0.25));
         let codec = null;
         for (const c of codecCandidates) {
             try {
@@ -1323,6 +1770,7 @@ function ScanCompositor() {
         if (!codec) {
             // eslint-disable-next-line no-alert
             window.alert('No supported H.264 encoder found for this resolution.');
+            if (fileStream) await fileStream.close();
             return;
         }
 
@@ -1330,6 +1778,7 @@ function ScanCompositor() {
         exportCanceledRef.current = false;
         setIsExporting(true);
         setExportProgress(0);
+        setExportStage('Preparing...');
 
         // A live analyser only hears what is playing now, which is no use to a
         // loop that renders frame 37 whenever it gets there. Analyse the
@@ -1337,17 +1786,56 @@ function ScanCompositor() {
         // have had in the preview.
         let spectrum = null;
         const L0 = layersRef.current;
-        const cloudReacts = (L0.cloudOn && L0.cloudReact > 0)
-            || (L0.wireOn && L0.wireReact > 0);
-        if (audioBufferRef.current
-            && (sceneItemsRef.current.length || cloudReacts)) {
-            setStatus('Analysing audio...');
-            spectrum = computeSpectrogram(audioBufferRef.current, {
-                fps, frameCount: totalFrames,
-                offset: audioRef.current ? audioRef.current.currentTime : 0,
+        const scanReacts = (L0.cloudOn && L0.cloudReact > 0)
+            || (L0.wireOn && L0.wireReact > 0)
+            || L0.opacityReact > 0;
+        if (music && (sceneItemsRef.current.length || scanReacts)) {
+            setExportStage('Analysing audio...');
+            await new Promise((r) => setTimeout(r, 0)); // let the label paint
+            spectrum = computeSpectrogram(music, {
+                fps, frameCount: totalFrames, offset: musicOffset,
             });
             spectrogramRef.current = spectrum;
-            setStatus('Exporting...');
+        }
+
+        // The take's own sound, plus the music, mixed over the frame list.
+        setExportStage('Laying out audio...');
+        const clipBuf = muted ? null : await clipAudio();
+        const pcm = (music || clipBuf)
+            ? buildExportAudio({
+                frames, dirs, fps, music, musicOffset, clip: clipBuf,
+            })
+            : null;
+
+        let audioCodec = null;
+        if (pcm && typeof window.AudioEncoder !== 'undefined') {
+            for (const [enc, box] of [['mp4a.40.2', 'aac'], ['opus', 'opus']]) {
+                try {
+                    // eslint-disable-next-line no-await-in-loop
+                    const sup = await window.AudioEncoder.isConfigSupported({
+                        codec: enc,
+                        sampleRate: pcm.sampleRate,
+                        numberOfChannels: pcm.channels,
+                        bitrate: 192_000,
+                    });
+                    if (sup.supported) { audioCodec = [enc, box]; break; }
+                } catch (e) { /* try next */ }
+            }
+        }
+
+        // Supersample unless the output is already enormous: a frame of points
+        // and hairline edges is exactly the detail an encoder discards first,
+        // and resolving it before the encoder sees it is most of what makes an
+        // export look like the preview.
+        const ss = w * h <= 3_600_000 ? EXPORT_SS : 1;
+        const down = ss > 1 ? document.createElement('canvas') : null;
+        let downCtx = null;
+        if (down) {
+            down.width = w;
+            down.height = h;
+            downCtx = down.getContext('2d', { alpha: false });
+            downCtx.imageSmoothingEnabled = true;
+            downCtx.imageSmoothingQuality = 'high';
         }
 
         const prevLoop = video.loop;
@@ -1355,13 +1843,17 @@ function ScanCompositor() {
         const prevSize = t.renderer.getSize(new THREE.Vector2());
         const prevRatio = t.renderer.getPixelRatio();
         const prevLayers = { ...layersRef.current };
-        const prevActive = activePresetRef.current;
 
+        playingRef.current = false;
+        revVideoRef.current?.pause();
+        showVideo(1);
         video.loop = false;
         video.pause();
         setIsPlaying(false);
+        opacityEnvRef.current.v = 0;
+        t.ss = ss;
         t.renderer.setPixelRatio(1);
-        t.renderer.setSize(w, h, false);
+        t.renderer.setSize(w * ss, h * ss, false);
         applyLayers(layersRef.current);
 
         const seekTo = (time) => new Promise((resolve) => {
@@ -1380,10 +1872,22 @@ function ScanCompositor() {
             video.currentTime = time;
         });
 
+        const target = fileStream
+            ? new FileSystemWritableFileStreamTarget(fileStream)
+            : new ArrayBufferTarget();
         const muxer = new Muxer({
-            target: new ArrayBufferTarget(),
+            target,
             video: { codec: 'avc', width: w, height: h, frameRate: fps },
-            fastStart: 'in-memory',
+            ...(audioCodec ? {
+                audio: {
+                    codec: audioCodec[1],
+                    numberOfChannels: pcm.channels,
+                    sampleRate: pcm.sampleRate,
+                },
+            } : {}),
+            // Streaming to disk cannot go back and rewrite the header, so the
+            // index lands at the end of the file instead.
+            fastStart: fileStream ? false : 'in-memory',
         });
 
         let encodeFailed = null;
@@ -1396,51 +1900,97 @@ function ScanCompositor() {
             latencyMode: 'quality',
         });
 
+        let audioEncoder = null;
+        if (audioCodec) {
+            audioEncoder = new window.AudioEncoder({
+                output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+                error: (e) => { encodeFailed = e; },
+            });
+            audioEncoder.configure({
+                codec: audioCodec[0],
+                sampleRate: pcm.sampleRate,
+                numberOfChannels: pcm.channels,
+                bitrate: 192_000,
+            });
+        }
+
+        // Sound is fed in step with the picture rather than all at once, so
+        // the muxer sees both tracks in order and the file can be streamed
+        // straight to disk.
+        const AUDIO_CHUNK = 1024;
+        let audioCursor = 0;
+        const pumpAudio = (untilSample) => {
+            if (!audioEncoder || !pcm) return;
+            while (audioCursor < Math.min(untilSample, pcm.length)) {
+                const n = Math.min(AUDIO_CHUNK, pcm.length - audioCursor);
+                const planar = new Float32Array(n * pcm.channels);
+                for (let c = 0; c < pcm.channels; c++) {
+                    planar.set(
+                        pcm.data[c].subarray(audioCursor, audioCursor + n),
+                        c * n,
+                    );
+                }
+                const data = new window.AudioData({
+                    format: 'f32-planar',
+                    sampleRate: pcm.sampleRate,
+                    numberOfFrames: n,
+                    numberOfChannels: pcm.channels,
+                    timestamp: Math.round((audioCursor / pcm.sampleRate) * 1e6),
+                    data: planar,
+                });
+                audioEncoder.encode(data);
+                data.close();
+                audioCursor += n;
+            }
+        };
+
         const frameUs = Math.round(1_000_000 / fps);
+        const gop = Math.max(1, Math.round(fps * 2));
         let completed = false;
+        setExportStage('Rendering...');
 
         try {
             for (let i = 0; i < totalFrames; i++) {
                 if (exportCanceledRef.current || encodeFailed) break;
 
                 // i counts output frames; src is the frame of the take it came
-                // from, which differs once unsolved frames are dropped.
-                const src = frameList[i];
+                // from, which differs once unsolved frames are dropped and the
+                // loop starts repeating.
+                const src = frames[i];
                 const time = Math.min(src / fps, Math.max(0, video.duration - 0.001));
                 // eslint-disable-next-line no-await-in-loop
                 await seekTo(time);
 
-                if (followCutsRef.current) {
-                    const want = presetForTime(time);
-                    if (want != null && presetsRef.current[want]) {
-                        layersRef.current = presetsRef.current[want];
-                        activePresetRef.current = want;
-                        applyLayers(layersRef.current);
-                    }
-                }
-
                 // Deterministic per-frame reactivity: the same dt every frame,
                 // so an export is reproducible rather than tied to how fast
                 // the encode happened to run.
+                const freq = spectrum ? spectrum[i] : null;
                 applyAudioReactivity(
-                    sceneObjectsRef.current,
-                    spectrum ? spectrum[i] : null,
-                    1 / fps,
-                    !!spectrum,
+                    sceneObjectsRef.current, freq, 1 / fps, !!spectrum,
                 );
-                driveCloud(spectrum ? spectrum[i] : null, !!spectrum);
+                driveCloud(freq, !!spectrum);
+                driveOpacity(freq, !!spectrum);
 
                 if (t.videoTexture) t.videoTexture.needsUpdate = true;
                 renderFrame(time);
 
-                const vf = new window.VideoFrame(t.renderer.domElement, {
+                let source = t.renderer.domElement;
+                if (downCtx) {
+                    downCtx.drawImage(t.renderer.domElement, 0, 0, w, h);
+                    source = down;
+                }
+                const vf = new window.VideoFrame(source, {
                     timestamp: i * frameUs,
                     duration: frameUs,
                 });
-                encoder.encode(vf, { keyFrame: i % Math.round(fps * 2) === 0 });
+                encoder.encode(vf, { keyFrame: i % gop === 0 });
                 vf.close();
 
-                while (encoder.encodeQueueSize > 8 && !encodeFailed) {
+                pumpAudio(Math.round(((i + 1) / fps) * (pcm ? pcm.sampleRate : 0)));
+
+                while ((encoder.encodeQueueSize > 8
+                    || (audioEncoder && audioEncoder.encodeQueueSize > 40))
+                    && !encodeFailed) {
                     // eslint-disable-next-line no-await-in-loop
                     await new Promise((r) => setTimeout(r, 5));
                 }
@@ -1450,7 +2000,10 @@ function ScanCompositor() {
 
             if (!exportCanceledRef.current && !encodeFailed) {
                 setExportProgress(1);
+                setExportStage('Finishing...');
+                if (pcm) pumpAudio(pcm.length);
                 await encoder.flush();
+                if (audioEncoder) await audioEncoder.flush();
                 muxer.finalize();
                 completed = true;
             }
@@ -1458,19 +2011,24 @@ function ScanCompositor() {
             encodeFailed = e;
         } finally {
             try { encoder.close(); } catch (e) { /* already closed */ }
+            try { audioEncoder?.close(); } catch (e) { /* already closed */ }
+            if (fileStream) {
+                try { await fileStream.close(); } catch (e) { /* gone */ }
+            }
             video.loop = prevLoop;
             video.currentTime = prevTime;
+            t.ss = 1;
             t.renderer.setPixelRatio(prevRatio);
             t.renderer.setSize(prevSize.x, prevSize.y, true);
             layersRef.current = prevLayers;
-            activePresetRef.current = prevActive;
             applyLayers(prevLayers);
             exportingRef.current = false;
             setIsExporting(false);
             setExportProgress(0);
+            setExportStage('');
         }
 
-        if (completed) {
+        if (completed && !fileStream) {
             const blob = new Blob([muxer.target.buffer], { type: 'video/mp4' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -1482,8 +2040,14 @@ function ScanCompositor() {
             // eslint-disable-next-line no-alert
             window.alert(`Export failed: ${encodeFailed.message || encodeFailed}`);
         }
-    }, [clipId, exportScale, renderFrame, applyLayers, presetForTime,
-        driveCloud]);
+        if (completed) {
+            const secs = (totalFrames / fps).toFixed(1);
+            setStatus(`Exported ${totalFrames} frames (${secs}s) at ${w}x${h}`
+                + (audioCodec ? ' with sound' : ' (silent)'));
+        }
+    }, [clipId, exportScale, exportQuality, exportLength, exportLoops, loopMode,
+        muted, renderFrame, applyLayers, driveCloud, driveOpacity, clipAudio,
+        buildExportAudio, showVideo]);
 
     // ---- Control helpers -------------------------------------------------
 
@@ -1554,23 +2118,75 @@ function ScanCompositor() {
                     {/* The element is the texture source and the clock; it is
                         never shown, since the composite is drawn in WebGL. */}
                     {clip && (
-                        <video
-                            ref={attachVideo}
-                            key={clip.id}
-                            src={`${process.env.PUBLIC_URL}/mv/${clip.id}/${clip.id}.mp4`}
-                            style={{ display: 'none' }}
-                            muted={muted}
-                            playsInline
-                            loop={loop}
-                            crossOrigin="anonymous"
-                            onPlay={() => setIsPlaying(true)}
-                            onPause={() => setIsPlaying(false)}
-                            onTimeUpdate={(e) => setCurrentTime(e.target.currentTime)}
-                            onLoadedMetadata={(e) => {
-                                setDuration(e.target.duration);
-                                e.target.playbackRate = speed;
-                            }}
-                        />
+                        <>
+                            <video
+                                ref={attachVideo}
+                                key={clip.id}
+                                src={`${process.env.PUBLIC_URL}/mv/${clip.id}/${clip.id}.mp4`}
+                                style={{ display: 'none' }}
+                                muted={muted}
+                                playsInline
+                                loop={loopMode === 'loop'}
+                                crossOrigin="anonymous"
+                                onPlay={() => setIsPlaying(true)}
+                                onPause={(e) => {
+                                    // Running out of clip pauses the element
+                                    // and fires 'pause' and 'ended' in an
+                                    // order not worth relying on, so both are
+                                    // read as the same thing.
+                                    if (atEnd(e.target)) {
+                                        goBackward();
+                                        return;
+                                    }
+                                    if (!exportingRef.current) {
+                                        playingRef.current = false;
+                                        setIsPlaying(false);
+                                    }
+                                }}
+                                onEnded={() => goBackward()}
+                                onTimeUpdate={(e) => {
+                                    if (dirRef.current > 0) {
+                                        setCurrentTime(e.target.currentTime);
+                                    }
+                                }}
+                                onSeeked={() => { three.current.videoDirty = 3; }}
+                                onLoadedData={() => { three.current.videoDirty = 3; }}
+                                onLoadedMetadata={(e) => {
+                                    setDuration(e.target.duration);
+                                    e.target.playbackRate = speed;
+                                }}
+                            />
+                            {/* The take reversed. Ping-pong plays this
+                                forwards, which is ordinary playback at full
+                                rate - the only alternative is seeking the
+                                take backwards a frame at a time, and no
+                                browser can do that smoothly. A take published
+                                before the pipeline wrote one simply has no
+                                ping-pong. */}
+                            <video
+                                ref={attachRevVideo}
+                                key={`${clip.id}-rev`}
+                                src={`${process.env.PUBLIC_URL}/mv/${clip.id}/${clip.id}_rev.mp4`}
+                                style={{ display: 'none' }}
+                                muted={muted}
+                                playsInline
+                                preload="auto"
+                                crossOrigin="anonymous"
+                                onLoadedMetadata={(e) => {
+                                    setRevReady(true);
+                                    e.target.playbackRate = speed;
+                                }}
+                                onError={() => setRevReady(false)}
+                                onEnded={() => goForward()}
+                                onTimeUpdate={(e) => {
+                                    if (dirRef.current < 0) {
+                                        setCurrentTime(takeTime(e.target));
+                                    }
+                                }}
+                                onSeeked={() => { three.current.videoDirty = 3; }}
+                                onLoadedData={() => { three.current.videoDirty = 3; }}
+                            />
+                        </>
                     )}
                     <div className={styles.vfx_scanStatus}>{status}</div>
                 </div>
@@ -1663,8 +2279,11 @@ function ScanCompositor() {
                             </div>
                         )}
                         <div className={styles.vfx_hint} style={{ marginTop: 8 }}>
-                            Plays with the clip. Export re-analyses the track
-                            offline so every frame reacts exactly as previewed.
+                            Plays with the clip, and is mixed into the export
+                            alongside the take&apos;s own sound. An export
+                            starts from wherever the track is sitting now, and
+                            re-analyses it offline so every frame reacts
+                            exactly as previewed.
                         </div>
                     </div>
 
@@ -1882,15 +2501,46 @@ function ScanCompositor() {
                                 value={currentTime}
                                 disabled={isExporting || !track}
                                 onChange={(e) => {
-                                    const v = videoRef.current;
-                                    if (v) v.currentTime = parseFloat(e.target.value);
+                                    // Always in the take's own time: dragging
+                                    // during the return hands the clip back
+                                    // to the forward copy first.
+                                    const at = parseFloat(e.target.value);
+                                    if (dirRef.current < 0) {
+                                        revVideoRef.current?.pause();
+                                        showVideo(1);
+                                        if (playingRef.current) {
+                                            videoRef.current?.play().catch(() => {});
+                                        }
+                                    }
+                                    seekTake(at);
                                 }}
                             />
                             <span className={styles.vfx_value}>{fmt(currentTime)}</span>
                         </div>
                         {slider('Speed', 'speed', 0.1, 2, 0.05,
                             { speed }, () => setSpeed)}
-                        {toggle('Loop', 'loop', { loop }, () => setLoop)}
+                        <div className={styles.vfx_segRow}>
+                            {LOOP_MODES.map((m) => (
+                                <button
+                                    key={m.id}
+                                    type="button"
+                                    disabled={m.id === 'bounce' && !revReady}
+                                    title={m.id === 'bounce' && !revReady
+                                        ? 'This take has no reversed copy; re-run the export stage'
+                                        : m.name}
+                                    className={`${styles.vfx_segBtn} ${loopMode === m.id ? styles.vfx_segBtnOn : ''}`}
+                                    onClick={() => setLoopMode(m.id)}
+                                >
+                                    {m.name}
+                                </button>
+                            ))}
+                        </div>
+                        <div className={styles.vfx_hint}>
+                            Ping-pong plays the take&apos;s reversed copy back
+                            to its start instead of cutting back, which turns a
+                            few seconds of footage into a seamless loop.
+                            Exports follow whichever mode is set here.
+                        </div>
                         {!!coverage.unsolved && (
                             <>
                                 {toggle('Skip unsolved', 'skipUnsolved',
@@ -1982,6 +2632,46 @@ function ScanCompositor() {
                         </div>
                     </div>
 
+                    {/* Opacity, driven by the music rather than by hand */}
+                    <div className={styles.vfx_section}>
+                        <div className={styles.vfx_sectionTitle}>Audio opacity</div>
+                        {slider('Depth', 'opacityReact', 0, 1, 0.01)}
+                        {layers.opacityReact > 0 && (
+                            <>
+                                <div className={styles.vfx_segRow} style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}>
+                                    {[['band', 'Follow band'], ['gate', 'Threshold']].map(([id, name]) => (
+                                        <button
+                                            key={id}
+                                            type="button"
+                                            className={`${styles.vfx_segBtn} ${layers.opacityMode === id ? styles.vfx_segBtnOn : ''}`}
+                                            onClick={() => setLayer('opacityMode')(id)}
+                                        >
+                                            {name}
+                                        </button>
+                                    ))}
+                                </div>
+                                {slider('Freq low', 'opacityFreqLow', 0, 1, 0.01)}
+                                {slider('Freq high', 'opacityFreqHigh', 0, 1, 0.01)}
+                                {slider(layers.opacityMode === 'gate' ? 'Threshold' : 'Floor',
+                                    'opacityThreshold', 0, 0.99, 0.01)}
+                                {slider('Smoothing', 'opacitySmooth', 0, 0.95, 0.01)}
+                                {toggle('Invert', 'opacityInvert')}
+                                {toggle('Points', 'opacityPoints')}
+                                {toggle('Wireframe', 'opacityWire')}
+                                {toggle('Mesh', 'opacityMesh')}
+                                {toggle('Placed scene', 'opacityScene')}
+                            </>
+                        )}
+                        {slider('Scene opacity', 'sceneOpacity', 0, 1, 0.01)}
+                        <div className={styles.vfx_hint}>
+                            {layers.opacityReact > 0
+                                ? (layers.opacityMode === 'gate'
+                                    ? 'On while the band sits above the threshold, off below it. Smoothing softens the edge.'
+                                    : 'Follows the band\u2019s level above the floor, so the layer breathes with the track.')
+                                : 'Fades the layers you pick with a slice of the spectrum. Scene opacity below sets the base level for everything placed in the Scene panel.'}
+                        </div>
+                    </div>
+
                     {/* Mesh */}
                     <div className={styles.vfx_section}>
                         <div className={styles.vfx_sectionTitle}>Mesh</div>
@@ -2031,9 +2721,9 @@ function ScanCompositor() {
                         </div>
                     </div>
 
-                    {/* Presets + cuts */}
+                    {/* Saved looks */}
                     <div className={styles.vfx_section}>
-                        <div className={styles.vfx_sectionTitle}>Views &amp; cuts</div>
+                        <div className={styles.vfx_sectionTitle}>Views</div>
                         <div className={styles.vfx_presetGrid}>
                             {presets.map((p, i) => (
                                 <button
@@ -2064,50 +2754,12 @@ function ScanCompositor() {
                                 <Save size={12} />
                                 Save view
                             </button>
-                            <button
-                                type="button"
-                                className={styles.vfx_select}
-                                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
-                                disabled={activePreset == null || !presets[activePreset]}
-                                onClick={addCut}
-                            >
-                                <Scissors size={12} />
-                                Cut here
-                            </button>
                         </div>
-                        {toggle('Follow cuts', 'followCuts', { followCuts },
-                            () => setFollowCuts)}
-
-                        {!!cuts.length && (
-                            <div className={styles.vfx_cutList}>
-                                {cuts.map((c) => (
-                                    <div className={styles.vfx_cutRow} key={c.t}>
-                                        <button
-                                            type="button"
-                                            className={styles.vfx_cutJump}
-                                            onClick={() => {
-                                                const v = videoRef.current;
-                                                if (v) v.currentTime = c.t;
-                                            }}
-                                        >
-                                            {fmt(c.t)} → view {c.preset + 1}
-                                        </button>
-                                        <button
-                                            type="button"
-                                            aria-label="Remove cut"
-                                            className={styles.vfx_iconBtn}
-                                            style={{ width: 20, height: 20 }}
-                                            onClick={() => removeCut(c.t)}
-                                        >
-                                            <Trash2 size={11} />
-                                        </button>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
                         <div className={styles.vfx_hint}>
-                            1–9 recall a view, shift+1–9 saves one. Space plays,
-                            V/P/M/W toggle layers, F frees the camera.
+                            A view is the whole layer stack. Recalling one and
+                            then editing updates it, so the slots are looks you
+                            keep refining. 1–9 recall, shift+1–9 saves. Space
+                            plays, V/P/M/W toggle layers, F frees the camera.
                         </div>
                     </div>
 
@@ -2126,6 +2778,15 @@ function ScanCompositor() {
                         {slider('Rotate Z', 'rotZ', -15, 15, 0.1, rig, setRigKey)}
                         {slider('Scale', 'scale', 0.8, 1.25, 0.001, rig, setRigKey)}
                         {slider('Swell', 'overscale', 1, 1.08, 0.0005, rig, setRigKey)}
+                        <div className={styles.vfx_hint} style={{ marginTop: 10, marginBottom: 10 }}>
+                            Swell lifts the points and edges off the surface
+                            evenly; these slide them bodily, which is how you
+                            get a drifting double of the object rather than a
+                            slightly inflated one. Neither moves the mesh.
+                        </div>
+                        {slider('Overlay X', 'overlayX', -0.3, 0.3, 0.001, rig, setRigKey)}
+                        {slider('Overlay Y', 'overlayY', -0.3, 0.3, 0.001, rig, setRigKey)}
+                        {slider('Overlay Z', 'overlayZ', -0.3, 0.3, 0.001, rig, setRigKey)}
                         <button
                             type="button"
                             className={styles.vfx_select}
@@ -2140,19 +2801,51 @@ function ScanCompositor() {
                     {/* Export */}
                     <div className={styles.vfx_section}>
                         <div className={styles.vfx_sectionTitle}>Export</div>
-                        <div className={styles.vfx_segRow}>
-                            {EXPORT_SCALES.map((s) => (
+                        <div className={styles.vfx_segRow} style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+                            {EXPORT_SCALES.map((sc) => (
                                 <button
-                                    key={s.id}
+                                    key={sc.id}
                                     type="button"
                                     disabled={isExporting}
-                                    className={`${styles.vfx_segBtn} ${exportScale === s.id ? styles.vfx_segBtnOn : ''}`}
-                                    onClick={() => setExportScale(s.id)}
+                                    className={`${styles.vfx_segBtn} ${exportScale === sc.id ? styles.vfx_segBtnOn : ''}`}
+                                    onClick={() => setExportScale(sc.id)}
                                 >
-                                    {s.name}
+                                    {sc.name}
                                 </button>
                             ))}
                         </div>
+                        <div className={styles.vfx_segRow}>
+                            {EXPORT_QUALITY.map((q) => (
+                                <button
+                                    key={q.id}
+                                    type="button"
+                                    disabled={isExporting}
+                                    className={`${styles.vfx_segBtn} ${exportQuality === q.id ? styles.vfx_segBtnOn : ''}`}
+                                    onClick={() => setExportQuality(q.id)}
+                                >
+                                    {q.name}
+                                </button>
+                            ))}
+                        </div>
+                        <div className={styles.vfx_segRow}>
+                            {EXPORT_LENGTHS.map((len) => (
+                                <button
+                                    key={len.id}
+                                    type="button"
+                                    disabled={isExporting
+                                        || (len.id === 'audio' && !audioReady)}
+                                    title={len.id === 'audio' && !audioReady
+                                        ? 'Load a track in the Scene panel first'
+                                        : len.name}
+                                    className={`${styles.vfx_segBtn} ${exportLength === len.id ? styles.vfx_segBtnOn : ''}`}
+                                    onClick={() => setExportLength(len.id)}
+                                >
+                                    {len.name}
+                                </button>
+                            ))}
+                        </div>
+                        {exportLength === 'loops' && slider('Cycles', 'exportLoops',
+                            1, 40, 1, { exportLoops }, () => setExportLoops)}
                         <button
                             type="button"
                             className={`${styles.vfx_select} ${isExporting ? styles.vfx_recActive : ''}`}
@@ -2169,16 +2862,27 @@ function ScanCompositor() {
                                 : 'Export MP4'}
                         </button>
                         {isExporting && (
-                            <div className={styles.vfx_progress} style={{ marginTop: 10 }}>
-                                <div
-                                    className={styles.vfx_progressFill}
-                                    style={{ width: `${exportProgress * 100}%` }}
-                                />
-                            </div>
+                            <>
+                                <div className={styles.vfx_progress} style={{ marginTop: 10 }}>
+                                    <div
+                                        className={styles.vfx_progressFill}
+                                        style={{ width: `${exportProgress * 100}%` }}
+                                    />
+                                </div>
+                                <div className={styles.vfx_fileName}>{exportStage}</div>
+                            </>
                         )}
                         <div className={styles.vfx_hint} style={{ marginTop: 10 }}>
-                            Renders every frame at the solved resolution with cuts
-                            applied, independent of playback.
+                            Every frame is rendered at
+                            {' '}
+                            {Math.round(track ? track.intrinsics.width * exportScale : 0)}
+                            x
+                            {Math.round(track ? track.intrinsics.height * exportScale : 0)}
+                            {', '}
+                            supersampled, with the clip&apos;s own sound and any
+                            loaded track mixed in. Ping-pong and the cycle count
+                            are written out in full, so a few seconds of footage
+                            can carry a whole song.
                         </div>
                     </div>
                 </div>

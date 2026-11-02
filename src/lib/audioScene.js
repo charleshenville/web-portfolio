@@ -501,6 +501,87 @@ export function bassLevel(frequencyData) {
 }
 
 /**
+ * Mean level of one slice of the spectrum, normalised to 0..1.
+ *
+ * `bassLevel` is the special case of this with the band pinned to the bottom
+ * eight bins; anything that wants to listen to a chosen range of the music -
+ * a kick, a hi-hat, a vocal - reads it through here instead.
+ *
+ * @param {Uint8Array|null} frequencyData FFT bins, or null when silent
+ * @param {number} low band start as a fraction of the spectrum
+ * @param {number} high band end as a fraction of the spectrum
+ * @returns {number} 0..1
+ */
+export function bandLevel(frequencyData, low = 0, high = 1) {
+    if (!frequencyData || !frequencyData.length) return 0;
+    const bins = frequencyData.length;
+    const a = Math.max(0, Math.min(1, low));
+    const b = Math.max(0, Math.min(1, high));
+    const lo = Math.round(Math.min(a, b) * (bins - 1));
+    const hi = Math.round(Math.max(a, b) * (bins - 1));
+    let sum = 0;
+    for (let k = lo; k <= hi; k++) sum += frequencyData[k];
+    return sum / (hi - lo + 1) / 255;
+}
+
+/**
+ * Turn a band level into a 0..1 control signal.
+ *
+ * Two shapes, because the two are musically different: `band` follows the
+ * level continuously above a floor, which breathes with the track, while
+ * `gate` is a threshold - fully on or fully off - which snaps on the beat.
+ * The follower is a plain exponential, so the same spectrum sequence always
+ * produces the same envelope and an export matches its preview.
+ *
+ * @param {object} env mutable follower state, `{ v }`
+ * @param {number} level 0..1 band level
+ * @param {object} opts { mode, threshold, invert, smooth }
+ * @returns {number} 0..1
+ */
+export function envelopeFollow(env, level, {
+    mode = 'band', threshold = 0.3, invert = false, smooth = 0.5,
+} = {}) {
+    const thr = Math.max(0, Math.min(0.99, threshold));
+    let target;
+    if (mode === 'gate') {
+        target = level >= thr ? 1 : 0;
+    } else {
+        target = Math.max(0, (level - thr) / (1 - thr));
+    }
+    if (invert) target = 1 - target;
+    const k = Math.max(0, Math.min(0.95, smooth));
+    env.v = k * (env.v ?? 0) + (1 - k) * target;
+    return Math.max(0, Math.min(1, env.v));
+}
+
+/**
+ * Set the opacity of every placed object in one go.
+ *
+ * Objects are built with their own materials rather than sharing one, so this
+ * walks the records; it is the only way a host can fade the whole placed
+ * scene without touching each item's parameters.
+ *
+ * @param {Iterable} records scene records from the builders
+ * @param {number} value 0..1
+ */
+export function applySceneOpacity(records, value) {
+    const v = Math.max(0, Math.min(1, value));
+    records.forEach((rec) => {
+        if (!rec || rec.loading || !rec.object3D) return;
+        rec.object3D.traverse?.((o) => {
+            const mats = Array.isArray(o.material) ? o.material : [o.material];
+            mats.forEach((m) => {
+                if (!m) return;
+                m.transparent = true;
+                m.opacity = v;
+                m.depthWrite = v >= 1;
+            });
+        });
+        rec.object3D.visible = v > 0.002;
+    });
+}
+
+/**
  * Advance every record for one frame.
  *
  * Point clouds push each instance out along its own direction from the pulse
