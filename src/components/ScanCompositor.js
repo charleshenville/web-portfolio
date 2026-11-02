@@ -21,7 +21,8 @@ import {
     buildCurveRecord, applyAudioReactivity, applyCloudReactivity,
     applyWireReactivity, buildWireTopology, applyRecordTransform,
     disposeRecord, loadPlyPoints, computeSpectrogram, bandLevel,
-    envelopeFollow, applySceneOpacity,
+    envelopeFollow, applySceneOpacity, recolorPointCloud, sphereColorKey,
+    OBJECT_DEFAULTS,
 } from '../lib/audioScene';
 import { Mp4FrameReader, drainEncoders } from '../lib/mp4Frames';
 import styles from './vfx.module.css';
@@ -609,6 +610,8 @@ function ScanCompositor() {
         const t = three.current;
         if (!t.modelRoot) return;
         const map = sceneObjectsRef.current;
+        // Read by load callbacks that land after this render.
+        sceneItemsRef.current = sceneItems;
         const wanted = new Set(sceneItems.map((i) => i.id));
 
         Array.from(map.keys()).forEach((id) => {
@@ -652,32 +655,69 @@ function ScanCompositor() {
             const asset = ASSETS.find((a) => a.id === item.assetId);
             if (!asset || asset.type === 'glb') return;
             const key = GEOM_KEYS.map((k) => item.op[k]).join('|');
-            if (rec && rec.geomKey === key) {
+            if (rec && !rec.loading && rec.geomKey === key) {
+                // A load started for an earlier key is now moot.
+                rec.pending = null;
                 rec.op = item.op;
                 rec.reactive = item.reactive;
                 // Pulse origin moved, so the cached directions are stale.
                 rec.dirs = null;
+                if (rec.colorKey !== sphereColorKey(item.op)) recolorPointCloud(rec, item.op);
                 applyRecordTransform(rec, item.op);
+                t.needsRender = true;
                 return;
             }
             if (rec && rec.loading) return;
 
-            const build = (raw) => {
-                const old = map.get(item.id);
-                if (old) { disposeRecord(old); map.delete(item.id); }
-                const next = buildPointCloudRecord(raw, item.op, asset.type);
-                next.geomKey = key;
-                attach(item, next);
+            // Swap in a fresh build, disposing whatever record is in the map
+            // at that moment - not whatever was there when the build started.
+            const build = (raw, it) => {
+                const old = map.get(it.id);
+                if (old) { disposeRecord(old); map.delete(it.id); }
+                const next = buildPointCloudRecord(raw, it.op, asset.type);
+                next.geomKey = GEOM_KEYS.map((k) => it.op[k]).join('|');
+                attach(it, next);
             };
 
             if (asset.type === 'sphere') {
-                build(fibonacciSphere(item.op.samples, item.op.radius, item.op.jitter));
-            } else {
-                map.set(item.id, { loading: true });
-                loadPlyPoints(asset.path, plyCacheRef.current)
-                    .then(build)
-                    .catch(() => map.delete(item.id));
+                build(fibonacciSphere(item.op.samples, item.op.radius, item.op.jitter), item);
+                return;
             }
+
+            // A PLY loads asynchronously, even from the cache. The record that
+            // is already showing stays in the map (and on screen) until its
+            // replacement is ready, so a delete in the meantime still finds it
+            // and removes it. Each load carries a token; only the latest one
+            // for a still-present item may land.
+            if (rec) {
+                // Keep the showing record following moves while it waits.
+                rec.op = item.op;
+                rec.reactive = item.reactive;
+                rec.dirs = null;
+                applyRecordTransform(rec, item.op);
+                t.needsRender = true;
+                if (rec.pending && rec.pendingKey === key) return; // already on its way
+            }
+            const token = {};
+            if (rec) { rec.pending = token; rec.pendingKey = key; }
+            else map.set(item.id, { loading: true, pending: token });
+            loadPlyPoints(asset.path, plyCacheRef.current)
+                .then((raw) => {
+                    const cur = map.get(item.id);
+                    if (!cur || cur.pending !== token) return; // removed or superseded
+                    // Build against the item as it is now: parameters may have
+                    // moved while the file was loading.
+                    const latest = sceneItemsRef.current.find((i) => i.id === item.id);
+                    if (!latest) return;
+                    build(raw, latest);
+                })
+                .catch(() => {
+                    const cur = map.get(item.id);
+                    if (cur && cur.pending === token) {
+                        if (cur.loading) map.delete(item.id);
+                        else cur.pending = null;
+                    }
+                });
         });
     }, [sceneItems]);
 
@@ -2513,7 +2553,8 @@ function ScanCompositor() {
                     {selected && PARAM_GROUPS
                         .filter((g) => g.scope === 'object'
                             && (g.kind === 'both' || g.kind === selected.kind
-                                || (g.kind === 'asset' && selected.kind === 'asset')))
+                                || (g.kind === 'asset' && selected.kind === 'asset'))
+                            && (!g.sphereOnly || selectedAssetType === 'sphere'))
                         .map((group) => (
                             <div className={styles.vfx_section} key={`${group.title}-${group.kind}`}>
                                 <div className={styles.vfx_sectionTitle}>{group.title}</div>
@@ -2529,7 +2570,8 @@ function ScanCompositor() {
                                                     type="color"
                                                     className={styles.vfx_color}
                                                     style={{ gridColumn: '2 / 4' }}
-                                                    value={selected.op[prm.key]}
+                                                    value={selected.op[prm.key]
+                                                        ?? OBJECT_DEFAULTS[prm.key] ?? '#ffffff'}
                                                     onChange={(e) => setItemParam(prm.key)(e.target.value)}
                                                 />
                                             </div>
@@ -2546,13 +2588,13 @@ function ScanCompositor() {
                                                 min={prm.min}
                                                 max={prm.max}
                                                 step={prm.step}
-                                                value={selected.op[prm.key]}
+                                                value={selected.op[prm.key] ?? OBJECT_DEFAULTS[prm.key] ?? 0}
                                                 onChange={(e) => setItemParam(prm.key)(
                                                     parseFloat(e.target.value),
                                                 )}
                                             />
                                             <VfxNumberField
-                                                value={selected.op[prm.key]}
+                                                value={selected.op[prm.key] ?? OBJECT_DEFAULTS[prm.key] ?? 0}
                                                 min={prm.min}
                                                 max={prm.max}
                                                 step={prm.step}

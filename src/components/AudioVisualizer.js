@@ -14,7 +14,7 @@ import {
     ASSETS, MUSIC_ASSETS, CURVES, OBJECT_DEFAULTS, CURVE_DEFAULTS,
     PARAM_GROUPS, GEOM_KEYS, CURVE_GEOM_KEYS, fibonacciSphere, makeItem,
     makeCurveItem, buildPointCloudRecord, buildCurveRecord,
-    applyAudioReactivity,
+    applyAudioReactivity, recolorPointCloud, sphereColorKey,
 } from '../lib/audioScene';
 
 // Output resolutions for the POV video renderer. `custom` uses the width/height
@@ -327,15 +327,16 @@ function AudioVisualizer() {
     }, [applySelection]);
 
     const disposeRecord = useCallback((rec) => {
-        const scene = sceneRef.current;
+        if (!rec) return;
         const tc = transformControlsRef.current;
         if (tc && rec.transformTarget && tc.object === rec.transformTarget) {
             tc.detach();
             tc.visible = false;
             tc.enabled = false;
         }
-        if (rec.object3D && scene) {
-            scene.remove(rec.object3D);
+        if (rec.object3D) {
+            // Detach from wherever it actually hangs, not an assumed parent.
+            rec.object3D.parent?.remove(rec.object3D);
             rec.object3D.traverse?.((child) => {
                 if (child.geometry) child.geometry.dispose();
                 if (child.material) {
@@ -373,12 +374,15 @@ function AudioVisualizer() {
         const asset = ASSETS.find((a) => a.id === item.assetId);
         if (!asset) return;
 
-        sceneObjectsRef.current.set(item.id, { type: asset.type, reactive: item.reactive, loading: true });
+        // The placeholder's identity is the claim on this slot: only the load
+        // that set it may replace it.
+        const placeholder = { type: asset.type, reactive: item.reactive, loading: true };
+        sceneObjectsRef.current.set(item.id, placeholder);
         setIsLoading(true);
 
         try {
             let record;
-            const op = item.op || OBJECT_DEFAULTS;
+            let op = item.op || OBJECT_DEFAULTS;
             if (asset.type === 'sphere') {
                 const raw = fibonacciSphere(op.samples, op.radius, op.jitter);
                 record = buildPointCloudRecord(raw, op, 'sphere');
@@ -390,18 +394,21 @@ function AudioVisualizer() {
                     raw = await loadPLYFile(asset.path);
                     plyCacheRef.current.set(asset.path, raw);
                 }
+                if (sceneObjectsRef.current.get(item.id) !== placeholder) return; // removed while loading
+                // Parameters may have moved while the file was loading.
+                op = sceneItemsRef.current.find((i) => i.id === item.id)?.op || op;
                 record = buildPointCloudRecord(raw, op, 'ply');
             }
 
-            if (!sceneObjectsRef.current.has(item.id)) {
+            if (sceneObjectsRef.current.get(item.id) !== placeholder) {
                 disposeRecord(record); // removed while loading
                 return;
             }
 
             record.assetId = item.assetId;
             record.reactive = item.reactive;
-            record.op = item.op;
-            record.geomKey = GEOM_KEYS.map((k) => item.op[k]).join('|');
+            record.op = op;
+            record.geomKey = GEOM_KEYS.map((k) => op[k]).join('|');
             record.object3D.userData.itemId = item.id;
             record.transformTarget.userData.itemId = item.id;
             applyTransform(record);
@@ -410,7 +417,9 @@ function AudioVisualizer() {
             sceneObjectsRef.current.set(item.id, record);
         } catch (error) {
             console.error('Failed to load asset:', asset.id, error);
-            sceneObjectsRef.current.delete(item.id);
+            if (sceneObjectsRef.current.get(item.id) === placeholder) {
+                sceneObjectsRef.current.delete(item.id);
+            }
         } finally {
             setIsLoading(false);
         }
@@ -519,6 +528,9 @@ function AudioVisualizer() {
             if (rec.type !== 'glb' && geomKey !== rec.geomKey) {
                 rebuildSetRef.current.add(item.id);
                 needsRebuild = true;
+            } else if (rec.type === 'sphere' && sphereColorKey(item.op) !== rec.colorKey) {
+                // Colour only: rewrite the instance colours, no rebuild.
+                recolorPointCloud(rec, item.op);
             }
         });
 
@@ -1214,7 +1226,7 @@ function AudioVisualizer() {
             disabled = !selectedItem
                 || (def.sphereOnly && selType !== 'sphere')
                 || (def.cloudOnly && selType === 'glb');
-            value = selectedItem ? selectedItem.op[def.key] : OBJECT_DEFAULTS[def.key];
+            value = (selectedItem ? selectedItem.op[def.key] : undefined) ?? OBJECT_DEFAULTS[def.key];
         }
         const commit = scope === 'global' ? updateParam : updateObjectParam;
 
@@ -1487,7 +1499,8 @@ function AudioVisualizer() {
 
                     {/* Parameter groups (object groups filtered by the selected kind) */}
                     {PARAM_GROUPS.filter((group) => (
-                        group.scope === 'global' || group.kind === 'both' || group.kind === selKind
+                        (group.scope === 'global' || group.kind === 'both' || group.kind === selKind)
+                        && (!group.sphereOnly || selType === 'sphere')
                     )).map((group) => (
                         <div className={styles.av_section} key={`${group.title}-${group.kind || group.scope}`}>
                             <div className={styles.av_sectionTitle}>
