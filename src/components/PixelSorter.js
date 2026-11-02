@@ -2,6 +2,9 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Play, Pause, SlidersHorizontal, X, ImagePlus, Upload, Download, Film } from 'lucide-react';
 import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
 import VfxNumberField from './VfxNumberField';
+import { Mp4FrameReader, drainEncoders, nextTask } from '../lib/mp4Frames';
+import { buildPlan, applyPlanProgress, sortPixels } from '../lib/pixelSort';
+import { createSortPool } from '../lib/pixelSortPool';
 import styles from './vfx.module.css';
 
 // Live preview is processed at a capped width so sorting stays interactive;
@@ -44,199 +47,22 @@ const EXPORT_SCALES = [
     { id: 4, name: '4x' },
 ];
 
-// ---- Sorting engine --------------------------------------------------------
-
-// Fills `out` (Float32Array, one value per pixel, normalized 0..1) with the
-// chosen metric. Used both as the sort key and as the threshold measure.
-function computeMetric(data, n, mode, out) {
-    for (let i = 0, p = 0; i < n; i++, p += 4) {
-        const r = data[p];
-        const g = data[p + 1];
-        const b = data[p + 2];
-        let v;
-        if (mode === 'brightness') {
-            v = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-        } else if (mode === 'red') {
-            v = r / 255;
-        } else if (mode === 'green') {
-            v = g / 255;
-        } else if (mode === 'blue') {
-            v = b / 255;
-        } else {
-            const max = r > g ? (r > b ? r : b) : (g > b ? g : b);
-            const min = r < g ? (r < b ? r : b) : (g < b ? g : b);
-            if (mode === 'lightness') {
-                v = (max + min) / 510;
-            } else if (mode === 'saturation') {
-                const d = max - min;
-                const l2 = max + min; // 2 * lightness * 255
-                v = d === 0 ? 0 : d / (255 - Math.abs(l2 - 255));
-            } else { // hue
-                const d = max - min;
-                if (d === 0) {
-                    v = 0;
-                } else if (max === r) {
-                    v = (((g - b) / d + 6) % 6) / 6;
-                } else if (max === g) {
-                    v = ((b - r) / d + 2) / 6;
-                } else {
-                    v = ((r - g) / d + 4) / 6;
-                }
-            }
-        }
-        out[i] = v;
-    }
-}
-
-// Scans every row (or column) of the frame, finds runs of pixels whose
-// threshold metric falls inside [low, high], chops runs to the max segment
-// length, and computes each run's sorted order. Returns a "plan": a list of
-// { offset, stride, order } runs addressed into the flat pixel array, which
-// can then be applied fully (photos / video frames) or partially (the
-// animated photo export).
-function buildPlan(data, w, h, s) {
-    const n = w * h;
-    const keys = new Float32Array(n);
-    computeMetric(data, n, s.sortBy, keys);
-
-    let met = null;
-    if (s.thresholdMode !== 'none') {
-        if (s.thresholdMode === s.sortBy) {
-            met = keys;
-        } else {
-            met = new Float32Array(n);
-            computeMetric(data, n, s.thresholdMode, met);
-        }
-    }
-
-    const lo = Math.min(s.low, s.high) / 100;
-    const hi = Math.max(s.low, s.high) / 100;
-    const horizontal = s.direction === 'horizontal';
-    const lineCount = horizontal ? h : w;
-    const lineLen = horizontal ? w : h;
-    const stride = horizontal ? 1 : w;
-    const maxLen = Math.max(0, Math.round(s.segmentMaxLength));
-    const runs = [];
-
-    const flushRun = (lineBase, start, totalLen) => {
-        let s0 = start;
-        let left = totalLen;
-        while (left > 0) {
-            const len = maxLen > 0 ? Math.min(maxLen, left) : left;
-            if (len >= 2) {
-                const offset = lineBase + s0 * stride;
-                const order = new Int32Array(len);
-                for (let i = 0; i < len; i++) order[i] = i;
-                order.sort((a, b) => keys[offset + a * stride] - keys[offset + b * stride]);
-                if (s.reverse) order.reverse();
-                runs.push({ offset, stride, order });
-            }
-            s0 += len;
-            left -= len;
-        }
-    };
-
-    for (let li = 0; li < lineCount; li++) {
-        const lineBase = horizontal ? li * w : li;
-        let runStart = -1;
-        for (let i = 0; i < lineLen; i++) {
-            const ok = met === null || (() => {
-                const m = met[lineBase + i * stride];
-                return m >= lo && m <= hi;
-            })();
-            if (ok) {
-                if (runStart < 0) runStart = i;
-            } else if (runStart >= 0) {
-                flushRun(lineBase, runStart, i - runStart);
-                runStart = -1;
-            }
-        }
-        if (runStart >= 0) flushRun(lineBase, runStart, lineLen - runStart);
-    }
-
-    return runs;
-}
-
-// Writes one sorted run (tmp holds the run's pixel values in final order)
-// into dst, offsetting the red channel backward and blue channel forward
-// along the run by `shift` px for a chromatic glitch.
-function writeRun(dst32, tmp, offset, stride, len, shift) {
-    if (shift <= 0) {
-        for (let j = 0; j < len; j++) dst32[offset + j * stride] = tmp[j];
-        return;
-    }
-    for (let j = 0; j < len; j++) {
-        let ri = j - shift;
-        if (ri < 0) ri = 0;
-        let bi = j + shift;
-        if (bi >= len) bi = len - 1;
-        dst32[offset + j * stride] = (tmp[j] & 0xff00ff00)
-            | (tmp[ri] & 0x000000ff)
-            | (tmp[bi] & 0x00ff0000);
-    }
-}
-
-// Fully sorted result: dst becomes src with every planned run reordered.
-function applyPlan(src32, dst32, runs, rgbShift) {
-    dst32.set(src32);
-    const shift = Math.max(0, Math.round(rgbShift));
-    let tmp = null;
-    for (const run of runs) {
-        const { offset, stride, order } = run;
-        const len = order.length;
-        if (!tmp || tmp.length < len) tmp = new Uint32Array(len);
-        for (let j = 0; j < len; j++) tmp[j] = src32[offset + order[j] * stride];
-        writeRun(dst32, tmp, offset, stride, len, shift);
-    }
-}
-
-// Partially sorted result for the animated photo export: every pixel travels
-// from its original position toward its sorted position, `progress` (0..1,
-// smoothstepped) of the way there. RGB shift ramps in with the same curve.
-function applyPlanProgress(src32, dst32, runs, progress, rgbShift) {
-    dst32.set(src32);
-    const p = progress < 0 ? 0 : (progress > 1 ? 1 : progress);
-    const e = p * p * (3 - 2 * p);
-    const shift = Math.round(Math.max(0, rgbShift) * e);
-    let inv = null;
-    let scratch = null;
-    for (const run of runs) {
-        const { offset, stride, order } = run;
-        const len = order.length;
-        if (!inv || inv.length < len) {
-            inv = new Int32Array(len);
-            scratch = new Uint32Array(len);
-        }
-        for (let j = 0; j < len; j++) {
-            inv[order[j]] = j;
-            scratch[j] = src32[offset + j * stride];
-        }
-        for (let i = 0; i < len; i++) {
-            const pos = i + Math.round((inv[i] - i) * e);
-            scratch[pos] = src32[offset + i * stride];
-        }
-        writeRun(dst32, scratch, offset, stride, len, shift);
-    }
-}
-
 // Draws `source` (image or video) into ctx at w x h and pixel-sorts it in
 // place. `progress` < 1 renders a partially-sorted frame (photo animation).
 function renderSortedInto(ctx, source, w, h, s, progress) {
     ctx.drawImage(source, 0, 0, w, h);
+    sortCanvas(ctx, w, h, s, progress);
+}
+
+// Pixel-sorts whatever is already drawn in ctx.
+function sortCanvas(ctx, w, h, s, progress) {
     let img;
     try {
         img = ctx.getImageData(0, 0, w, h);
     } catch (e) {
         return; // tainted / not yet decodable frame
     }
-    const runs = buildPlan(img.data, w, h, s);
-    const src32 = new Uint32Array(img.data.buffer.slice(0));
-    const dst32 = new Uint32Array(img.data.buffer);
-    if (progress === undefined || progress >= 1) {
-        applyPlan(src32, dst32, runs, s.rgbShift);
-    } else {
-        applyPlanProgress(src32, dst32, runs, progress, s.rgbShift);
-    }
+    sortPixels(img.data, w, h, s, progress);
     ctx.putImageData(img, 0, 0);
 }
 
@@ -321,6 +147,8 @@ function PixelSorter() {
     const imageRef = useRef(null);
     const fileInputRef = useRef(null);
     const mediaUrlRef = useRef(null);
+    // The uploaded file itself, which the video export decodes directly.
+    const fileRef = useRef(null);
     const settingsRef = useRef(settings);
     const settingsVersionRef = useRef(0);
     const exportingRef = useRef(false);
@@ -345,6 +173,7 @@ function PixelSorter() {
         if (mediaUrlRef.current) URL.revokeObjectURL(mediaUrlRef.current);
         const url = URL.createObjectURL(file);
         mediaUrlRef.current = url;
+        fileRef.current = file;
         setMediaUrl(url);
         setMediaType(isImage ? 'image' : 'video');
         setFileName(file.name);
@@ -517,6 +346,7 @@ function PixelSorter() {
         const totalFrames = animFrames + holdFrames;
         const frameUs = Math.round(1_000_000 / fps);
         let completed = false;
+        let lastYield = 0;
 
         try {
             for (let i = 0; i < totalFrames; i++) {
@@ -537,15 +367,17 @@ function PixelSorter() {
                 encoder.encode(vf, { keyFrame: i % (fps * 2) === 0 });
                 vf.close();
 
-                while (encoder.encodeQueueSize > 8 && !state.error) {
-                    // eslint-disable-next-line no-await-in-loop
-                    await new Promise((r) => setTimeout(r, 5));
-                }
+                // eslint-disable-next-line no-await-in-loop
+                await drainEncoders([encoder], 8, () => !!state.error);
 
-                if (i % 3 === 0) {
+                // A few times a second: every state update re-renders the
+                // tool, and the yield lets the progress paint and Cancel work.
+                const now = performance.now();
+                if (now - lastYield > 200) {
+                    lastYield = now;
                     setExportProgress((i + 1) / totalFrames);
                     // eslint-disable-next-line no-await-in-loop
-                    await new Promise((r) => setTimeout(r, 0)); // keep the UI alive
+                    await nextTask();
                 }
             }
 
@@ -593,10 +425,13 @@ function PixelSorter() {
     }, [animDuration, animFps, fileName]);
 
     // ---- Video export -------------------------------------------------------
-    // Frame-accurate MP4 export: seeks the video one frame at a time, sorts
+    // Frame-accurate MP4 export: walks the video one frame at a time, sorts
     // every frame fully at the export resolution (no preview cap, nothing
     // dropped) and encodes with WebCodecs into an mp4 — same pipeline as the
-    // Blob Tracker.
+    // Blob Tracker. Frames come from decoding the file in order
+    // (lib/mp4Frames) rather than seeking the <video> to each one, which
+    // re-decodes from a keyframe every time; seeking is the fallback for a
+    // file the decoder cannot read.
     const exportVideo = useCallback(async () => {
         const video = videoRef.current;
         if (!video || !video.videoWidth || exportingRef.current) return;
@@ -643,6 +478,15 @@ function PixelSorter() {
         video.pause();
         setIsPlaying(false);
 
+        // Only trusted if it agrees with the element about the picture's
+        // shape, which also catches a rotation it read differently.
+        let reader = fileRef.current ? await Mp4FrameReader.open(fileRef.current) : null;
+        if (reader && Math.abs(reader.width / reader.height
+            - video.videoWidth / video.videoHeight) > 0.01) {
+            reader.close();
+            reader = null;
+        }
+
         const seekTo = (t) => new Promise((resolve) => {
             if (Math.abs(video.currentTime - t) < 1 / 240 && video.readyState >= 2) {
                 resolve();
@@ -662,6 +506,46 @@ function PixelSorter() {
         const totalFrames = Math.max(1, Math.round(dur * fps));
         const frameUs = Math.round(1_000_000 / fps);
         let completed = false;
+        let lastYield = 0;
+
+        // Sorting is the expensive part and every frame stands alone, so
+        // frames are handed to a pool of workers as they are read and
+        // encoded in order as they come back. One spare core is left for
+        // reading, decoding and encoding.
+        const cores = navigator.hardwareConcurrency || 4;
+        const pool = createSortPool(Math.max(1, Math.min(8, cores - 1)));
+        const inFlight = [];
+
+        // Encode one sorted frame, in output order.
+        const emit = async (i, buffer) => {
+            const now = performance.now();
+            const report = now - lastYield > 200;
+            if (report && pctx && preview.width && preview.height) {
+                ctx.putImageData(new ImageData(new Uint8ClampedArray(buffer), w, h), 0, 0);
+                pctx.drawImage(canvas, 0, 0, preview.width, preview.height);
+            }
+
+            const out = new window.VideoFrame(new Uint8Array(buffer), {
+                format: 'RGBA',
+                codedWidth: w,
+                codedHeight: h,
+                timestamp: i * frameUs,
+                duration: frameUs,
+            });
+            encoder.encode(out, { keyFrame: i % (fps * 2) === 0 });
+            out.close();
+
+            // Backpressure: don't let the encode queue run away.
+            await drainEncoders([encoder], 8, () => !!state.error);
+
+            // A few times a second: every state update re-renders the tool,
+            // and the yield lets the progress paint and Cancel work.
+            if (report) {
+                lastYield = now;
+                setExportProgress((i + 1) / totalFrames);
+                await nextTask();
+            }
+        };
 
         try {
             for (let i = 0; i < totalFrames; i++) {
@@ -669,28 +553,40 @@ function PixelSorter() {
 
                 const t = Math.min(i / fps, Math.max(0, dur - 0.001));
                 // eslint-disable-next-line no-await-in-loop
-                await seekTo(t);
-
-                renderSortedInto(ctx, video, w, h, settingsRef.current);
-
-                if (pctx && preview.width && preview.height && i % 2 === 0) {
-                    pctx.drawImage(canvas, 0, 0, preview.width, preview.height);
-                }
-
-                const vf = new window.VideoFrame(canvas, {
-                    timestamp: i * frameUs,
-                    duration: frameUs,
-                });
-                encoder.encode(vf, { keyFrame: i % (fps * 2) === 0 });
-                vf.close();
-
-                // Backpressure: don't let the encode queue run away.
-                while (encoder.encodeQueueSize > 8 && !state.error) {
+                const vf = reader ? await reader.frameAt(t) : null;
+                if (vf) {
+                    reader.draw(ctx, vf, w, h);
+                } else {
                     // eslint-disable-next-line no-await-in-loop
-                    await new Promise((r) => setTimeout(r, 5));
+                    await seekTo(t);
+                    ctx.drawImage(video, 0, 0, w, h);
                 }
+                const px = ctx.getImageData(0, 0, w, h).data;
+                const s = { ...settingsRef.current };
 
-                if (i % 3 === 0) setExportProgress((i + 1) / totalFrames);
+                if (pool) {
+                    const done = pool.run(px.buffer, w, h, s);
+                    // Jobs still queued when an export is cancelled are
+                    // rejected by close(); nobody is waiting on those.
+                    done.catch(() => {});
+                    inFlight.push({ i, done });
+                    // Enough queued to keep every worker busy; take the
+                    // oldest back before reading further ahead.
+                    if (inFlight.length > pool.size) {
+                        const next = inFlight.shift();
+                        // eslint-disable-next-line no-await-in-loop
+                        await emit(next.i, await next.done);
+                    }
+                } else {
+                    sortPixels(px, w, h, s);
+                    // eslint-disable-next-line no-await-in-loop
+                    await emit(i, px.buffer);
+                }
+            }
+            while (inFlight.length && !exportCanceledRef.current && !state.error) {
+                const next = inFlight.shift();
+                // eslint-disable-next-line no-await-in-loop
+                await emit(next.i, await next.done);
             }
 
             if (!exportCanceledRef.current && !state.error) {
@@ -702,6 +598,8 @@ function PixelSorter() {
         } catch (e) {
             state.error = e;
         } finally {
+            reader?.close();
+            pool?.close();
             try { encoder.close(); } catch (e) { /* already closed */ }
             video.loop = prevLoop;
             try { video.currentTime = prevTime; } catch (e) { /* ignore */ }

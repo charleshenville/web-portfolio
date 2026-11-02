@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Play, Pause, SlidersHorizontal, X, Film, Upload, Download } from 'lucide-react';
 import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
 import VfxNumberField from './VfxNumberField';
+import { Mp4FrameReader, drainEncoders, nextTask } from '../lib/mp4Frames';
 import styles from './vfx.module.css';
 
 // Width (px) of the downscaled frame the detector runs on. Small enough to
@@ -336,6 +337,8 @@ function BlobTracker() {
     const videoRef = useRef(null);
     const overlayRef = useRef(null);
     const fileInputRef = useRef(null);
+    // The uploaded file itself, which the export decodes directly.
+    const fileRef = useRef(null);
     const settingsRef = useRef(settings);
     const tracksRef = useRef([]);
     const connStateRef = useRef({ pairs: [], lastShuffle: 0 });
@@ -355,6 +358,7 @@ function BlobTracker() {
             if (prev) URL.revokeObjectURL(prev);
             return URL.createObjectURL(file);
         });
+        fileRef.current = file;
         tracksRef.current = [];
         connStateRef.current = { pairs: [], lastShuffle: 0 };
         nextIdRef.current = 1;
@@ -430,12 +434,16 @@ function BlobTracker() {
     };
 
     // ---- Export ----------------------------------------------------------
-    // Frame-accurate MP4 export: seeks the video one frame at a time, runs
+    // Frame-accurate MP4 export: walks the video one frame at a time, runs
     // the exact same detection + overlay pipeline as the live viewer, and
     // encodes each composited frame with WebCodecs (H.264, high bitrate) into
     // an mp4. No frames are dropped and nothing depends on realtime playback,
     // so the result is neither laggy nor lossy. At upscaled resolutions the
     // overlay is drawn after the upscale so boxes and labels stay sharp.
+    //
+    // Frames come from decoding the file in order (lib/mp4Frames) rather than
+    // seeking the <video> to each one, which re-decodes from a keyframe every
+    // time; seeking is the fallback for a file the decoder cannot read.
     const startExport = useCallback(async () => {
         const video = videoRef.current;
         if (!video || !video.videoWidth || exportingRef.current) return;
@@ -496,6 +504,15 @@ function BlobTracker() {
         video.pause();
         setIsPlaying(false);
 
+        // Only trusted if it agrees with the element about the picture's
+        // shape, which also catches a rotation it read differently.
+        let reader = fileRef.current ? await Mp4FrameReader.open(fileRef.current) : null;
+        if (reader && Math.abs(reader.width / reader.height
+            - video.videoWidth / video.videoHeight) > 0.01) {
+            reader.close();
+            reader = null;
+        }
+
         const seekTo = (t) => new Promise((resolve) => {
             if (Math.abs(video.currentTime - t) < 1 / 240 && video.readyState >= 2) {
                 resolve();
@@ -539,6 +556,8 @@ function BlobTracker() {
         const totalFrames = Math.max(1, Math.round(duration * fps));
         const frameUs = Math.round(1_000_000 / fps);
         let completed = false;
+        let lastYield = 0;
+        const failed = () => !!encodeFailed;
 
         try {
             for (let i = 0; i < totalFrames; i++) {
@@ -546,13 +565,21 @@ function BlobTracker() {
 
                 const t = Math.min(i / fps, Math.max(0, duration - 0.001));
                 // eslint-disable-next-line no-await-in-loop
-                await seekTo(t);
+                const vf = reader ? await reader.frameAt(t) : null;
+                if (!vf) {
+                    // eslint-disable-next-line no-await-in-loop
+                    await seekTo(t);
+                }
+                const paint = (c, cw, ch) => {
+                    if (vf) reader.draw(c, vf, cw, ch);
+                    else c.drawImage(video, 0, 0, cw, ch);
+                };
 
                 const aw = ANALYSIS_WIDTH;
                 const ah = Math.max(2, Math.round((aw * video.videoHeight) / video.videoWidth));
                 if (proc.width !== aw || proc.height !== ah) { proc.width = aw; proc.height = ah; }
 
-                pctx.drawImage(video, 0, 0, aw, ah);
+                paint(pctx, aw, ah);
                 const frame = pctx.getImageData(0, 0, aw, ah);
 
                 const s = settingsRef.current;
@@ -562,29 +589,37 @@ function BlobTracker() {
 
                 // Upscale the footage first, then render the overlay on top
                 // at the export resolution so it stays sharp.
-                ctx.drawImage(video, 0, 0, w, h);
+                paint(ctx, w, h);
                 drawOverlay(ctx, w, h, aw, ah, tracks, connState.pairs, s);
 
-                // Mirror onto the on-screen overlay so the export is visible.
-                if (octx && overlay.width && overlay.height) {
+                // Mirror onto the on-screen overlay so the export is visible,
+                // a few times a second rather than every frame.
+                const now = performance.now();
+                const report = now - lastYield > 200;
+                if (report && octx && overlay.width && overlay.height) {
                     octx.clearRect(0, 0, overlay.width, overlay.height);
                     drawOverlay(octx, overlay.width, overlay.height, aw, ah, tracks, connState.pairs, s);
                 }
 
-                const vf = new window.VideoFrame(canvas, {
+                const out = new window.VideoFrame(canvas, {
                     timestamp: i * frameUs,
                     duration: frameUs,
                 });
-                encoder.encode(vf, { keyFrame: i % (fps * 2) === 0 });
-                vf.close();
+                encoder.encode(out, { keyFrame: i % (fps * 2) === 0 });
+                out.close();
 
                 // Backpressure: don't let the encode queue run away.
-                while (encoder.encodeQueueSize > 8 && !encodeFailed) {
-                    // eslint-disable-next-line no-await-in-loop
-                    await new Promise((r) => setTimeout(r, 5));
-                }
+                // eslint-disable-next-line no-await-in-loop
+                await drainEncoders([encoder], 8, failed);
 
-                if (i % 3 === 0) setExportProgress((i + 1) / totalFrames);
+                // Every state update re-renders the tool, and the yield lets
+                // the progress paint and Cancel work.
+                if (report) {
+                    lastYield = now;
+                    setExportProgress((i + 1) / totalFrames);
+                    // eslint-disable-next-line no-await-in-loop
+                    await nextTask();
+                }
             }
 
             if (!exportCanceledRef.current && !encodeFailed) {
@@ -596,6 +631,7 @@ function BlobTracker() {
         } catch (e) {
             encodeFailed = e;
         } finally {
+            reader?.close();
             try { encoder.close(); } catch (e) { /* already closed */ }
             video.loop = prevLoop;
             try { video.currentTime = prevTime; } catch (e) { /* ignore */ }

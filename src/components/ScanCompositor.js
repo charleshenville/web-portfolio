@@ -23,7 +23,7 @@ import {
     disposeRecord, loadPlyPoints, computeSpectrogram, bandLevel,
     envelopeFollow, applySceneOpacity,
 } from '../lib/audioScene';
-import { Mp4FrameReader } from '../lib/mp4Frames';
+import { Mp4FrameReader, drainEncoders } from '../lib/mp4Frames';
 import styles from './vfx.module.css';
 
 // Camera poses come from backend/vidtrack: a pose is solved per frame, and
@@ -1969,23 +1969,6 @@ function ScanCompositor() {
             }
         };
 
-        // Backpressure without a polling timer: wait for the encoders to take
-        // a frame, which also keeps an export in a background tab from being
-        // throttled to one timer tick a second.
-        const encodersBusy = () => (encoder.encodeQueueSize > 8
-            || (audioEncoder && audioEncoder.encodeQueueSize > 40)) && !encodeFailed;
-        const waitForEncoders = () => new Promise((resolve) => {
-            let timer = null;
-            const targets = [encoder, audioEncoder].filter(Boolean);
-            const done = () => {
-                clearTimeout(timer);
-                targets.forEach((e) => e.removeEventListener?.('dequeue', done));
-                resolve();
-            };
-            targets.forEach((e) => e.addEventListener?.('dequeue', done));
-            timer = setTimeout(done, 20);
-        });
-
         // The decoder path, if this browser and file allow it. Its pictures go
         // onto their own texture for the length of the export; the element's
         // textures are put back afterwards.
@@ -2051,6 +2034,7 @@ function ScanCompositor() {
         // and texture setup and would make the early estimate wildly long.
         let started = 0;
         let lastReport = 0;
+        const failed = () => !!encodeFailed;
 
         try {
             for (let i = 0; i < totalFrames; i++) {
@@ -2116,10 +2100,8 @@ function ScanCompositor() {
 
                 pumpAudio(Math.round(((i + 1) / fps) * (pcm ? pcm.sampleRate : 0)));
 
-                while (encodersBusy()) {
-                    // eslint-disable-next-line no-await-in-loop
-                    await waitForEncoders();
-                }
+                // eslint-disable-next-line no-await-in-loop
+                await drainEncoders([encoder, audioEncoder], [8, 40], failed);
 
                 // Every state update re-renders the whole tool, so the
                 // progress readout is kept to a few times a second.
