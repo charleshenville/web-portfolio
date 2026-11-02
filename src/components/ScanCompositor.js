@@ -98,6 +98,9 @@ const DEFAULT_RIG = {
     offsetX: 0, offsetY: 0, offsetZ: 0,
     rotX: 0, rotY: 0, rotZ: 0,
     scale: 1,
+    // Pushes the overlays off the surface so the mesh does not clip through
+    // them. The mesh itself stays at 1, so the scan keeps its true size.
+    overscale: 1,
 };
 
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
@@ -450,6 +453,13 @@ function ScanCompositor() {
                 0, Math.max(1, Math.floor(total * clamp01(L.cloudDensity))),
             );
         }
+
+        // Swell the overlays slightly off the surface. Scaling happens about
+        // the model root, which a scan is centred on, so points and edges lift
+        // away from the mesh evenly instead of sliding to one side.
+        const over = rigRef.current.overscale ?? 1;
+        if (t.cloud) t.cloud.scale.setScalar(over);
+        if (t.wire) t.wire.scale.setScalar(over);
 
         t.renderer.setClearColor(new THREE.Color(L.bgColor), 1);
         t.needsRender = true;
@@ -983,8 +993,9 @@ function ScanCompositor() {
         );
         t.modelRoot.scale.setScalar(rig.scale);
         if (t.controls) t.controls.enabled = rig.cameraMode === 'free';
+        applyLayers(layersRef.current);
         t.needsRender = true;
-    }, [rig]);
+    }, [rig, applyLayers]);
 
     // ---- Render loop -----------------------------------------------------
 
@@ -2114,6 +2125,7 @@ function ScanCompositor() {
                         {slider('Rotate Y', 'rotY', -15, 15, 0.1, rig, setRigKey)}
                         {slider('Rotate Z', 'rotZ', -15, 15, 0.1, rig, setRigKey)}
                         {slider('Scale', 'scale', 0.8, 1.25, 0.001, rig, setRigKey)}
+                        {slider('Swell', 'overscale', 1, 1.08, 0.0005, rig, setRigKey)}
                         <button
                             type="button"
                             className={styles.vfx_select}

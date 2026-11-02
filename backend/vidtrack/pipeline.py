@@ -19,6 +19,7 @@ Usage:
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -38,17 +39,35 @@ def run(cmd: list, label: str) -> None:
     """Run a subprocess, echoing the command, and stop the pipeline if it fails."""
     print(f"\n=== {label} ===")
     print("  $ " + " ".join(str(c) for c in cmd))
-    subprocess.run([str(c) for c in cmd], check=True)
+    # Line-buffer child stdout so long stages (solve) show up in nohup logs.
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    subprocess.run([str(c) for c in cmd], check=True, env=env)
 
 
 def probe_fps(video: Path) -> float:
-    """Read the average frame rate out of a video's first video stream."""
+    """Read the average frame rate out of a video's first video stream.
+
+    Prefer avg_frame_rate (accounts for VFR) and fall back to r_frame_rate.
+    ffprobe's csv muxer appends a trailing comma when a stream carries side
+    data — common on 59.94 fps phone HEVC — which used to crash float().
+    """
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=r_frame_rate", "-of", "csv=p=0", str(video)],
-        check=True, capture_output=True, text=True).stdout.strip()
-    num, _, den = out.partition("/")
-    return float(num) / float(den or 1)
+         "-show_entries", "stream=avg_frame_rate,r_frame_rate",
+         "-of", "default=nokey=1:noprint_wrappers=1", str(video)],
+        check=True, capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        token = line.strip().rstrip(",")
+        if not token or token in ("0/0", "N/A"):
+            continue
+        num, _, den = token.partition("/")
+        try:
+            fps = float(num) / float(den or 1)
+        except (ValueError, ZeroDivisionError):
+            continue
+        if fps > 0:
+            return fps
+    return 30.0
 
 
 def stage_frames(name: str, video: Path) -> None:
