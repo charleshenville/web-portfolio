@@ -14,5 +14,9 @@
     {
         "id": "studio",
         "label": "Studio"
+    },
+    {
+        "id": "flower",
+        "label": "Flower"
     }
 ]
