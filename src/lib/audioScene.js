@@ -77,6 +77,13 @@ export const OBJECT_DEFAULTS = {
     jitter: 0.01,
     pointSize: 0.005,
     maxPoints: 150000,
+    // Sphere colouring. Each dot blends from colour A to colour B by where it
+    // sits on the sphere: its depth through the jittered shell, its height, or
+    // a mix of the two. Changing these recolours in place, without a rebuild.
+    sphereColorA: '#e87d7d',
+    sphereColorB: '#e8c27d',
+    sphereGradient: 0,
+    sphereHueShift: 0,
     // Audio reactivity
     reactivity: 0.5,
     scatter: 0.002,
@@ -123,6 +130,9 @@ export const CURVE_DEFAULTS = {
 // than just re-parameterised.
 export const GEOM_KEYS = ['samples', 'radius', 'jitter', 'pointSize', 'maxPoints'];
 export const CURVE_GEOM_KEYS = ['dotCount', 'dotSize'];
+// Changing any of these only rewrites the instance colours.
+export const SPHERE_COLOR_KEYS = ['sphereColorA', 'sphereColorB', 'sphereGradient', 'sphereHueShift'];
+export const sphereColorKey = (op) => SPHERE_COLOR_KEYS.map((k) => op[k]).join('|');
 
 // Menu layout. `scope` is 'object' (selected item) or 'global' (scene).
 // Object groups carry a `kind`: 'asset', 'curve', or 'both'. A host shows
@@ -139,6 +149,18 @@ export const PARAM_GROUPS = [
             { key: 'jitter', label: 'Jitter', min: 0, max: 1, step: 0.001, sphereOnly: true },
             { key: 'pointSize', label: 'Dot Size', min: 0.001, max: 0.05, step: 0.001, cloudOnly: true },
             { key: 'maxPoints', label: 'Max Dots', min: 1000, max: 150000, step: 1000, cloudOnly: true },
+        ],
+    },
+    {
+        title: 'Sphere Colour',
+        scope: 'object',
+        kind: 'asset',
+        sphereOnly: true,
+        params: [
+            { key: 'sphereColorA', label: 'Colour A', type: 'color', sphereOnly: true },
+            { key: 'sphereColorB', label: 'Colour B', type: 'color', sphereOnly: true },
+            { key: 'sphereGradient', label: 'Depth→Height', min: 0, max: 1, step: 0.01, sphereOnly: true },
+            { key: 'sphereHueShift', label: 'Hue Shift', min: 0, max: 1, step: 0.01, sphereOnly: true },
         ],
     },
     {
@@ -311,6 +333,62 @@ export function loadPlyPoints(path, cache) {
 // ---- Builders -----------------------------------------------------------
 
 /**
+ * Write generated colours for every instance that has no colour of its own.
+ *
+ * `t` runs 0..1 across the sphere and picks the blend between colour A and B:
+ * at `sphereGradient` 0 it is the dot's depth through the jittered shell
+ * (inner = A, outer = B), at 1 its height (bottom = A, top = B). The hue
+ * shift then rotates the whole result around the colour wheel.
+ *
+ * @param {Float32Array} positions xyz per instance, in the record's local space
+ * @param {Float32Array} out rgb per instance, written in place
+ * @param {object} op per-object parameters
+ */
+export function writeSphereColors(positions, out, op) {
+    const n = Math.min(positions.length, out.length) / 3;
+    const radius = op.radius || 1;
+    const jitter = op.jitter || 0;
+    const g = Math.max(0, Math.min(1, op.sphereGradient ?? 0));
+    const shift = op.sphereHueShift ?? 0;
+    const colA = new THREE.Color(op.sphereColorA ?? OBJECT_DEFAULTS.sphereColorA);
+    const colB = new THREE.Color(op.sphereColorB ?? OBJECT_DEFAULTS.sphereColorB);
+    const scratch = new THREE.Color();
+    const hsl = { h: 0, s: 0, l: 0 };
+    for (let i = 0; i < n; i++) {
+        const x = positions[i * 3], y = positions[i * 3 + 1], z = positions[i * 3 + 2];
+        // The jitter displaces each axis by up to half its amount, so the
+        // shell is roughly radius * (1 +- jitter / 2) thick.
+        const depth = jitter > 1e-6
+            ? (getR(x, y, z) / radius - 1) / jitter + 0.5
+            : 0.5;
+        const height = y / radius * 0.5 + 0.5;
+        let t = depth + (height - depth) * g;
+        t = t < 0 ? 0 : (t > 1 ? 1 : t);
+        scratch.copy(colA).lerp(colB, t);
+        if (shift) {
+            scratch.getHSL(hsl);
+            scratch.setHSL((hsl.h + shift) % 1, hsl.s, hsl.l);
+        }
+        out[i * 3] = scratch.r;
+        out[i * 3 + 1] = scratch.g;
+        out[i * 3 + 2] = scratch.b;
+    }
+}
+
+/**
+ * Recolour a point-cloud record whose dots carry no colour of their own (the
+ * generated sphere), after its colour parameters change. No-op otherwise.
+ */
+export function recolorPointCloud(record, op) {
+    if (!record || !record.instancedMesh || record.hasOriginalColors) return;
+    const attr = record.instancedMesh.instanceColor;
+    if (!attr) return;
+    writeSphereColors(record.basePositions, attr.array, op);
+    attr.needsUpdate = true;
+    record.colorKey = sphereColorKey(op);
+}
+
+/**
  * Build an InstancedMesh of tetrahedra, one per point.
  *
  * @param {Array} rawPoints points with x/y/z and optional color
@@ -348,18 +426,16 @@ export function buildPointCloudRecord(rawPoints, op, type) {
 
         if (p.color) {
             scratch.setRGB(p.color.r, p.color.g, p.color.b);
-        } else {
-            const r = getR(p.x, p.y, p.z);
-            const hue = (r - (op.radius - op.jitter / 2)) / op.jitter / 100;
-            scratch.setHSL(hue, 0.7, 0.7);
+            colors[i * 3] = scratch.r;
+            colors[i * 3 + 1] = scratch.g;
+            colors[i * 3 + 2] = scratch.b;
         }
-        colors[i * 3] = scratch.r;
-        colors[i * 3 + 1] = scratch.g;
-        colors[i * 3 + 2] = scratch.b;
 
         if (p.x < min.x) min.x = p.x; if (p.y < min.y) min.y = p.y; if (p.z < min.z) min.z = p.z;
         if (p.x > max.x) max.x = p.x; if (p.y > max.y) max.y = p.y; if (p.z > max.z) max.z = p.z;
     }
+
+    if (!hasOriginalColors) writeSphereColors(basePositions, colors, op);
 
     mesh.instanceMatrix.needsUpdate = true;
     mesh.instanceColor = new THREE.InstancedBufferAttribute(colors, 3);
@@ -382,6 +458,7 @@ export function buildPointCloudRecord(rawPoints, op, type) {
         count,
         basePositions,
         hasOriginalColors,
+        colorKey: sphereColorKey(op),
         localBox,
         dirs: null,
         dists: null,
