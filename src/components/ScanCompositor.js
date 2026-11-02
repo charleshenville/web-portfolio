@@ -7,6 +7,9 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
 import VfxNumberField from './VfxNumberField';
 import useMediaQuery from '../lib/useMediaQuery';
@@ -14,7 +17,8 @@ import {
     ASSETS, CURVES, MUSIC_ASSETS, PARAM_GROUPS, GEOM_KEYS, CURVE_GEOM_KEYS,
     fibonacciSphere, makeItem, makeCurveItem, buildPointCloudRecord,
     buildCurveRecord, applyAudioReactivity, applyCloudReactivity,
-    applyRecordTransform, disposeRecord, loadPlyPoints, computeSpectrogram,
+    applyWireReactivity, buildWireTopology, applyRecordTransform,
+    disposeRecord, loadPlyPoints, computeSpectrogram,
 } from '../lib/audioScene';
 import styles from './vfx.module.css';
 
@@ -30,6 +34,14 @@ const SHADING = [
     { id: 'matte', name: 'Matte' },
     { id: 'shaded', name: 'Shaded' },
     { id: 'normal', name: 'Normal' },
+];
+
+// Face budgets the pipeline writes per take. Picking one is a look, not a
+// performance setting - a scan drawn at full density is a solid fill.
+const WIRE_LEVELS = [
+    { id: 'coarse', name: 'Coarse' },
+    { id: 'medium', name: 'Medium' },
+    { id: 'fine', name: 'Fine' },
 ];
 
 const EXPORT_SCALES = [
@@ -72,6 +84,11 @@ const DEFAULT_LAYERS = {
     wireOn: false,
     wireColor: '#e8c56a',
     wireOpacity: 0.5,
+    wireLevel: 'medium',
+    // As a fraction of frame height, so the preview and a 1440p export show
+    // the same weight of line rather than the same number of pixels.
+    wireThickness: 0.0015,
+    wireReact: 0,
 };
 
 // Kept out of presets: these describe the solve, not the look, so a cut should
@@ -397,8 +414,16 @@ function ScanCompositor() {
 
         if (t.wire) {
             t.wire.visible = L.wireOn;
-            t.wire.material.color.set(L.wireColor);
-            t.wire.material.opacity = L.wireOpacity;
+            const m = t.wire.material;
+            m.color.set(L.wireColor);
+            m.opacity = L.wireOpacity;
+            // Fat lines need the draw size to turn a pixel width into clip
+            // space, and the width itself is a fraction of frame height so the
+            // preview and a full-resolution export match.
+            const size = t.renderer.getDrawingBufferSize(new THREE.Vector2());
+            m.resolution.set(size.x, size.y);
+            m.linewidth = Math.max(0.5, L.wireThickness * size.y);
+            m.needsUpdate = true;
         }
 
         if (t.cloud) {
@@ -557,6 +582,80 @@ function ScanCompositor() {
         });
     }, [sceneItems]);
 
+    // ---- Wireframe -------------------------------------------------------
+    // Its own layer, loaded per resolution, because the useful density of a
+    // wireframe is a look rather than a constant. Drawn as fat lines
+    // (LineSegments2) since WebGL ignores lineWidth on ordinary LineSegments,
+    // which is why thickness could not be configured before.
+    useEffect(() => {
+        const t = three.current;
+        if (!clip || !t.modelRoot) return undefined;
+        if (!layers.wireOn && !t.wire) return undefined;
+
+        let alive = true;
+        const level = layers.wireLevel;
+        const url = `${process.env.PUBLIC_URL}/mv/${clip.id}/${clip.id}_wire_${level}.glb`;
+
+        new GLTFLoader().loadAsync(url)
+            .then((gltf) => {
+                if (!alive) return;
+                let src = null;
+                gltf.scene.updateMatrixWorld(true);
+                gltf.scene.traverse((o) => { if (!src && o.isMesh) src = o; });
+                if (!src) throw new Error('no mesh in wireframe GLB');
+
+                const geo = src.geometry.clone();
+                geo.applyMatrix4(src.matrixWorld);
+                const topo = buildWireTopology(geo);
+                geo.dispose();
+
+                // Two endpoints per segment, laid out as the interleaved
+                // buffer LineSegmentsGeometry expects.
+                const flat = new Float32Array((topo.edges.length / 2) * 6);
+                for (let i = 0; i < topo.edges.length / 2; i++) {
+                    const a = topo.edges[i * 2] * 3;
+                    const b = topo.edges[i * 2 + 1] * 3;
+                    flat[i * 6] = topo.positions[a];
+                    flat[i * 6 + 1] = topo.positions[a + 1];
+                    flat[i * 6 + 2] = topo.positions[a + 2];
+                    flat[i * 6 + 3] = topo.positions[b];
+                    flat[i * 6 + 4] = topo.positions[b + 1];
+                    flat[i * 6 + 5] = topo.positions[b + 2];
+                }
+
+                if (t.wire) {
+                    t.modelRoot.remove(t.wire);
+                    t.wire.geometry.dispose();
+                    t.wire.material.dispose();
+                }
+
+                const lineGeo = new LineSegmentsGeometry();
+                lineGeo.setPositions(flat);
+                const mat = new LineMaterial({
+                    color: new THREE.Color(layersRef.current.wireColor),
+                    transparent: true,
+                    depthWrite: false,
+                    linewidth: 1,
+                });
+                const seg = new LineSegments2(lineGeo, mat);
+                seg.frustumCulled = false;
+                t.wire = seg;
+                t.wireEdges = topo.edges;
+                t.wireBuffer = lineGeo.attributes.instanceStart.data;
+                t.wireState = {
+                    base: topo.positions,
+                    dirs: null, dists: null, freqIndex: null,
+                    key: null, dirty: false, moved: null,
+                };
+                t.modelRoot.add(seg);
+                applyLayers(layersRef.current);
+                t.needsRender = true;
+            })
+            .catch((e) => alive && setStatus(`Wireframe failed: ${e.message}`));
+
+        return () => { alive = false; };
+    }, [clip, layers.wireLevel, layers.wireOn, applyLayers]);
+
     // Depth-only copy of the scan. Drawing it before everything else, with
     // colour writes off, means points, wireframe and placed objects are hidden
     // wherever the real object stands in front of them - whether or not the
@@ -641,7 +740,7 @@ function ScanCompositor() {
         trackRef.current = null;
 
         // Drop whatever the previous take left behind.
-        [t.mesh, t.cloud, t.wire].forEach((obj) => {
+        [t.mesh, t.cloud].forEach((obj) => {
             if (!obj) return;
             t.modelRoot.remove(obj);
             obj.geometry?.dispose();
@@ -654,7 +753,7 @@ function ScanCompositor() {
             t.materials.textured.dispose?.();
             t.materials.textured = null;
         }
-        t.mesh = t.cloud = t.wire = null;
+        t.mesh = t.cloud = null;
 
         const base = `${process.env.PUBLIC_URL}/mv/${clip.id}`;
 
@@ -665,15 +764,8 @@ function ScanCompositor() {
             .catch(() => null);
         const glbP = new GLTFLoader().loadAsync(`${base}/${clip.id}.glb`);
         const plyP = new PLYLoader().loadAsync(`${base}/${clip.id}.ply`);
-        // A scan runs to a few hundred thousand triangles, which as wireframe
-        // covers every pixel and reads as a solid fill. The pipeline writes a
-        // decimated copy for this layer; fall back if a take predates it.
-        const wireP = new GLTFLoader()
-            .loadAsync(`${base}/${clip.id}_wire.glb`)
-            .catch(() => null);
-
-        Promise.all([trackP, glbP, plyP, wireP])
-            .then(([trackData, gltf, cloudGeo, wireGltf]) => {
+        Promise.all([trackP, glbP, plyP])
+            .then(([trackData, gltf, cloudGeo]) => {
                 if (!alive) return;
 
                 // --- mesh + wireframe
@@ -694,31 +786,6 @@ function ScanCompositor() {
                 t.mesh = mesh;
                 t.modelRoot.add(mesh);
 
-                let wireGeo = geo;
-                if (wireGltf) {
-                    let lo = null;
-                    wireGltf.scene.updateMatrixWorld(true);
-                    wireGltf.scene.traverse((o) => {
-                        if (!lo && o.isMesh) lo = o;
-                    });
-                    if (lo) {
-                        wireGeo = lo.geometry.clone();
-                        wireGeo.applyMatrix4(lo.matrixWorld);
-                    }
-                }
-                const wire = new THREE.Mesh(
-                    wireGeo,
-                    new THREE.MeshBasicMaterial({
-                        wireframe: true, transparent: true, depthWrite: false,
-                    }),
-                );
-                wire.frustumCulled = false;
-                t.wire = wire;
-                t.modelRoot.add(wire);
-
-                // --- point cloud. Points were sampled in random order by
-                // glb_to_ply, so a draw range is already a uniform subset and
-                // the density slider costs nothing.
                 // PLY colours are sampled straight out of the scan's sRGB
                 // texture, but three treats vertex colours as already being in
                 // the linear working space. Without this the cloud reads
@@ -849,6 +916,7 @@ function ScanCompositor() {
             mount.style.width = `${Math.round(w)}px`;
             mount.style.height = `${Math.round(h)}px`;
             t.renderer.setSize(Math.round(w), Math.round(h), true);
+            applyLayers(layersRef.current);
             t.needsRender = true;
         };
 
@@ -860,7 +928,7 @@ function ScanCompositor() {
             ro.disconnect();
             window.removeEventListener('resize', resize);
         };
-    }, [track]);
+    }, [track, applyLayers]);
 
     // ---- Pose sampling ---------------------------------------------------
 
@@ -975,6 +1043,23 @@ function ScanCompositor() {
     const driveCloud = useCallback((frequencyData, playing) => {
         const t = three.current;
         const L = layersRef.current;
+
+        // Same displacement for the wireframe, except computed per vertex and
+        // scattered to both ends of every edge so the mesh stays welded.
+        if (t.wire && t.wireState && t.wireBuffer) {
+            applyWireReactivity(
+                t.wireState, t.wireBuffer, t.wireEdges,
+                {
+                    reactivity: L.wireOn ? L.wireReact : 0,
+                    scatter: L.cloudScatter,
+                    freqLow: L.cloudFreqLow,
+                    freqHigh: L.cloudFreqHigh,
+                    ox: L.cloudPulseX, oy: L.cloudPulseY, oz: L.cloudPulseZ,
+                },
+                frequencyData, playing,
+            );
+        }
+
         if (!t.cloud || !t.cloudReact) return;
         const attr = t.cloud.geometry.getAttribute('position');
         const drawn = t.cloud.geometry.drawRange.count;
@@ -1240,8 +1325,9 @@ function ScanCompositor() {
         // decoded samples up front so each frame gets the spectrum it would
         // have had in the preview.
         let spectrum = null;
-        const cloudReacts = layersRef.current.cloudOn
-            && layersRef.current.cloudReact > 0;
+        const L0 = layersRef.current;
+        const cloudReacts = (L0.cloudOn && L0.cloudReact > 0)
+            || (L0.wireOn && L0.wireReact > 0);
         if (audioBufferRef.current
             && (sceneItemsRef.current.length || cloudReacts)) {
             setStatus('Analysing audio...');
@@ -1265,6 +1351,7 @@ function ScanCompositor() {
         setIsPlaying(false);
         t.renderer.setPixelRatio(1);
         t.renderer.setSize(w, h, false);
+        applyLayers(layersRef.current);
 
         const seekTo = (time) => new Promise((resolve) => {
             if (Math.abs(video.currentTime - time) < 1 / 240 && video.readyState >= 2) {
@@ -1909,8 +1996,28 @@ function ScanCompositor() {
                     <div className={styles.vfx_section}>
                         <div className={styles.vfx_sectionTitle}>Wireframe</div>
                         {toggle('Show wireframe', 'wireOn')}
+                        <div className={styles.vfx_segRow}>
+                            {WIRE_LEVELS.map((w) => (
+                                <button
+                                    key={w.id}
+                                    type="button"
+                                    className={`${styles.vfx_segBtn} ${layers.wireLevel === w.id ? styles.vfx_segBtnOn : ''}`}
+                                    onClick={() => setLayer('wireLevel')(w.id)}
+                                >
+                                    {w.name}
+                                </button>
+                            ))}
+                        </div>
                         {colorRow('Colour', 'wireColor')}
+                        {slider('Thickness', 'wireThickness', 0.0002, 0.012, 0.0002)}
                         {slider('Opacity', 'wireOpacity', 0, 1, 0.01)}
+                        {slider('Reactivity', 'wireReact', 0, 3, 0.01)}
+                        <div className={styles.vfx_hint}>
+                            Vertices move with the music like the points do,
+                            but edges keep hold of both ends so the mesh stays
+                            welded. Shares the point cloud&apos;s pulse point
+                            and frequency band.
+                        </div>
                     </div>
 
                     {/* Presets + cuts */}

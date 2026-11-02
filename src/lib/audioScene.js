@@ -751,6 +751,73 @@ export function computeSpectrogram(audioBuffer, {
 }
 
 /**
+ * Cache the per-vertex geometry the radial displacement needs.
+ *
+ * Direction and distance from the pulse origin, plus which FFT bin each vertex
+ * listens to. Distances are normalised by the cloud's own extent rather than
+ * the fixed divisor the instanced path uses, because a scan is a couple of
+ * units across where a visualizer scene is tens - without that, every vertex
+ * would read the same low bin and the whole thing would throb as one lump.
+ *
+ * @param {object} state cache, keyed so it rebuilds only when inputs change
+ * @param {Float32Array} base resting positions, xyz per vertex
+ * @param {object} op { freqLow, freqHigh, ox, oy, oz }
+ * @param {number} bins FFT bin count
+ */
+function ensureRadialState(state, base, op, bins) {
+    const key = `${op.ox}|${op.oy}|${op.oz}|${op.freqLow}|${op.freqHigh}|${bins}`;
+    if (state.key === key && state.dirs) return;
+
+    const total = base.length / 3;
+    const dirs = new Float32Array(total * 3);
+    const dists = new Float32Array(total);
+    const freqIndex = new Uint16Array(total);
+
+    const fLo = Math.max(0, Math.min(1, op.freqLow ?? 0));
+    const fHi = Math.max(0, Math.min(1, op.freqHigh ?? 1));
+    const loBin = Math.round(Math.min(fLo, fHi) * (bins - 1));
+    const hiBin = Math.round(Math.max(fLo, fHi) * (bins - 1));
+    const bandSpan = Math.max(1, hiBin - loBin);
+
+    let maxDist = 0;
+    for (let i = 0; i < total; i++) {
+        const dx = base[i * 3] - op.ox;
+        const dy = base[i * 3 + 1] - op.oy;
+        const dz = base[i * 3 + 2] - op.oz;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        dists[i] = dist;
+        if (dist > maxDist) maxDist = dist;
+        if (dist > 1e-9) {
+            dirs[i * 3] = dx / dist;
+            dirs[i * 3 + 1] = dy / dist;
+            dirs[i * 3 + 2] = dz / dist;
+        }
+    }
+    const inv = maxDist > 1e-9 ? 1 / maxDist : 0;
+    for (let i = 0; i < total; i++) {
+        let fidx = loBin + Math.floor(dists[i] * inv * bandSpan);
+        if (fidx > hiBin) fidx = hiBin;
+        else if (fidx < loBin) fidx = loBin;
+        freqIndex[i] = fidx;
+    }
+
+    state.dirs = dirs;
+    state.dists = dists;
+    state.freqIndex = freqIndex;
+    state.key = key;
+}
+
+/** Displaced position of one vertex, written into out[0..2]. */
+function displacedVertex(state, i, op, frequencyData, out) {
+    const freq = frequencyData[state.freqIndex[i]] / 255;
+    const randomFactor = 0.5 + (Math.random() - 0.5) * (op.scatter || 0);
+    const d = state.dists[i] * (1 + op.reactivity * (freq * randomFactor));
+    out[0] = op.ox + state.dirs[i * 3] * d;
+    out[1] = op.oy + state.dirs[i * 3 + 1] * d;
+    out[2] = op.oz + state.dirs[i * 3 + 2] * d;
+}
+
+/**
  * Drive a plain THREE.Points cloud from the spectrum.
  *
  * The placed assets above are InstancedMeshes, but a scan's own point cloud is
@@ -791,60 +858,149 @@ export function applyCloudReactivity(state, attr, op, frequencyData, playing,
         return true;
     }
 
-    const bins = frequencyData.length;
-    const key = `${op.ox}|${op.oy}|${op.oz}|${op.freqLow}|${op.freqHigh}|${bins}`;
-    if (state.key !== key || !state.dirs) {
-        const total = base.length / 3;
-        const dirs = new Float32Array(total * 3);
-        const dists = new Float32Array(total);
-        const freqIndex = new Uint16Array(total);
+    ensureRadialState(state, base, op, frequencyData.length);
 
-        const fLo = Math.max(0, Math.min(1, op.freqLow ?? 0));
-        const fHi = Math.max(0, Math.min(1, op.freqHigh ?? 1));
-        const loBin = Math.round(Math.min(fLo, fHi) * (bins - 1));
-        const hiBin = Math.round(Math.max(fLo, fHi) * (bins - 1));
-        const bandSpan = Math.max(1, hiBin - loBin);
-
-        let maxDist = 0;
-        for (let i = 0; i < total; i++) {
-            const dx = base[i * 3] - op.ox;
-            const dy = base[i * 3 + 1] - op.oy;
-            const dz = base[i * 3 + 2] - op.oz;
-            const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-            dists[i] = dist;
-            if (dist > maxDist) maxDist = dist;
-            if (dist > 1e-9) {
-                dirs[i * 3] = dx / dist;
-                dirs[i * 3 + 1] = dy / dist;
-                dirs[i * 3 + 2] = dz / dist;
-            }
-        }
-        const inv = maxDist > 1e-9 ? 1 / maxDist : 0;
-        for (let i = 0; i < total; i++) {
-            let fidx = loBin + Math.floor(dists[i] * inv * bandSpan);
-            if (fidx > hiBin) fidx = hiBin;
-            else if (fidx < loBin) fidx = loBin;
-            freqIndex[i] = fidx;
-        }
-
-        state.dirs = dirs;
-        state.dists = dists;
-        state.freqIndex = freqIndex;
-        state.key = key;
-    }
-
-    const { dirs, dists, freqIndex } = state;
-    const react = op.reactivity;
-    const scatter = op.scatter || 0;
+    const out = [0, 0, 0];
     for (let i = 0; i < n; i++) {
-        const freq = frequencyData[freqIndex[i]] / 255;
-        const randomFactor = 0.5 + (Math.random() - 0.5) * scatter;
-        const d = dists[i] * (1 + react * (freq * randomFactor));
-        arr[i * 3] = op.ox + dirs[i * 3] * d;
-        arr[i * 3 + 1] = op.oy + dirs[i * 3 + 1] * d;
-        arr[i * 3 + 2] = op.oz + dirs[i * 3 + 2] * d;
+        displacedVertex(state, i, op, frequencyData, out);
+        arr[i * 3] = out[0];
+        arr[i * 3 + 1] = out[1];
+        arr[i * 3 + 2] = out[2];
     }
     attr.needsUpdate = true;
     state.dirty = true;
     return true;
+}
+
+/**
+ * Drive a fat-line wireframe from the spectrum.
+ *
+ * The point cloud can move each vertex independently because nothing joins
+ * them. A wireframe cannot: every edge has to keep hold of both its ends, or
+ * the mesh tears apart into loose segments. So the displacement is computed
+ * once per *vertex* and then scattered to every segment endpoint that refers
+ * to it - shared corners move as one and the structure stays welded.
+ *
+ * Writes straight into the interleaved instance buffer LineSegmentsGeometry
+ * builds (stride 6: start xyz, end xyz), rather than calling setPositions,
+ * which would reallocate every frame.
+ *
+ * @param {object} state cache: { base, dirs, dists, freqIndex, key, dirty }
+ * @param {THREE.InstancedInterleavedBuffer} buffer the geometry's instance buffer
+ * @param {Int32Array} edges 2 vertex indices per segment
+ * @param {object} op { reactivity, scatter, freqLow, freqHigh, ox, oy, oz }
+ * @param {Uint8Array|null} frequencyData FFT bins, or null when silent
+ * @param {boolean} playing whether audio is actually running
+ * @returns {boolean} whether the buffer was written
+ */
+export function applyWireReactivity(state, buffer, edges, op, frequencyData,
+    playing) {
+    const base = state.base;
+    if (!base || !buffer || !edges) return false;
+
+    const live = playing && !!frequencyData && op.reactivity > 0;
+    const arr = buffer.array;
+    const segs = edges.length / 2;
+
+    const writeRest = () => {
+        for (let sgt = 0; sgt < segs; sgt++) {
+            const a = edges[sgt * 2] * 3;
+            const b = edges[sgt * 2 + 1] * 3;
+            const m = sgt * 6;
+            arr[m] = base[a]; arr[m + 1] = base[a + 1]; arr[m + 2] = base[a + 2];
+            arr[m + 3] = base[b]; arr[m + 4] = base[b + 1]; arr[m + 5] = base[b + 2];
+        }
+    };
+
+    if (!live) {
+        if (!state.dirty) return false;
+        writeRest();
+        buffer.needsUpdate = true;
+        state.dirty = false;
+        return true;
+    }
+
+    ensureRadialState(state, base, op, frequencyData.length);
+
+    // Displace per vertex first, then scatter, so a vertex shared by several
+    // edges lands in exactly the same place in each of them.
+    const total = base.length / 3;
+    if (!state.moved || state.moved.length !== base.length) {
+        state.moved = new Float32Array(base.length);
+    }
+    const moved = state.moved;
+    const out = [0, 0, 0];
+    for (let i = 0; i < total; i++) {
+        displacedVertex(state, i, op, frequencyData, out);
+        moved[i * 3] = out[0];
+        moved[i * 3 + 1] = out[1];
+        moved[i * 3 + 2] = out[2];
+    }
+
+    for (let sgt = 0; sgt < segs; sgt++) {
+        const a = edges[sgt * 2] * 3;
+        const b = edges[sgt * 2 + 1] * 3;
+        const m = sgt * 6;
+        arr[m] = moved[a]; arr[m + 1] = moved[a + 1]; arr[m + 2] = moved[a + 2];
+        arr[m + 3] = moved[b]; arr[m + 4] = moved[b + 1]; arr[m + 5] = moved[b + 2];
+    }
+    buffer.needsUpdate = true;
+    state.dirty = true;
+    return true;
+}
+
+/**
+ * Unique edges of an indexed or non-indexed triangle geometry.
+ *
+ * Welds vertices by position first: a scan's triangles rarely share vertex
+ * indices across a seam, and without welding every shared corner would be
+ * several unrelated points that drift apart the moment they move.
+ *
+ * @param {THREE.BufferGeometry} geometry triangle geometry
+ * @returns {{positions: Float32Array, edges: Int32Array}}
+ */
+export function buildWireTopology(geometry) {
+    const pos = geometry.getAttribute('position');
+    const index = geometry.getIndex();
+    const triCount = index ? index.count : pos.count;
+    const at = (k) => (index ? index.getX(k) : k);
+
+    // Weld on rounded position so seam duplicates collapse to one vertex.
+    const map = new Map();
+    const remap = new Int32Array(pos.count).fill(-1);
+    const verts = [];
+    const keyOf = (i) => `${pos.getX(i).toFixed(5)},${pos.getY(i).toFixed(5)},${pos.getZ(i).toFixed(5)}`;
+    const weld = (i) => {
+        if (remap[i] !== -1) return remap[i];
+        const key = keyOf(i);
+        let id = map.get(key);
+        if (id === undefined) {
+            id = verts.length / 3;
+            verts.push(pos.getX(i), pos.getY(i), pos.getZ(i));
+            map.set(key, id);
+        }
+        remap[i] = id;
+        return id;
+    };
+
+    const seen = new Set();
+    const edges = [];
+    for (let t = 0; t < triCount; t += 3) {
+        const a = weld(at(t));
+        const b = weld(at(t + 1));
+        const c = weld(at(t + 2));
+        [[a, b], [b, c], [c, a]].forEach(([u, v]) => {
+            const lo = u < v ? u : v;
+            const hi = u < v ? v : u;
+            const key = lo * 1e7 + hi;
+            if (seen.has(key)) return;
+            seen.add(key);
+            edges.push(lo, hi);
+        });
+    }
+
+    return {
+        positions: new Float32Array(verts),
+        edges: Int32Array.from(edges),
+    };
 }

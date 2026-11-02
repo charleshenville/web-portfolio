@@ -62,8 +62,7 @@ def stage_frames(name: str, video: Path) -> None:
     print(f"  {len(list(frames.glob('*.jpg')))} frames")
 
 
-def stage_cloud(name: str, glb: Path, points: int,
-                wire_faces: int) -> None:
+def stage_cloud(name: str, glb: Path, points: int) -> None:
     """Sample a point cloud off the GLB, and a low-poly copy for wireframes."""
     ASSETS.mkdir(parents=True, exist_ok=True)
     local_glb = ASSETS / f"{name}.glb"
@@ -71,8 +70,8 @@ def stage_cloud(name: str, glb: Path, points: int,
         shutil.copy(glb, local_glb)
     run([PY, GLB_TO_PLY, local_glb, ASSETS / f"{name}.ply",
          "-n", points, "--seed", 1], f"cloud: {name}")
-    run([PY, HERE / "decimate.py", local_glb, ASSETS / f"{name}_wire.glb",
-         "--faces", wire_faces], f"wireframe: {name}")
+    run([PY, HERE / "decimate.py", local_glb, ASSETS, name],
+        f"wireframe: {name}")
 
 
 def stage_solve(name: str, glb: Path, views: int, focal: float | None,
@@ -112,7 +111,9 @@ def stage_publish(name: str, label: str) -> None:
     """Copy the mesh and cloud next to the track and register the take."""
     out = PUBLIC / name
     out.mkdir(parents=True, exist_ok=True)
-    for fname in (f"{name}.glb", f"{name}.ply", f"{name}_wire.glb"):
+    names = [f"{name}.glb", f"{name}.ply"]
+    names += [p.name for p in sorted(ASSETS.glob(f"{name}_wire_*.glb"))]
+    for fname in names:
         src = ASSETS / fname
         if src.exists():
             shutil.copy(src, out / fname)
@@ -143,8 +144,6 @@ def main():
                     help="skip the focal sweep and use this value, in pixels")
     ap.add_argument("--keyframe", type=int, default=None,
                     help="frame to locate first; defaults to the middle")
-    ap.add_argument("--wire-faces", type=int, default=6000,
-                    help="triangle budget for the wireframe copy")
     ap.add_argument("--points", type=int, default=300_000,
                     help="points sampled for the cloud layer")
     ap.add_argument("--only", type=str, default=None,
@@ -173,7 +172,7 @@ def main():
     if {"cloud", "solve", "verify"} & set(todo) and not glb.exists():
         raise SystemExit(f"no GLB at {glb}; pass --glb")
     if "cloud" in todo:
-        stage_cloud(name, glb, args.points, args.wire_faces)
+        stage_cloud(name, glb, args.points)
     if "solve" in todo:
         stage_solve(name, ASSETS / f"{name}.glb", args.views, args.focal,
                     args.keyframe)

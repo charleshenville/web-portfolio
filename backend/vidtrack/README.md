@@ -100,11 +100,18 @@ web tool picks it up via `manifest.json`. Stages are resumable:
 | Stage | What it does |
 | --- | --- |
 | `frames` | ffmpeg splits the video into JPEGs |
-| `cloud` | samples a coloured point cloud, and a low-poly copy for wireframes |
+| `cloud` | samples a coloured point cloud, and low-poly copies for the wireframe |
 | `solve` | locates the camera against the scan, frame by frame |
 | `export` | writes `track.json` and a web-playable H.264 copy |
 | `verify` | draws the solve back over the footage |
 | `publish` | copies assets across and registers the take |
+
+`decimate.py` drops disconnected shells below ~0.4% of the face count before
+simplifying. A scan carries hundreds of them - leaves, gravel, scraps of fence -
+which read as noise in wireframe and, worse, hold the decimator up, since every
+shell needs a minimum number of faces however low the target. On these takes it
+removes 480-1240 specks and tens of thousands of faces, and only then will a
+mesh actually reduce to its target.
 
 Knobs worth knowing when a take misbehaves:
 
@@ -142,7 +149,7 @@ would rather not maintain them.
 localize.py      model-based solver -> sfm.json, alignment.json
 render.py        offscreen textured renderer (world position per pixel)
 verify.py        draws a solve back over its footage
-decimate.py      low-poly copy for the wireframe layer
+decimate.py      low-poly copies (coarse/medium/fine) for the wireframe
 export_track.py  convention/frame conversion -> track.json, <name>.mp4
 pipeline.py      orchestrator
 sfm.py/align.py  the unused SfM route; see above
