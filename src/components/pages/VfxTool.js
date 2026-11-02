@@ -12,6 +12,7 @@ const TOOLS = {
     procedural: lazy(() => import('../ProceduralAscii')),
     visualizer: lazy(() => import('../AudioVisualizer')),
     'scan-compositor': lazy(() => import('../ScanCompositor')),
+    'track-editor': lazy(() => import('../TrackEditor')),
 };
 
 function VfxTool() {

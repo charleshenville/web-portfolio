@@ -31,6 +31,11 @@ export const VFX_TOOLS = [
         label: 'Scan Compositor',
         blurb: 'Camera-tracked scans over their own footage, cut between views.',
     },
+    {
+        slug: 'track-editor',
+        label: 'Track Editor',
+        blurb: 'Cut between parallel renders by hand or by the soundtrack.',
+    },
 ];
 
 export const NAV = [
