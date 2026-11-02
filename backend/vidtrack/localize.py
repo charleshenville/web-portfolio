@@ -307,21 +307,79 @@ def sweep_focal(renderer, centre, radius, frame_gray, sift, width, height,
     the known model is the dependable option: the right focal wins on inliers.
     """
     print("[focal] sweeping against the model...")
-    best = (0, None)
-    # Spans roughly 55-110 degrees horizontally, which covers a phone's wide
-    # and main cameras; a 24mm-equivalent main camera lands near 0.67.
-    for mult in (0.55, 0.67, 0.8, 0.95, 1.15, 1.4, 1.7):
-        f = mult * max(width, height)
+    scores = {}
+
+    def score(f):
         _, _, _, _, n = find_pose(renderer, centre, radius, frame_gray, sift,
                                   f, n_views, distances, render_wh, reproj,
                                   verbose=False)
+        scores[f] = n
         print(f"[focal]   f={f:7.1f}px -> {n:4d} inliers")
-        if n > best[0]:
-            best = (n, f)
-    if best[1] is None:
+        return n
+
+    # Spans roughly 30-120 degrees horizontally. The bottom end is the 0.5x
+    # ultrawide (13mm-equivalent, near 0.4); a 24mm-equivalent main camera
+    # lands near 0.67. The range used to stop at 0.55, and an ultrawide take
+    # simply picked that edge - PnP then hid the wrong focal by moving the
+    # camera, which lines up the centre of frame and nothing else.
+    grid = [m * max(width, height)
+            for m in (0.3, 0.36, 0.43, 0.5, 0.58, 0.67, 0.8, 0.95, 1.15,
+                      1.4, 1.7)]
+    for f in grid:
+        score(f)
+    if not any(scores.values()):
         raise SystemExit("[focal] no viewpoint matched at any focal length")
-    print(f"[focal] chose f={best[1]:.1f}px ({best[0]} inliers)")
-    return best[1]
+
+    # The grid steps ~18% at a time, which is coarse enough to leave a visible
+    # misfit at the frame edges. Bisect the bracket around the winner.
+    best = max(scores, key=scores.get)
+    i = grid.index(best)
+    lo = grid[max(0, i - 1)]
+    hi = grid[min(len(grid) - 1, i + 1)]
+    for f in (np.sqrt(lo * best), np.sqrt(best * hi)):
+        if f != best:
+            score(float(f))
+    best = max(scores, key=scores.get)
+    print(f"[focal] chose f={best:.1f}px ({scores[best]} inliers)")
+    return best
+
+
+def refine_focal(focal, width, height, matched, rounds=4):
+    """
+    Fit the focal directly from feature matches, rather than trusting a grid.
+
+    Inlier counts from the sweep are a blunt score - a focal 10% out still
+    collects plenty of matches near the centre of frame. Least squares over
+    matches spread across the frame pins it properly, since the error at the
+    frame edges is exactly what the wrong focal gets wrong.
+
+    Only SIFT matches qualify. A matched feature's 3D point is wherever that
+    texture sits on the scan, whatever focal found it. Densified points do
+    not: their 3D comes from the render at the current focal and pose, so
+    they agree with any focal they are given and the fit never moves.
+
+    Args:
+        matched: (object points, image points) pairs, one per located frame;
+            pooling several frames steadies the fit
+
+    Returns:
+        focal
+    """
+    flags = (cv2.CALIB_USE_INTRINSIC_GUESS | cv2.CALIB_FIX_PRINCIPAL_POINT
+             | cv2.CALIB_FIX_ASPECT_RATIO | cv2.CALIB_ZERO_TANGENT_DIST
+             | cv2.CALIB_FIX_K1 | cv2.CALIB_FIX_K2 | cv2.CALIB_FIX_K3)
+    obj = [o.astype(np.float32) for o, _ in matched]
+    img = [i.astype(np.float32) for _, i in matched]
+    n = sum(len(o) for o in obj)
+    if n < 30:
+        return focal
+    K = intrinsics(focal, width, height)
+    rms, K2, _, _, _ = cv2.calibrateCamera(obj, img, (width, height), K,
+                                           np.zeros(5), flags=flags)
+    f2 = float(K2[0, 0])
+    print(f"[focal]   fit f={f2:.1f}px (rms {rms:.2f}px on {n} matches "
+          f"over {len(obj)} frame(s))")
+    return f2
 
 
 def densify(renderer, rvec, tvec, frame_gray, focal, render_wh, K, reproj,
@@ -514,6 +572,26 @@ def localise(work_dir: Path, glb: Path, n_views: int, render_w: int,
             focal = sweep_focal(renderer, centre, radius, key_gray, sift,
                                 width, height, max(60, n_views // 3),
                                 distances, render_wh, reproj)
+            # Match a few frames across the take at the current focal, fit,
+            # and rematch at the fitted value: the PnP inliers a focal keeps
+            # lean slightly towards it, so one pass would undershoot.
+            fit_grays = [cv2.imread(str(paths[int(i)]), cv2.IMREAD_GRAYSCALE)
+                         for i in np.linspace(0, len(paths) - 1, 5)[1:-1]]
+            for _ in range(3):
+                matched = []
+                for gray in fit_grays:
+                    rv, _, o, im, _ = find_pose(
+                        renderer, centre, radius, gray, sift, focal,
+                        max(60, n_views // 3), distances, render_wh, reproj,
+                        verbose=False)
+                    if rv is not None:
+                        matched.append((o, im))
+                f2 = refine_focal(focal, width, height, matched)
+                step = abs(f2 - focal) / focal
+                focal = f2
+                if step < 0.005:
+                    break
+            print(f"[focal] using f={focal:.1f}px")
         K = intrinsics(focal, width, height)
 
         for ki in key_idxs:

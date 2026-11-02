@@ -62,7 +62,13 @@ Two details that matter:
   and with this little motion the focal cannot be recovered from the trajectory
   either. Testing candidates against known 3D gives a clear optimum — both
   clips independently landed on 1536px, which is a good sign given they came
-  from the same phone.
+  from the same phone. The grid reaches down to the 0.5x ultrawide; it used
+  to stop at 0.55x the frame width, and an ultrawide take simply picked that
+  edge, which PnP then hid by moving the camera - the centre of frame lined
+  up and nothing else did. The winner is then fitted by least squares on
+  SIFT matches from several frames. Not on densified points: their 3D is read
+  from a render at the current focal, so they agree with whatever focal they
+  are given.
 
 ## Checking the result
 
@@ -144,7 +150,8 @@ Knobs worth knowing when a take misbehaves:
   default scales with clip length; raise it if coverage drops out in the middle
   of a long take, or pass 1 to force the old single-anchor behaviour.
 - `--focal N` skips the sweep when you already know the answer — 1536 for the
-  iPhone 14 Pro main camera at 1920x1440.
+  iPhone 14 Pro main camera at 1920x1440, about 870 for its 0.5x ultrawide
+  at 1920x1080.
 - `--smooth` (on `localize.py`) sets the trajectory smoothing window. Per-frame
   PnP is drift-free but jittery; 7 frames suits a handheld phone.
 - `--min-anchor` (on `localize.py`) is the inlier count an anchor must reach
