@@ -1,0 +1,14 @@
+[
+    {
+        "id": "donttouch",
+        "label": "Don't Touch"
+    },
+    {
+        "id": "tagbox",
+        "label": "Tag Box"
+    },
+    {
+        "id": "bins",
+        "label": "Bins"
+    }
+]

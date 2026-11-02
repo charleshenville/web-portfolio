@@ -1,0 +1,10 @@
+# Camera tracking for scanned objects. Python 3.13; install into backend/venv:
+#   python3.13 -m venv ../venv && ../venv/bin/pip install -r requirements.txt
+numpy>=2.0
+scipy>=1.14
+opencv-python-headless>=4.10     # SIFT, optical flow, PnP
+trimesh>=4.0                     # GLB loading
+pillow>=10.0
+moderngl>=5.10                   # offscreen GL for the model renderer
+fast-simplification>=0.1         # quadric decimation for the wireframe copy
+pycolmap>=3.10                   # only for the unused SfM path (sfm.py)

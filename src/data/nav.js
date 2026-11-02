@@ -26,6 +26,11 @@ export const VFX_TOOLS = [
         label: 'Audio Visualizer',
         blurb: 'Audio-reactive point clouds, curves and post effects.',
     },
+    {
+        slug: 'scan-compositor',
+        label: 'Scan Compositor',
+        blurb: 'Camera-tracked scans over their own footage, cut between views.',
+    },
 ];
 
 export const NAV = [

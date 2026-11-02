@@ -21,3 +21,14 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# python envs and scan-tracking intermediates
+/backend/venv
+/backend/vidtrack/work
+/backend/vidtrack/assets
+/backend/vidtrack/*.log
+
+# Scan-compositor footage. The solved tracks and meshes are committed, but the
+# source videos are tens of MB each; regenerate them with
+#   backend/vidtrack/pipeline.py --name <take> --only export
+/public/mv/**/*.mp4
