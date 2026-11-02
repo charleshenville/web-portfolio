@@ -632,23 +632,18 @@
     color: var(--accent);
 }
 
-/* Second control column, for tools that carry two panels (the Scan
-   Compositor's layer stack and its audio-reactive scene). It sits to the left
-   of the primary panel, and tucks underneath it when the viewport is too
-   narrow to show both side by side. */
-.vfx_panelSecondary {
-    right: calc(var(--gutter) + 306px);
+/* Tools that carry two control columns (the Scan Compositor's layer stack and
+   its audio-reactive scene) position each panel and toggle from the right in
+   JS, since which column an element belongs in depends on what else is open.
+   The transition is what makes a panel opening or closing push the others
+   aside rather than teleport them. */
+.vfx_slide {
+    transition: right 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+        opacity 0.4s ease, background 0.2s ease;
 }
 
-.vfx_toggleSecondary {
-    right: calc(var(--gutter) + 46px);
-}
-
-@media (max-width: 760px) {
-    .vfx_panelSecondary {
-        right: var(--gutter);
-        top: calc(var(--nav-h) + 8px);
-        max-height: calc(100svh - var(--nav-h) - 8px - var(--gutter));
-        z-index: 28;
+@media (prefers-reduced-motion: reduce) {
+    .vfx_slide {
+        transition: opacity 0.4s ease, background 0.2s ease;
     }
 }

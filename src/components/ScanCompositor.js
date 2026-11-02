@@ -9,6 +9,7 @@ import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
 import VfxNumberField from './VfxNumberField';
+import useMediaQuery from '../lib/useMediaQuery';
 import {
     ASSETS, CURVES, MUSIC_ASSETS, PARAM_GROUPS, GEOM_KEYS, CURVE_GEOM_KEYS,
     fibonacciSphere, makeItem, makeCurveItem, buildPointCloudRecord,
@@ -106,6 +107,9 @@ function ScanCompositor() {
     const [currentTime, setCurrentTime] = useState(0);
     const [duration, setDuration] = useState(0);
     const [loop, setLoop] = useState(true);
+    // Jump over stretches the solver could not place a camera for, rather than
+    // showing a frozen camera drifting against moving footage.
+    const [skipUnsolved, setSkipUnsolved] = useState(true);
     const [muted, setMuted] = useState(true);
     const [speed, setSpeed] = useState(1);
 
@@ -140,6 +144,7 @@ function ScanCompositor() {
 
     useEffect(() => { sceneItemsRef.current = sceneItems; }, [sceneItems]);
 
+
     // Live mirrors so the render loop never closes over stale state.
     const layersRef = useRef(layers);
     const rigRef = useRef(rig);
@@ -171,10 +176,74 @@ function ScanCompositor() {
         [clips, clipId],
     );
 
+    // Two stacked control columns. Each element sits clear of whatever is to
+    // its right: a panel takes a full column, a closed one only its toggle. So
+    // the Scene panel moves aside only when the compositor panel is open, and
+    // the compositor's toggle steps left when the Scene panel has taken the
+    // right-hand column - which is what stops the toggle landing on top of the
+    // other panel's close button.
+    const narrow = useMediaQuery('(max-width: 820px)');
+    const COL = 306; // panel width + gap
+    const TOGGLE_COL = 46; // toggle width + gap
+    const slide = (offset) => ({ right: `calc(var(--gutter) + ${offset}px)` });
+    const layout = useMemo(() => {
+        if (narrow) {
+            // No room for two columns; only one panel is open at a time, so
+            // everything can sit flush right.
+            return {
+                menuPanel: 0, menuToggle: 0, scenePanel: 0, sceneToggle: TOGGLE_COL,
+            };
+        }
+        return {
+            menuPanel: 0,
+            menuToggle: sceneOpen ? COL : 0,
+            scenePanel: menuOpen ? COL : 0,
+            sceneToggle: menuOpen ? COL : TOGGLE_COL,
+        };
+    }, [narrow, menuOpen, sceneOpen]);
+
+    // Narrow viewports have room for one column, so opening either panel puts
+    // the other away rather than letting them overlap.
+    useEffect(() => {
+        if (narrow && menuOpen && sceneOpen) setSceneOpen(false);
+    }, [narrow, menuOpen, sceneOpen]);
+
     const selected = useMemo(
         () => sceneItems.find((i) => i.id === selectedId) || null,
         [sceneItems, selectedId],
     );
+
+    // Contiguous runs of solved frames, and a flat lookup for "is this frame
+    // placed?". A take can be missing its tail, a stretch in the middle, or
+    // nothing at all, so playback and export both work off these rather than
+    // assuming the solve covers the clip.
+    const coverage = useMemo(() => {
+        if (!track || !track.frames || !track.frames.length) {
+            return { spans: [], mask: null, unsolved: 0 };
+        }
+        const last = track.frames[track.frames.length - 1].i;
+        const mask = new Uint8Array(last + 1);
+        track.frames.forEach((f) => { mask[f.i] = f.solved ? 1 : 0; });
+
+        const spans = [];
+        let start = null;
+        for (let i = 0; i <= last; i++) {
+            if (mask[i] && start === null) start = i;
+            else if (!mask[i] && start !== null) { spans.push([start, i - 1]); start = null; }
+        }
+        if (start !== null) spans.push([start, last]);
+
+        let unsolved = 0;
+        for (let i = 0; i <= last; i++) if (!mask[i]) unsolved++;
+        return { spans, mask, unsolved };
+    }, [track]);
+
+    const coverageRef = useRef(coverage);
+    const skipUnsolvedRef = useRef(skipUnsolved);
+    const loopRef = useRef(loop);
+    useEffect(() => { coverageRef.current = coverage; }, [coverage]);
+    useEffect(() => { skipUnsolvedRef.current = skipUnsolved; }, [skipUnsolved]);
+    useEffect(() => { loopRef.current = loop; }, [loop]);
 
     // Some parameters only apply to the generated sphere, not to a loaded PLY.
     const selectedAssetType = useMemo(() => (
@@ -945,7 +1014,30 @@ function ScanCompositor() {
             if (exportingRef.current) return;
 
             const video = videoRef.current;
-            const time = video ? video.currentTime : 0;
+            let time = video ? video.currentTime : 0;
+
+            // Hop over unsolved stretches. Checked every frame rather than on
+            // seek, because a gap can be reached by playing into it, by
+            // looping round, or by the user scrubbing into it.
+            const cov = coverageRef.current;
+            const trackData = trackRef.current;
+            if (video && skipUnsolvedRef.current && cov.unsolved && cov.mask
+                && trackData && !exportingRef.current) {
+                const fps = trackData.fps;
+                const idx = Math.floor(time * fps);
+                if (idx >= cov.mask.length || !cov.mask[idx]) {
+                    const next = cov.spans.find((s) => s[0] > idx);
+                    const target = next || (loopRef.current ? cov.spans[0] : null);
+                    if (target) {
+                        // Land just inside the span so rounding cannot drop
+                        // the playhead back into the gap.
+                        time = (target[0] + 0.25) / fps;
+                        video.currentTime = time;
+                    } else if (!video.paused) {
+                        video.pause();
+                    }
+                }
+            }
 
             // Advance the placed objects from whatever the analyser hears.
             const now = performance.now();
@@ -1103,7 +1195,21 @@ function ScanCompositor() {
         const w = Math.max(2, Math.round((intr.width * exportScale) / 2) * 2);
         const h = Math.max(2, Math.round((intr.height * exportScale) / 2) * 2);
         const fps = trackData.fps;
-        const totalFrames = trackData.frame_count;
+        // Exporting an unsolved frame would bake a frozen camera over moving
+        // footage, so by default those frames are left out and the result is
+        // simply shorter.
+        const cov = coverageRef.current;
+        const frameList = (skipUnsolvedRef.current && cov.unsolved && cov.mask)
+            ? Array.from(cov.mask).reduce((acc, ok, i) => {
+                if (ok) acc.push(i);
+                return acc;
+            }, [])
+            : Array.from({ length: trackData.frame_count }, (_, i) => i);
+        const totalFrames = frameList.length;
+        if (!totalFrames) {
+            window.alert('Nothing to export: no frames in this take are solved.');
+            return;
+        }
 
         const codecCandidates = ['avc1.640034', 'avc1.640033', 'avc1.640028',
             'avc1.64001f', 'avc1.4d0028', 'avc1.42e01e'];
@@ -1199,7 +1305,10 @@ function ScanCompositor() {
             for (let i = 0; i < totalFrames; i++) {
                 if (exportCanceledRef.current || encodeFailed) break;
 
-                const time = Math.min(i / fps, Math.max(0, video.duration - 0.001));
+                // i counts output frames; src is the frame of the take it came
+                // from, which differs once unsolved frames are dropped.
+                const src = frameList[i];
+                const time = Math.min(src / fps, Math.max(0, video.duration - 0.001));
                 // eslint-disable-next-line no-await-in-loop
                 await seekTo(time);
 
@@ -1383,7 +1492,8 @@ function ScanCompositor() {
                     type="button"
                     aria-label="Open controls"
                     onClick={() => setMenuOpen(true)}
-                    className={`${styles.vfx_toggle} ${styles.vfx_visible}`}
+                    style={slide(layout.menuToggle)}
+                    className={`${styles.vfx_toggle} ${styles.vfx_slide} ${styles.vfx_visible}`}
                 >
                     <SlidersHorizontal size={18} />
                 </button>
@@ -1394,10 +1504,8 @@ function ScanCompositor() {
                     type="button"
                     aria-label="Open scene controls"
                     onClick={() => setSceneOpen(true)}
-                    // Clears the compositor panel when that is open, otherwise
-                    // just sits beside its toggle.
-                    style={menuOpen ? { right: 'calc(var(--gutter) + 306px)' } : undefined}
-                    className={`${styles.vfx_toggle} ${styles.vfx_toggleSecondary} ${styles.vfx_visible}`}
+                    style={slide(layout.sceneToggle)}
+                    className={`${styles.vfx_toggle} ${styles.vfx_slide} ${styles.vfx_visible}`}
                 >
                     <Boxes size={18} />
                 </button>
@@ -1405,9 +1513,8 @@ function ScanCompositor() {
 
             {sceneOpen && (
                 <div
-                    // Only steps aside when the compositor panel is actually
-                    // open; on its own it takes the usual right-hand column.
-                    className={`${styles.vfx_panel} ${menuOpen ? styles.vfx_panelSecondary : ''}`}
+                    style={slide(layout.scenePanel)}
+                    className={`${styles.vfx_panel} ${styles.vfx_slide}`}
                 >
                     <div className={styles.vfx_head}>
                         <span className={styles.vfx_title}>Scene</span>
@@ -1623,7 +1730,10 @@ function ScanCompositor() {
             )}
 
             {menuOpen && (
-                <div className={styles.vfx_panel}>
+                <div
+                    style={slide(layout.menuPanel)}
+                    className={`${styles.vfx_panel} ${styles.vfx_slide}`}
+                >
                     <div className={styles.vfx_head}>
                         <span className={styles.vfx_title}>Scan Compositor</span>
                         <button
@@ -1683,6 +1793,18 @@ function ScanCompositor() {
                         {slider('Speed', 'speed', 0.1, 2, 0.05,
                             { speed }, () => setSpeed)}
                         {toggle('Loop', 'loop', { loop }, () => setLoop)}
+                        {!!coverage.unsolved && (
+                            <>
+                                {toggle('Skip unsolved', 'skipUnsolved',
+                                    { skipUnsolved }, () => setSkipUnsolved)}
+                                <div className={styles.vfx_hint}>
+                                    {coverage.unsolved} frame
+                                    {coverage.unsolved === 1 ? '' : 's'} have no
+                                    camera. Skipped in playback and left out of
+                                    the export.
+                                </div>
+                            </>
+                        )}
                         {toggle('Audio', 'audio', { audio: !muted },
                             () => (v) => setMuted(!v))}
                     </div>

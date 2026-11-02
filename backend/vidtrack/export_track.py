@@ -70,10 +70,17 @@ def build_track(work_dir: Path, fps: float) -> dict:
     if not posed:
         raise SystemExit("[export] no posed frames in sfm.json")
 
-    n_frames = max(posed) + 1
+    # Describe the whole clip, not just the part that solved. Ending the track
+    # at the last solved frame would quietly hide any unsolved tail from the
+    # viewer, which then has no way to know it is showing a frozen camera over
+    # moving footage.
+    extracted = len(list((work_dir / "frames").glob("*.jpg")))
+    n_frames = max(extracted, max(posed) + 1)
     solved = sorted(posed)
+    gaps = n_frames - len(solved)
     print(f"[export] {len(solved)}/{n_frames} frames solved by "
-          f"{sfm.get('solver', 'colmap')}")
+          f"{sfm.get('solver', 'colmap')}"
+          + (f" ({gaps} unsolved)" if gaps else ""))
 
     # Interpolate the gaps: linear on position, slerp on rotation, clamped at
     # the ends so a clip that fails to register its first or last frames still
