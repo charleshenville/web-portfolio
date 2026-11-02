@@ -23,6 +23,7 @@ import {
     disposeRecord, loadPlyPoints, computeSpectrogram, bandLevel,
     envelopeFollow, applySceneOpacity,
 } from '../lib/audioScene';
+import { Mp4FrameReader } from '../lib/mp4Frames';
 import styles from './vfx.module.css';
 
 // Camera poses come from backend/vidtrack: a pose is solved per frame, and
@@ -1557,10 +1558,18 @@ function ScanCompositor() {
     // ---- Export ----------------------------------------------------------
     // Frame-accurate and independent of playback: the list of frames to write
     // is built first - the take, the way back if it is ping-ponging, repeated
-    // to fill the music - and then each entry is seeked to, posed from the
+    // to fill the music - and then each entry is decoded, posed from the
     // solve for exactly that frame, rendered and encoded. The soundtrack is
     // encoded from the decoded samples over the same list, so picture and
     // sound cannot drift however long the render takes.
+    //
+    // Pictures come straight from a WebCodecs decoder walking the file in
+    // order (lib/mp4Frames), not from seeking the <video> element: a seek
+    // re-decodes from the previous keyframe and round-trips the media
+    // pipeline for every frame, which made export many times slower than the
+    // preview. The way back of a ping-pong reads the reversed copy forwards,
+    // exactly as playback does. Seeking remains as the fallback for a browser
+    // or file the decoder cannot take.
 
     // The clip's own audio, which lives in the take's mp4. Decoded once per
     // take and kept, since the only thing that wants it is the exporter.
@@ -1780,6 +1789,15 @@ function ScanCompositor() {
         setExportProgress(0);
         setExportStage('Preparing...');
 
+        // Started now so the fetch and parse overlap the audio work below.
+        // The reversed copy is only worth opening if the list runs backwards.
+        const base = `${process.env.PUBLIC_URL}/mv/${clipId}/${clipId}`;
+        const runsBack = frames.some((f, i) => i > 0 && f < frames[i - 1]);
+        const readersReady = Promise.all([
+            Mp4FrameReader.open(`${base}.mp4`),
+            runsBack ? Mp4FrameReader.open(`${base}_rev.mp4`) : null,
+        ]);
+
         // A live analyser only hears what is playing now, which is no use to a
         // loop that renders frame 37 whenever it gets there. Analyse the
         // decoded samples up front so each frame gets the spectrum it would
@@ -1872,12 +1890,19 @@ function ScanCompositor() {
             video.currentTime = time;
         });
 
+        // The muxer takes its frame rate as the track's timescale and insists
+        // on an integer, which 29.97 and 59.94 takes are not - they used to
+        // fail here outright. NTSC rates are n/1001 exactly, so a timescale of
+        // n gives every frame a whole number of ticks.
+        const ntsc = Math.abs(fps * 1.001 - Math.round(fps * 1.001)) < 1e-3;
+        const timescale = Number.isInteger(fps) ? fps
+            : ntsc ? Math.round(fps * 1001) : 90000;
         const target = fileStream
             ? new FileSystemWritableFileStreamTarget(fileStream)
             : new ArrayBufferTarget();
         const muxer = new Muxer({
             target,
-            video: { codec: 'avc', width: w, height: h, frameRate: fps },
+            video: { codec: 'avc', width: w, height: h, frameRate: timescale },
             ...(audioCodec ? {
                 audio: {
                     codec: audioCodec[1],
@@ -1944,10 +1969,88 @@ function ScanCompositor() {
             }
         };
 
-        const frameUs = Math.round(1_000_000 / fps);
+        // Backpressure without a polling timer: wait for the encoders to take
+        // a frame, which also keeps an export in a background tab from being
+        // throttled to one timer tick a second.
+        const encodersBusy = () => (encoder.encodeQueueSize > 8
+            || (audioEncoder && audioEncoder.encodeQueueSize > 40)) && !encodeFailed;
+        const waitForEncoders = () => new Promise((resolve) => {
+            let timer = null;
+            const targets = [encoder, audioEncoder].filter(Boolean);
+            const done = () => {
+                clearTimeout(timer);
+                targets.forEach((e) => e.removeEventListener?.('dequeue', done));
+                resolve();
+            };
+            targets.forEach((e) => e.addEventListener?.('dequeue', done));
+            timer = setTimeout(done, 20);
+        });
+
+        // The decoder path, if this browser and file allow it. Its pictures go
+        // onto their own texture for the length of the export; the element's
+        // textures are put back afterwards.
+        let [fwdReader, revReader] = await readersReady;
+        let frameTex = null;
+        const prevMap = t.bgQuad.material.map;
+        const dropReaders = () => {
+            fwdReader?.close();
+            revReader?.close();
+            fwdReader = null;
+            revReader = null;
+            if (frameTex) {
+                t.bgQuad.material.map = prevMap;
+                t.bgQuad.material.needsUpdate = true;
+                frameTex.dispose();
+                frameTex = null;
+            }
+        };
+        if (!fwdReader) {
+            revReader?.close();
+            revReader = null;
+        }
+        const nFwd = fwdReader ? fwdReader.frameCount : 0;
+        // Take frame k on the reversed copy. Scaled rather than subtracted,
+        // for the same reason as takeTime: a copy a frame short still lines
+        // up at both ends.
+        const revIndex = (k) => {
+            const nRev = revReader.frameCount;
+            const x = nFwd > 1 ? (k * (nRev - 1)) / (nFwd - 1) : 0;
+            return Math.max(0, Math.min(nRev - 1, nRev - 1 - Math.round(x)));
+        };
+        // Upload a decoded picture as the footage. WebGL takes a VideoFrame
+        // directly; if this one cannot, the GL error says so on the first
+        // frame and the export carries on by seeking instead.
+        const showDecoded = (vf) => {
+            const gl = t.renderer.getContext();
+            const probe = !frameTex;
+            if (probe) {
+                frameTex = new THREE.VideoTexture(vf);
+                frameTex.colorSpace = THREE.SRGBColorSpace;
+                frameTex.minFilter = THREE.LinearFilter;
+                frameTex.magFilter = THREE.LinearFilter;
+                t.bgQuad.material.map = frameTex;
+                t.bgQuad.material.needsUpdate = true;
+                while (gl.getError() !== gl.NO_ERROR) { /* drain */ }
+            }
+            frameTex.image = vf;
+            frameTex.needsUpdate = true;
+            if (probe) {
+                t.renderer.initTexture(frameTex);
+                if (gl.getError() !== gl.NO_ERROR) return false;
+            }
+            return true;
+        };
+
+        // Per frame rather than accumulated, so a rate that is not a whole
+        // number of microseconds per frame cannot drift.
+        const stampUs = (i) => Math.round((i * 1_000_000) / fps);
         const gop = Math.max(1, Math.round(fps * 2));
         let completed = false;
         setExportStage('Rendering...');
+        // Timed from the end of the first frame, which carries the decoder
+        // and texture setup and would make the early estimate wildly long.
+        let started = 0;
+        let lastReport = 0;
 
         try {
             for (let i = 0; i < totalFrames; i++) {
@@ -1958,8 +2061,34 @@ function ScanCompositor() {
                 // loop starts repeating.
                 const src = frames[i];
                 const time = Math.min(src / fps, Math.max(0, video.duration - 0.001));
-                // eslint-disable-next-line no-await-in-loop
-                await seekTo(time);
+
+                let decoded = false;
+                if (fwdReader) {
+                    const back = !!revReader && i > 0 && src < frames[i - 1];
+                    // eslint-disable-next-line no-await-in-loop
+                    const vf = back
+                        ? await revReader.frame(revIndex(src))
+                        : await fwdReader.frame(src);
+                    if (vf && showDecoded(vf)) {
+                        decoded = true;
+                    } else if (!frameTex || i === 0) {
+                        // Never worked: seek for the rest of the export.
+                        dropReaders();
+                    }
+                }
+                if (!decoded) {
+                    if (frameTex) {
+                        // A one-off miss: this frame comes off the element.
+                        t.bgQuad.material.map = prevMap;
+                        t.bgQuad.material.needsUpdate = true;
+                    }
+                    // eslint-disable-next-line no-await-in-loop
+                    await seekTo(time);
+                    if (t.videoTexture) t.videoTexture.needsUpdate = true;
+                } else if (t.bgQuad.material.map !== frameTex) {
+                    t.bgQuad.material.map = frameTex;
+                    t.bgQuad.material.needsUpdate = true;
+                }
 
                 // Deterministic per-frame reactivity: the same dt every frame,
                 // so an export is reproducible rather than tied to how fast
@@ -1971,7 +2100,6 @@ function ScanCompositor() {
                 driveCloud(freq, !!spectrum);
                 driveOpacity(freq, !!spectrum);
 
-                if (t.videoTexture) t.videoTexture.needsUpdate = true;
                 renderFrame(time);
 
                 let source = t.renderer.domElement;
@@ -1980,22 +2108,31 @@ function ScanCompositor() {
                     source = down;
                 }
                 const vf = new window.VideoFrame(source, {
-                    timestamp: i * frameUs,
-                    duration: frameUs,
+                    timestamp: stampUs(i),
+                    duration: stampUs(i + 1) - stampUs(i),
                 });
                 encoder.encode(vf, { keyFrame: i % gop === 0 });
                 vf.close();
 
                 pumpAudio(Math.round(((i + 1) / fps) * (pcm ? pcm.sampleRate : 0)));
 
-                while ((encoder.encodeQueueSize > 8
-                    || (audioEncoder && audioEncoder.encodeQueueSize > 40))
-                    && !encodeFailed) {
+                while (encodersBusy()) {
                     // eslint-disable-next-line no-await-in-loop
-                    await new Promise((r) => setTimeout(r, 5));
+                    await waitForEncoders();
                 }
 
-                if (i % 3 === 0) setExportProgress((i + 1) / totalFrames);
+                // Every state update re-renders the whole tool, so the
+                // progress readout is kept to a few times a second.
+                const now = performance.now();
+                if (i === 0) started = now;
+                if (i > 0 && now - lastReport > 250) {
+                    lastReport = now;
+                    const rate = i / Math.max(0.001, (now - started) / 1000);
+                    const left = (totalFrames - i - 1) / rate;
+                    setExportProgress((i + 1) / totalFrames);
+                    setExportStage(`Rendering ${i + 1}/${totalFrames} · `
+                        + `${rate.toFixed(0)} fps · ${Math.ceil(left)}s left`);
+                }
             }
 
             if (!exportCanceledRef.current && !encodeFailed) {
@@ -2010,6 +2147,7 @@ function ScanCompositor() {
         } catch (e) {
             encodeFailed = e;
         } finally {
+            dropReaders();
             try { encoder.close(); } catch (e) { /* already closed */ }
             try { audioEncoder?.close(); } catch (e) { /* already closed */ }
             if (fileStream) {
