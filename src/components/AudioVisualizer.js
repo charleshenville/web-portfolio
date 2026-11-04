@@ -3,6 +3,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import DreamHazeShader from '../lib/dreamHaze';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -39,47 +40,6 @@ const GLOBAL_DEFAULTS = {
 
 const SELECT_COLOR = 0xff3b3b;
 const BOX_COLOR = 0x4ad4d4;
-// Custom dream-like haze shader
-const DreamHazeShader = {
-    uniforms: {
-        tDiffuse: { value: null },
-        time: { value: 0 },
-        intensity: { value: 0.5 }
-    },
-    vertexShader: `
-        varying vec2 vUv;
-        void main() {
-            vUv = uv;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-    `,
-    fragmentShader: `
-        uniform sampler2D tDiffuse;
-        uniform float time;
-        uniform float intensity;
-        varying vec2 vUv;
-        
-        void main() {
-            vec2 uv = vUv;
-            
-            // Soft glow effect
-            vec4 color = texture2D(tDiffuse, uv);
-            
-            // Subtle chromatic aberration for dream-like quality
-            float offset = 0.002 * intensity;
-            vec4 r = texture2D(tDiffuse, uv + vec2(offset, 0.0));
-            vec4 b = texture2D(tDiffuse, uv - vec2(offset, 0.0));
-            color.r = mix(color.r, r.r, 0.3);
-            color.b = mix(color.b, b.b, 0.3);
-            
-            // Subtle color shift for dreamy atmosphere
-            color.rgb *= vec3(1.05, 0.98, 1.1);
-            
-            gl_FragColor = color;
-        }
-    `
-};
-
 // Text field that lets you type freely (decimals, minus sign) while still
 // staying in sync with its slider. Commits only valid numbers.
 function NumberField({ value, min, max, step, disabled, onCommit }) {

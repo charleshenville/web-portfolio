@@ -112,6 +112,40 @@ function autoCuts(env, trackIds, { style, sensitivity, minGap, limit }) {
     return cuts;
 }
 
+// Cuts on a fixed grid: one every `beats` beats at `bpm`, the first on the
+// downbeat at `offset` seconds. Each is placed from its own index rather than
+// by adding up steps, so a long track does not drift off the grid however
+// many decimals the tempo has. 'cycle' steps through the tracks in order;
+// 'shuffle' picks a different one each time, from a fixed seed so the cut
+// list does not change under you as you edit other things.
+function bpmCuts(trackIds, { bpm, offset, beats, order }, limit) {
+    const cuts = [];
+    const n = trackIds.length;
+    const step = (60 / bpm) * beats;
+    if (!n || !(bpm > 0) || !(step >= 0.001) || !(limit > 0)) return cuts;
+    let seed = 0x2545f491;
+    const rand = () => {
+        seed = (seed + 0x6d2b79f5) | 0;
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    let prev = -1;
+    const start = Math.max(0, offset);
+    for (let k = 0; k < 50000; k++) {
+        const at = start + k * step;
+        if (at >= limit) break;
+        let idx = k % n;
+        if (order === 'shuffle' && n > 1) {
+            idx = Math.floor(rand() * (n - 1));
+            if (idx >= prev) idx += 1;
+        }
+        prev = idx;
+        cuts.push({ id: `bpm${k}`, at, track: trackIds[idx] });
+    }
+    return cuts;
+}
+
 const Wave = React.memo(({ peaks, color }) => {
     const ref = useRef(null);
     useEffect(() => {
@@ -144,6 +178,9 @@ function TrackEditor() {
     const [mode, setMode] = useState('manual');
     const [manualCuts, setManualCuts] = useState([]);
     const [auto, setAuto] = useState({ style: 'beats', sensitivity: 1, minGap: 0.5 });
+    // Tempo and downbeat are kept as typed, so "128.000" stays as written
+    // while it is being edited; they are read as numbers where they are used.
+    const [grid, setGrid] = useState({ bpm: '120.000', offset: '0.000', beats: 1, order: 'cycle' });
     const [playing, setPlaying] = useState(false);
     const [status, setStatus] = useState('');
     const [exporting, setExporting] = useState(false);
@@ -170,9 +207,17 @@ function TrackEditor() {
     }, [tracks]);
 
     const autoList = useMemo(() => {
+        if (mode === 'bpm') {
+            return bpmCuts(tracks.map((t) => t.id), {
+                bpm: Number(grid.bpm),
+                offset: Number(grid.offset) || 0,
+                beats: Number(grid.beats) || 1,
+                order: grid.order,
+            }, total);
+        }
         if (mode !== 'auto' || !audio || !tracks.length) return null;
         return autoCuts(audio.env, tracks.map((t) => t.id), { ...auto, limit: total });
-    }, [mode, audio, tracks, auto, total]);
+    }, [mode, audio, tracks, auto, total, grid]);
 
     const cuts = useMemo(
         () => (autoList || manualCuts).slice().sort((a, b) => a.at - b.at),
@@ -290,7 +335,7 @@ function TrackEditor() {
         setManualCuts((cs) => {
             const base = cs.length ? cs : [{ id: uid(), at: 0, track: tracks[0].id }];
             return base.concat({
-                id: uid(), at: Math.round(now * 100) / 100,
+                id: uid(), at: Math.round(now * 1000) / 1000,
                 track: tracks[(i + 1) % tracks.length].id,
             });
         });
@@ -301,8 +346,19 @@ function TrackEditor() {
     );
 
     const bakeAuto = () => {
-        setManualCuts(cuts.map((c) => ({ ...c })));
+        setManualCuts(cuts.map((c) => ({ ...c, id: uid() })));
         setMode('manual');
+    };
+
+    // Tap tempo for the grid: the mean gap of the last few taps.
+    const taps = useRef([]);
+    const tapTempo = () => {
+        const now = performance.now();
+        const recent = taps.current.filter((t) => now - t < 2500).concat(now).slice(-8);
+        taps.current = recent;
+        if (recent.length < 2) return;
+        const gap = (recent[recent.length - 1] - recent[0]) / (recent.length - 1);
+        setGrid((g) => ({ ...g, bpm: (60000 / gap).toFixed(3) }));
     };
 
     // ---- Transport + preview ---------------------------------------------------
@@ -806,7 +862,76 @@ function TrackEditor() {
                     <div className={styles.seg3}>
                         <button type="button" className={`${styles.chip} ${mode === 'manual' ? styles.on : ''}`} onClick={() => setMode('manual')}>Manual</button>
                         <button type="button" className={`${styles.chip} ${mode === 'auto' ? styles.on : ''}`} disabled={!audio} onClick={() => setMode('auto')}>Auto</button>
+                        <button type="button" className={`${styles.chip} ${mode === 'bpm' ? styles.on : ''}`} onClick={() => setMode('bpm')}>BPM</button>
                     </div>
+                    {mode === 'bpm' && (
+                        <>
+                            <label className={styles.row}>
+                                <span>Tempo (BPM)</span>
+                                <input
+                                    type="number"
+                                    className={styles.num}
+                                    min={1}
+                                    max={999}
+                                    step={0.001}
+                                    value={grid.bpm}
+                                    onChange={(e) => setGrid({ ...grid, bpm: e.target.value })}
+                                    onBlur={() => {
+                                        const v = Number(grid.bpm);
+                                        if (v > 0) setGrid((g) => ({ ...g, bpm: v.toFixed(3) }));
+                                    }}
+                                />
+                            </label>
+                            <label className={styles.row}>
+                                <span>Downbeat (s)</span>
+                                <input
+                                    type="number"
+                                    className={styles.num}
+                                    min={0}
+                                    step={0.001}
+                                    value={grid.offset}
+                                    onChange={(e) => setGrid({ ...grid, offset: e.target.value })}
+                                    onBlur={() => setGrid((g) => ({ ...g, offset: Math.max(0, Number(g.offset) || 0).toFixed(3) }))}
+                                />
+                            </label>
+                            <label className={styles.row}>
+                                <span>Cut every (beats)</span>
+                                <input
+                                    type="number"
+                                    className={styles.num}
+                                    min={0.125}
+                                    step={0.25}
+                                    value={grid.beats}
+                                    onChange={(e) => setGrid({ ...grid, beats: e.target.value })}
+                                />
+                            </label>
+                            <div className={styles.seg3}>
+                                {[0.5, 1, 2, 4].map((b) => (
+                                    <button key={b} type="button" className={`${styles.chip} ${Number(grid.beats) === b ? styles.on : ''}`} onClick={() => setGrid({ ...grid, beats: b })}>
+                                        {b === 0.5 ? '½' : b}
+                                    </button>
+                                ))}
+                            </div>
+                            <div className={styles.seg3}>
+                                {[['cycle', 'In order'], ['shuffle', 'Shuffle']].map(([k, l]) => (
+                                    <button key={k} type="button" className={`${styles.chip} ${grid.order === k ? styles.on : ''}`} onClick={() => setGrid({ ...grid, order: k })}>{l}</button>
+                                ))}
+                            </div>
+                            <div className={styles.seg3}>
+                                <button type="button" className={styles.chip} onClick={tapTempo}>Tap tempo</button>
+                                <button type="button" className={styles.chip} onClick={() => setGrid({ ...grid, offset: clock.current.t.toFixed(3) })}>Downbeat here</button>
+                            </div>
+                            <p className={styles.hint}>
+                                {Number(grid.bpm) > 0
+                                    ? `A cut every ${((60 / Number(grid.bpm)) * (Number(grid.beats) || 1)).toFixed(4)}s, ${cuts.length} in all. `
+                                    : ''}
+                                Each cut sits exactly on the grid (worked out from its own
+                                beat number, so nothing drifts); the export rounds it to the
+                                nearest frame. Downbeat here takes the playhead.
+                            </p>
+                            <button type="button" className={styles.btn} disabled={!cuts.length} onClick={bakeAuto}>Edit these manually</button>
+                        </>
+                    )}
                     {mode === 'auto' && (
                         <>
                             <div className={styles.seg3}>
@@ -839,15 +964,15 @@ function TrackEditor() {
                                     type="number"
                                     className={styles.num}
                                     min={0}
-                                    step={0.05}
-                                    value={Math.round(c.at * 100) / 100}
-                                    disabled={mode === 'auto'}
+                                    step={0.001}
+                                    value={Math.round(c.at * 1000) / 1000}
+                                    disabled={mode !== 'manual'}
                                     onChange={(e) => patchCut(c.id, { at: Math.max(0, Number(e.target.value) || 0) })}
                                 />
                                 <select
                                     className={styles.select}
                                     value={c.track}
-                                    disabled={mode === 'auto'}
+                                    disabled={mode !== 'manual'}
                                     style={{ borderColor: trackColor(idxOf(c.track)) }}
                                     onChange={(e) => patchCut(c.id, { track: e.target.value })}
                                 >
