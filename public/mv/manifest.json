@@ -18,5 +18,29 @@
     {
         "id": "flower",
         "label": "Flower"
+    },
+    {
+        "id": "bahen",
+        "label": "Bahen"
+    },
+    {
+        "id": "rosedale",
+        "label": "Rosedale"
+    },
+    {
+        "id": "bench",
+        "label": "Bench"
+    },
+    {
+        "id": "galbraith",
+        "label": "Galbraith"
+    },
+    {
+        "id": "bahen_p4",
+        "label": "Bahen P4"
+    },
+    {
+        "id": "bahen_p3",
+        "label": "Bahen P3"
     }
 ]
