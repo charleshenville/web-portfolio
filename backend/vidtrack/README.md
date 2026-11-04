@@ -52,6 +52,22 @@ So the structure is never recovered. It does not need to be: the scan already
    enough, so zero camera translation is fine, and the pose arrives *already in
    the mesh's frame* — there is no similarity transform left to solve, which is
    where the two-stage SfM approach is most likely to fail.
+5. **Refine by optical flow** (`refine.py`). Everything above steers by SIFT,
+   and SIFT only fires on the scan's most distinctive patches — a sign, some
+   lettering. On an object that is mostly plain material, that anchors the
+   solve by one small region and leaves the rest free to swing: on Galbraith
+   the two signs at the foot of a concrete column sat within a few pixels
+   while the street number higher up was 40px adrift. Densifying does not
+   help, since it reads its 3D from a render at the solve's own pose. Flow
+   needs no features: DIS flow from the scan rendered at the solved pose to
+   the real frame gives an offset at every textured pixel, plain concrete
+   included, and each vector is a 2D-3D correspondence through the render's
+   world buffer. Refining the pose on those, re-rendering and repeating pulls
+   the whole object into line. It also refits the focal on them, pooled over
+   a spread of frames, which is the measurement a wrong focal actually fails;
+   Galbraith's moved from 1350 to about 1400. A frame keeps its solved pose
+   whenever refining does not lower its flow residual, so a blurred pan is
+   never made worse.
 
 Two details that matter:
 
@@ -83,6 +99,15 @@ one. `verify.py` draws the scan back through each solved camera:
 footage, which exposes misalignment far more plainly than a blend. `--video`
 renders the whole take rather than a contact sheet. Both current takes line up
 to within a pixel or two across every frame.
+
+Edge mode has a blind spot, though: on a plainly textured object it draws a
+cloud of crease lines that looks aligned whether it is or not. On Galbraith
+it passed a solve whose street number was doubled 40px in the blend. Look at
+both, and in the blend look at lettering and signs *away* from wherever the
+solve is strongest. Any check built on feature matches shares the solve's own
+blindness — it finds the patches the solve already lined up — so the honest
+numeric check is the flow residual `refine.py` prints by quarter of the
+frame, which covers the plain surfaces too.
 
 The other check is the tool itself: open the take, leave the footage on with the
 wireframe over it, and scrub. If the overlay sits slightly off, the panel's
@@ -129,6 +154,7 @@ web tool picks it up via `manifest.json`. Stages are resumable:
 | `frames` | ffmpeg splits the video into JPEGs |
 | `cloud` | samples a coloured point cloud, and low-poly copies for the wireframe |
 | `solve` | locates the camera against the scan, frame by frame |
+| `refine` | pulls each pose into line by optical flow, and refits the focal |
 | `export` | writes `track.json` and a web-playable H.264 copy |
 | `verify` | draws the solve back over the footage |
 | `publish` | copies assets across and registers the take |
@@ -149,9 +175,23 @@ Knobs worth knowing when a take misbehaves:
 - `--anchors N` sets how many independently located keyframes to use. The
   default scales with clip length; raise it if coverage drops out in the middle
   of a long take, or pass 1 to force the old single-anchor behaviour.
+- `--interior` is for a take filmed from inside the scan - a room, a
+  stairwell. The default search places cameras on a sphere around the scan,
+  which from inside only ever sees the backs of the walls. Interior mode
+  probes a grid with tiny cube-map renders to find the open space, then
+  searches from points spread through it, looking every way. Pass `--focal`
+  with it if you know the lens: an interior sweep costs a few minutes a step.
+- Each anchor first refines from the pose the previous anchor's tracking
+  carried to its frame, and only searches if that fails. This is what gets
+  an interior take through stretches of bare wall, and it is still a fresh
+  solve against the scan, so nothing drifts.
 - `--focal N` skips the sweep when you already know the answer — 1536 for the
   iPhone 14 Pro main camera at 1920x1440, about 870 for its 0.5x ultrawide
-  at 1920x1080.
+  at 1920x1080. A focal given this way is taken as known, so the refine
+  stage keeps it rather than refitting. Note the sweep's inlier scores can
+  be nearly flat on a small or nearly planar scan - Galbraith's ran 79-96
+  from 576px to 3264px - and then its choice means little; the refine
+  stage's dense fit is the one to trust there.
 - `--smooth` (on `localize.py`) sets the trajectory smoothing window. Per-frame
   PnP is drift-free but jittery; 7 frames suits a handheld phone.
 - `--min-anchor` (on `localize.py`) is the inlier count an anchor must reach
@@ -182,6 +222,7 @@ would rather not maintain them.
 
 ```
 localize.py      model-based solver -> sfm.json, alignment.json
+refine.py        optical-flow refinement of sfm.json (solve kept as sfm_solve.json)
 render.py        offscreen textured renderer (world position per pixel)
 verify.py        draws a solve back over its footage
 decimate.py      low-poly copies (coarse/medium/fine) for the wireframe

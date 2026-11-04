@@ -57,10 +57,18 @@ CV_TO_GL = np.diag([1.0, -1.0, -1.0, 1.0])
 # it is given, and then win frames off good anchors on sheer point count.
 MIN_ANCHOR_INLIERS = 12
 
+# A focal fit whose matches are off by more than this, in pixels, is fitting
+# noise rather than the lens.
+MAX_FOCAL_FIT_RMS = 4.0
+
 
 def load_scan(glb_path: Path):
     """
     Load the mesh with its scene transform baked in, plus its base texture.
+
+    A scan whose texture overflows one page arrives as several meshes, each
+    with its own texture. The renderer binds a single texture, so the pages
+    are stacked into one atlas and each mesh's UVs squeezed into its band.
 
     Returns:
         (vertices (V,3), faces (F,3), uv (V,2), texture RGB array (H,W,3))
@@ -75,20 +83,39 @@ def load_scan(glb_path: Path):
         g = g.copy()
         g.apply_transform(transform)
         geoms.append(g)
-    if len(geoms) != 1:
-        raise SystemExit(f"expected one textured mesh, found {len(geoms)}")
-    mesh = geoms[0]
+    if not geoms:
+        raise SystemExit("scan has no meshes")
 
-    tex = mesh.visual.material.baseColorTexture
-    if tex is None:
-        raise SystemExit("scan has no base colour texture to match against")
-    if tex.mode != "RGB":
-        tex = tex.convert("RGB")
+    pages = []
+    for g in geoms:
+        tex = getattr(g.visual.material, "baseColorTexture", None)
+        if tex is None or g.visual.uv is None:
+            raise SystemExit("scan has no base colour texture to match against")
+        pages.append(tex.convert("RGB") if tex.mode != "RGB" else tex)
 
-    return (np.asarray(mesh.vertices, dtype=np.float64),
-            np.asarray(mesh.faces, dtype=np.int64),
-            np.asarray(mesh.visual.uv, dtype=np.float64),
-            np.asarray(tex))
+    # Bring every page to a common width so they stack without padding.
+    width = max(p.size[0] for p in pages)
+    pages = [p if p.size[0] == width else
+             p.resize((width, round(p.size[1] * width / p.size[0])))
+             for p in pages]
+    total = sum(p.size[1] for p in pages)
+
+    # UV v runs up from the bottom of the image, and page 0 sits at the top,
+    # so each band starts from however much of the stack lies beneath it.
+    verts, faces, uvs = [], [], []
+    offset, below = 0, total
+    for g, p in zip(geoms, pages):
+        h = p.size[1]
+        below -= h
+        uv = np.asarray(g.visual.uv, dtype=np.float64).copy()
+        uv[:, 1] = (below + uv[:, 1] * h) / total
+        verts.append(np.asarray(g.vertices, dtype=np.float64))
+        faces.append(np.asarray(g.faces, dtype=np.int64) + offset)
+        uvs.append(uv)
+        offset += len(g.vertices)
+
+    atlas = np.vstack([np.asarray(p) for p in pages])
+    return np.vstack(verts), np.vstack(faces), np.vstack(uvs), atlas
 
 
 def root_sift(desc: np.ndarray) -> np.ndarray:
@@ -219,21 +246,142 @@ def match_render_to_frame(rgb, world, mask, sift, frame_matcher, frame_pts,
     return rvec, tvec, obj[inl], img[inl], len(inl)
 
 
-def find_pose(renderer, centre, radius, frame_gray, sift, focal_frame,
-              n_views, distances, render_wh, reproj, verbose=True):
+def view_up(direction: np.ndarray) -> np.ndarray:
+    """An up vector for look_at that is never parallel to the view direction."""
+    return np.array([0.0, 0.0, 1.0]) if abs(direction[1]) > 0.95 else \
+        np.array([0.0, 1.0, 0.0])
+
+
+def exterior_candidates(centre, radius, n_views, distances=(1.6, 2.2)):
+    """Viewpoints on spheres around the scan, all looking at its centre."""
+    return [(centre + d * radius * dist, centre)
+            for dist in distances for d in fibonacci_sphere(n_views)]
+
+
+def interior_candidates(verts, faces, uv, tex, n_positions, n_dirs,
+                        probe=96):
+    """
+    Viewpoints inside the scan, looking outwards in every direction.
+
+    For a space filmed from within - a room, a stairwell - the camera stands
+    inside the geometry, and a sphere of viewpoints outside it only ever sees
+    the backs of the walls. Free space is found by probing a grid with tiny
+    cube-map renders: a point is inside if most of what surrounds it is scan,
+    and usable if it keeps some clearance from the nearest surface. A spread
+    of those points, each looking in every direction, makes the search.
+
+    Returns:
+        list of (eye, target)
+    """
+    lo, hi = verts.min(axis=0), verts.max(axis=0)
+    extent = float((hi - lo).max())
+    step = extent / 16.0
+    axes = [np.arange(lo[k] + step / 2, hi[k], step) for k in range(3)]
+    grid = np.stack(np.meshgrid(*axes, indexing="ij"), -1).reshape(-1, 3)
+
+    cube = [np.array(d, float) for d in
+            ([1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1],
+             [0, 0, -1])]
+    proj = perspective(probe / 2.0, probe, probe)  # 90 degrees: a cube face
+    clearance = 0.03 * extent
+    free = []
+    r = ScanRenderer(verts, faces, uv, tex, probe, probe)
+    try:
+        for p in grid:
+            cover, near = [], np.inf
+            for d in cube:
+                _, world, mask = r.render(look_at(p, p + d, view_up(d)), proj)
+                cover.append(mask.mean())
+                if mask.any():
+                    near = min(near, float(np.linalg.norm(
+                        world[mask] - p, axis=1).min()))
+            # Scans have holes - windows, unscanned corners - so allow some
+            # sky, but a point outside the scan sees nothing in half its faces.
+            if np.mean(cover) > 0.7 and min(cover) > 0.3 and near > clearance:
+                free.append(p)
+    finally:
+        r.release()
+    if not free:
+        raise SystemExit("[loc] found no free space inside the scan; "
+                         "is this really an interior take?")
+    free = np.array(free)
+
+    # Farthest-point sampling spreads the positions through the whole space
+    # rather than clumping them where the grid happens to be densest.
+    pick = [int(np.argmin(np.linalg.norm(free - free.mean(0), axis=1)))]
+    dist = np.linalg.norm(free - free[pick[0]], axis=1)
+    while len(pick) < min(n_positions, len(free)):
+        pick.append(int(np.argmax(dist)))
+        dist = np.minimum(dist, np.linalg.norm(free - free[pick[-1]], axis=1))
+    print(f"[loc] interior: {len(free)} free grid points of {len(grid)}, "
+          f"searching {len(pick)} positions x {n_dirs} directions")
+
+    dirs = fibonacci_sphere(n_dirs, min_elevation=-1.0)
+    return [(free[i], free[i] + d) for i in pick for d in dirs]
+
+
+def plausible(rvec, tvec, box) -> bool:
+    """
+    Whether a solved camera stands somewhere it could have been filmed from.
+
+    PnP on a dozen near-coplanar matches - a bare wall, say - will happily
+    return a camera 1e14 units away that still reprojects them within the
+    threshold, and twelve inliers is enough to pass as an anchor. A camera
+    has to stand within reach of the scan, or inside it for an interior take.
+    """
+    if rvec is None or box is None:
+        return rvec is not None
+    R, _ = cv2.Rodrigues(rvec)
+    c = (-R.T @ np.asarray(tvec).reshape(3)).ravel()
+    return bool(np.all(c >= box[0]) and np.all(c <= box[1]))
+
+
+def refine_pose(renderer, rvec, tvec, n, obj, img, sift, matcher, f_pts, K,
+                focal_frame, frame_hw, render_wh, reproj, up, verbose=False,
+                box=None):
+    """
+    Re-render from a pose and rematch until the inlier count stops climbing.
+
+    The render then shares the camera's viewpoint, so far more features
+    survive than from the nearest search viewpoint, and the pose tightens.
+
+    Returns:
+        (rvec, tvec, object points, image points, n_inliers)
+    """
+    rw, rh = render_wh
+    fh, _ = frame_hw
+    for it in range(3):
+        view = gl_view_from_pose(rvec, tvec)
+        proj_c = perspective(focal_frame * rh / fh, rw, rh)
+        rgb, world, mask = renderer.render(view, proj_c)
+        r2, t2, o2, i2, n2 = match_render_to_frame(
+            rgb, world, mask, sift, matcher, f_pts, K, reproj, up)
+        if n2 <= n or not plausible(r2, t2, box):
+            break
+        rvec, tvec, obj, img, n = r2, t2, o2, i2, n2
+        if verbose:
+            print(f"[find]   refine {it + 1}: {n} inliers")
+    return rvec, tvec, obj, img, n
+
+
+def find_pose(renderer, candidates, frame_gray, sift, focal_frame, render_wh,
+              reproj, verbose=True, interior=False, seed=None, box=None):
     """
     Search viewpoints for the one that explains the keyframe, then refine it.
 
     Args:
         renderer: a ScanRenderer
-        centre, radius: bounding sphere of the scan
+        candidates: (eye, target) viewpoints to try
         frame_gray: the keyframe, greyscale
         sift: detector shared with the renders
         focal_frame: focal length in frame pixels to test with
-        n_views: directions to spread over the sphere
-        distances: multiples of radius to place the camera at
         render_wh: (width, height) of each render
         reproj: RANSAC reprojection threshold in frame pixels
+        interior: render the search at the camera's own field of view; from
+            inside, the view has to resemble the frame, not just contain it
+        seed: (rvec, tvec) already near the answer, e.g. carried over by
+            tracking from a neighbouring anchor; skips the search entirely
+        box: (lo, hi) the camera centre must lie within; see plausible()
 
     Returns:
         (rvec, tvec, object points, image points, n_inliers)
@@ -257,48 +405,41 @@ def find_pose(renderer, centre, radius, frame_gray, sift, focal_frame,
     matcher.add([f_desc])
     matcher.train()
 
-    # The render's own focal only has to frame the object; it never has to
-    # match the camera, because only the world buffer is read from it.
-    proj = perspective(0.9 * max(rw, rh), rw, rh)
-    dirs = fibonacci_sphere(n_views)
+    if seed is not None:
+        return refine_pose(renderer, seed[0], seed[1], 0, None, None, sift,
+                           matcher, f_pts, K, focal_frame, (fh, fw),
+                           render_wh, reproj, up, verbose, box)
+
+    # From outside, the render's own focal only has to frame the object; it
+    # never has to match the camera, because only the world buffer is read
+    # from it. From inside there is no framing the space, so render what the
+    # camera would see.
+    proj = perspective(focal_frame * rh / fh if interior
+                       else 0.9 * max(rw, rh), rw, rh)
 
     best = (0, None, None, None, None)
-    for dist in distances:
-        for d in dirs:
-            eye = centre + d * radius * dist
-            rgb, world, mask = renderer.render(
-                look_at(eye, centre, [0, 1, 0]), proj)
-            if mask.mean() < 0.02:
-                continue
-            rvec, tvec, obj, img, n = match_render_to_frame(
-                rgb, world, mask, sift, matcher, f_pts, K, reproj, up)
-            if n > best[0]:
-                best = (n, rvec, tvec, obj, img)
+    for eye, target in candidates:
+        rgb, world, mask = renderer.render(
+            look_at(eye, target, view_up(target - eye)), proj)
+        if mask.mean() < 0.02:
+            continue
+        rvec, tvec, obj, img, n = match_render_to_frame(
+            rgb, world, mask, sift, matcher, f_pts, K, reproj, up)
+        if n > best[0] and plausible(rvec, tvec, box):
+            best = (n, rvec, tvec, obj, img)
     if verbose:
         print(f"[find] best viewpoint gives {best[0]} PnP inliers")
     if best[1] is None:
         return None, None, None, None, 0
 
-    # Re-render from the pose we just found and match again. The render now
-    # shares the camera's viewpoint, so far more features survive and the pose
-    # tightens. A couple of rounds is enough to settle.
     n, rvec, tvec, obj, img = best
-    for it in range(3):
-        view = gl_view_from_pose(rvec, tvec)
-        proj_c = perspective(focal_frame * rh / fh, rw, rh)
-        rgb, world, mask = renderer.render(view, proj_c)
-        r2, t2, o2, i2, n2 = match_render_to_frame(
-            rgb, world, mask, sift, matcher, f_pts, K, reproj, up)
-        if n2 <= n:
-            break
-        rvec, tvec, obj, img, n = r2, t2, o2, i2, n2
-        if verbose:
-            print(f"[find]   refine {it + 1}: {n} inliers")
-    return rvec, tvec, obj, img, n
+    return refine_pose(renderer, rvec, tvec, n, obj, img, sift, matcher,
+                       f_pts, K, focal_frame, (fh, fw), render_wh, reproj,
+                       up, verbose, box)
 
 
-def sweep_focal(renderer, centre, radius, frame_gray, sift, width, height,
-                n_views, distances, render_wh, reproj):
+def sweep_focal(renderer, candidates, frame_gray, sift, width, height,
+                render_wh, reproj, interior=False, box=None):
     """
     Choose a focal length by which one best explains the keyframe.
 
@@ -310,9 +451,9 @@ def sweep_focal(renderer, centre, radius, frame_gray, sift, width, height,
     scores = {}
 
     def score(f):
-        _, _, _, _, n = find_pose(renderer, centre, radius, frame_gray, sift,
-                                  f, n_views, distances, render_wh, reproj,
-                                  verbose=False)
+        _, _, _, _, n = find_pose(renderer, candidates, frame_gray, sift, f,
+                                  render_wh, reproj, verbose=False,
+                                  interior=interior, box=box)
         scores[f] = n
         print(f"[focal]   f={f:7.1f}px -> {n:4d} inliers")
         return n
@@ -379,6 +520,12 @@ def refine_focal(focal, width, height, matched, rounds=4):
     f2 = float(K2[0, 0])
     print(f"[focal]   fit f={f2:.1f}px (rms {rms:.2f}px on {n} matches "
           f"over {len(obj)} frame(s))")
+    # Matches that no single focal explains - a mislocated frame among them,
+    # say - can send the fit off to absurd values. Keep the sweep's answer
+    # unless the fit actually agrees with its matches and stays in range.
+    if rms > MAX_FOCAL_FIT_RMS or not 0.5 * focal <= f2 <= 2.0 * focal:
+        print(f"[focal]   fit rejected, keeping f={focal:.1f}px")
+        return focal
     return f2
 
 
@@ -433,7 +580,7 @@ def densify(renderer, rvec, tvec, frame_gray, focal, render_wh, K, reproj,
 
 
 def track_and_solve(paths, key_idx, obj, img, K, reproj, win=31, levels=4,
-                    reach=None):
+                    reach=None, box=None):
     """
     Carry the keyframe's correspondences through the take with optical flow.
 
@@ -489,7 +636,7 @@ def track_and_solve(paths, key_idx, obj, img, K, reproj, win=31, levels=4,
             pts = fwd[ok].reshape(-1, 1, 2)
             live = live[ok]
             r, t, inl = solve_pose(live, pts.reshape(-1, 2), K, reproj)
-            if r is not None:
+            if plausible(r, t, box):
                 out[i] = (r, t, len(inl))
             cur = nxt
             i += direction
@@ -523,7 +670,8 @@ def smooth_poses(frames: list, window: int) -> list:
 def localise(work_dir: Path, glb: Path, n_views: int, render_w: int,
              reproj: float, smooth: int, focal: float | None,
              keyframe: int | None, anchors: int,
-             min_anchor: int = MIN_ANCHOR_INLIERS) -> dict:
+             min_anchor: int = MIN_ANCHOR_INLIERS,
+             interior: bool = False) -> dict:
     """Solve a pose for every frame and write it out in COLMAP's layout."""
     paths = sorted((work_dir / "frames").glob("*.jpg"))
     if not paths:
@@ -546,8 +694,25 @@ def localise(work_dir: Path, glb: Path, n_views: int, render_w: int,
     renderer = ScanRenderer(verts, faces, uv, tex, render_w, render_h)
     sift = cv2.SIFT_create(nfeatures=12000)
     key_gray = cv2.imread(str(paths[key_idx]), cv2.IMREAD_GRAYSCALE)
-    distances = (1.6, 2.2)
     render_wh = (render_w, render_h)
+
+    # Where a camera may stand: inside the scan for an interior take, and
+    # for an object, anywhere within a few radii of it.
+    lo, hi = verts.min(axis=0), verts.max(axis=0)
+    margin = 0.05 * float((hi - lo).max()) if interior else 4.0 * radius
+    box = (lo - margin, hi + margin)
+
+    # The full search, and a thinner one for the focal sweep and fit, which
+    # run it many times over.
+    if interior:
+        n_dirs = 26
+        search = interior_candidates(verts, faces, uv, tex,
+                                     max(8, n_views // n_dirs), n_dirs)
+        quick = interior_candidates(verts, faces, uv, tex,
+                                    max(4, n_views // (3 * n_dirs)), n_dirs)
+    else:
+        search = exterior_candidates(centre, radius, n_views)
+        quick = exterior_candidates(centre, radius, max(60, n_views // 3))
 
     # Optical flow sheds points as it goes, so one anchor cannot carry a long
     # take. Several independent anchors spread across the clip each cover their
@@ -567,11 +732,11 @@ def localise(work_dir: Path, glb: Path, n_views: int, render_w: int,
     print(f"[loc] anchors at {key_idxs}, each reaching +/-{reach} frames")
 
     seeds = []
+    solved = {}
     try:
         if focal is None:
-            focal = sweep_focal(renderer, centre, radius, key_gray, sift,
-                                width, height, max(60, n_views // 3),
-                                distances, render_wh, reproj)
+            focal = sweep_focal(renderer, quick, key_gray, sift, width,
+                                height, render_wh, reproj, interior, box)
             # Match a few frames across the take at the current focal, fit,
             # and rematch at the fitted value: the PnP inliers a focal keeps
             # lean slightly towards it, so one pass would undershoot.
@@ -581,9 +746,8 @@ def localise(work_dir: Path, glb: Path, n_views: int, render_w: int,
                 matched = []
                 for gray in fit_grays:
                     rv, _, o, im, _ = find_pose(
-                        renderer, centre, radius, gray, sift, focal,
-                        max(60, n_views // 3), distances, render_wh, reproj,
-                        verbose=False)
+                        renderer, quick, gray, sift, focal, render_wh,
+                        reproj, verbose=False, interior=interior, box=box)
                     if rv is not None:
                         matched.append((o, im))
                 f2 = refine_focal(focal, width, height, matched)
@@ -594,11 +758,24 @@ def localise(work_dir: Path, glb: Path, n_views: int, render_w: int,
             print(f"[focal] using f={focal:.1f}px")
         K = intrinsics(focal, width, height)
 
+        # Anchors run in order, each tracked as soon as it is located, so the
+        # next one usually finds a pose already carried to its frame. Refining
+        # from that skips the search - which from inside a space is hundreds
+        # of renders - and it is still a fresh solve against the model, so
+        # nothing drifts. The full search is the fallback.
         for ki in key_idxs:
             gray = cv2.imread(str(paths[ki]), cv2.IMREAD_GRAYSCALE)
-            rvec, tvec, obj, img, n = find_pose(
-                renderer, centre, radius, gray, sift, focal, n_views,
-                distances, render_wh, reproj, verbose=False)
+            rvec, n = None, 0
+            if ki in solved:
+                rvec, tvec, obj, img, n = find_pose(
+                    renderer, None, gray, sift, focal, render_wh, reproj,
+                    verbose=False, seed=solved[ki][:2], box=box)
+                if rvec is not None and n >= min_anchor:
+                    print(f"[loc] anchor {ki}: refined from tracking")
+            if rvec is None or n < min_anchor:
+                rvec, tvec, obj, img, n = find_pose(
+                    renderer, search, gray, sift, focal, render_wh, reproj,
+                    verbose=False, interior=interior, box=box)
             if rvec is None:
                 print(f"[loc] anchor {ki}: could not locate, skipping")
                 continue
@@ -614,6 +791,14 @@ def localise(work_dir: Path, glb: Path, n_views: int, render_w: int,
             else:
                 print(f"[loc] anchor {ki}: {n} correspondences")
             seeds.append((ki, obj, img, n))
+
+            # Each anchor votes for the frames it reaches; the one with the
+            # most inliers on a given frame wins it.
+            seg = track_and_solve(paths, ki, obj, img, K, reproj, reach=reach,
+                                  box=box)
+            for i, (r, t, n_inl) in seg.items():
+                if i not in solved or n_inl > solved[i][2]:
+                    solved[i] = (r, t, n_inl)
     finally:
         renderer.release()
 
@@ -621,16 +806,9 @@ def localise(work_dir: Path, glb: Path, n_views: int, render_w: int,
         raise SystemExit("[loc] could not locate the camera on any keyframe")
     print(f"[loc] {len(seeds)} usable anchor(s) of {len(key_idxs)}")
 
-    # Each anchor votes for the frames it reaches; the one with the most
-    # inliers on a given frame wins it.
-    solved = {}
-    for ki, obj, img, _ in seeds:
-        seg = track_and_solve(paths, ki, obj, img, K, reproj, reach=reach)
-        for i, (r, t, n_inl) in seg.items():
-            if i not in solved or n_inl > solved[i][2]:
-                solved[i] = (r, t, n_inl)
-
-    n = max(s[3] for s in seeds)
+    # The loop's own obj and n belong to whichever anchor ran last, which may
+    # have been skipped; report the best one instead.
+    _, obj, _, n = max(seeds, key=lambda s: s[3])
     print(f"[loc] solved {len(solved)}/{len(paths)} frames "
           f"from {len(seeds)} anchor(s)")
     if not solved:
@@ -713,11 +891,14 @@ def main():
                          "~70 frames, 1 forces a single anchor")
     ap.add_argument("--min-anchor", type=int, default=MIN_ANCHOR_INLIERS,
                     help="inliers an anchor needs before it is trusted")
+    ap.add_argument("--interior", action="store_true",
+                    help="the camera stands inside the scan (a room, a "
+                         "stairwell); search from within, not around it")
     args = ap.parse_args()
 
     localise(args.work_dir, args.glb, args.views, args.render_width,
              args.reproj, args.smooth, args.focal, args.keyframe,
-             args.anchors, args.min_anchor)
+             args.anchors, args.min_anchor, args.interior)
 
 
 if __name__ == "__main__":

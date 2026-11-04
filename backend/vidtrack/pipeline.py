@@ -7,14 +7,15 @@ than restarted:
 
     frames  ffmpeg splits the video into JPEGs
     cloud   glb_to_ply samples a coloured point cloud off the mesh
-    sfm     COLMAP solves intrinsics and a camera pose per frame
-    align   the solve is registered into the GLB's coordinate frame
+    solve   the camera is located against the scan, frame by frame
+    refine  optical flow pulls each pose into line across the whole object
     export  track.json plus an undistorted H.264 copy of the footage
+    verify  the solve is drawn back over the footage
     publish GLB, PLY and manifest entry land in public/mv/
 
 Usage:
     python pipeline.py --video ~/Downloads/thing.MOV --glb ~/Downloads/thing.glb
-    python pipeline.py --name thing --only align,export
+    python pipeline.py --name thing --only refine,export
 """
 
 import argparse
@@ -32,7 +33,7 @@ PUBLIC = HERE.parent.parent / "public" / "mv"
 PY = HERE.parent / "venv" / "bin" / "python"
 GLB_TO_PLY = HERE.parent / "glb_to_ply" / "glb_to_ply.py"
 
-STAGES = ["frames", "cloud", "solve", "export", "verify", "publish"]
+STAGES = ["frames", "cloud", "solve", "refine", "export", "verify", "publish"]
 
 
 def run(cmd: list, label: str) -> None:
@@ -94,7 +95,7 @@ def stage_cloud(name: str, glb: Path, points: int) -> None:
 
 
 def stage_solve(name: str, glb: Path, views: int, focal: float | None,
-                keyframe: int | None) -> None:
+                keyframe: int | None, interior: bool = False) -> None:
     """
     Solve intrinsics and a pose per frame against the scan itself.
 
@@ -107,7 +108,22 @@ def stage_solve(name: str, glb: Path, views: int, focal: float | None,
         cmd += ["--focal", focal]
     if keyframe is not None:
         cmd += ["--keyframe", keyframe]
+    if interior:
+        cmd += ["--interior"]
     run(cmd, f"solve: {name}")
+
+
+def stage_refine(name: str, glb: Path, fit_focal: bool) -> None:
+    """
+    Pull the solve into line across the whole object by optical flow.
+
+    The solve steers by SIFT, which only finds the scan's most distinctive
+    patches; see refine.py.
+    """
+    cmd = [PY, HERE / "refine.py", WORK / name, "--glb", glb]
+    if not fit_focal:
+        cmd += ["--no-focal-fit"]
+    run(cmd, f"refine: {name}")
 
 
 def stage_verify(name: str, glb: Path) -> None:
@@ -163,6 +179,8 @@ def main():
                     help="skip the focal sweep and use this value, in pixels")
     ap.add_argument("--keyframe", type=int, default=None,
                     help="frame to locate first; defaults to the middle")
+    ap.add_argument("--interior", action="store_true",
+                    help="filmed from inside the scan, e.g. a room")
     ap.add_argument("--points", type=int, default=300_000,
                     help="points sampled for the cloud layer")
     ap.add_argument("--only", type=str, default=None,
@@ -194,7 +212,10 @@ def main():
         stage_cloud(name, glb, args.points)
     if "solve" in todo:
         stage_solve(name, ASSETS / f"{name}.glb", args.views, args.focal,
-                    args.keyframe)
+                    args.keyframe, args.interior)
+    if "refine" in todo:
+        # A focal given on the command line is known, not estimated.
+        stage_refine(name, ASSETS / f"{name}.glb", args.focal is None)
     if "export" in todo:
         stage_export(name, fps, args.video)
     if "verify" in todo:

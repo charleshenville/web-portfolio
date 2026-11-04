@@ -166,29 +166,36 @@ class ScanRenderer:
             (rgb uint8 (H,W,3), world float32 (H,W,3), mask bool (H,W))
             with rows ordered top-down, matching OpenCV
         """
-        self.fbo.use()
-        self.ctx.clear(0.0, 0.0, 0.0, 0.0)
-        mvp = (proj @ view).astype("f4")
-        self.prog["mvp"].write(np.ascontiguousarray(mvp.T, dtype="f4"))
-        self.tex.use(0)
-        self.prog["tex"].value = 0
-        self.vao.render(moderngl.TRIANGLES)
+        # Make this context current first. Standalone contexts do not switch
+        # by themselves, and once a second renderer has drawn - the interior
+        # search probes with one - GL object ids from this context resolve in
+        # that one, and every render comes back as the same garbage.
+        with self.ctx:
+            self.fbo.use()
+            self.ctx.clear(0.0, 0.0, 0.0, 0.0)
+            mvp = (proj @ view).astype("f4")
+            self.prog["mvp"].write(np.ascontiguousarray(mvp.T, dtype="f4"))
+            self.tex.use(0)
+            self.prog["tex"].value = 0
+            self.vao.render(moderngl.TRIANGLES)
 
-        rgb = np.frombuffer(self.fbo.read(attachment=0, components=3),
-                            dtype=np.uint8).reshape(self.height, self.width, 3)
-        world = np.frombuffer(
-            self.fbo.read(attachment=1, components=4, dtype="f4"),
-            dtype="f4").reshape(self.height, self.width, 4)
+            rgb = np.frombuffer(
+                self.fbo.read(attachment=0, components=3),
+                dtype=np.uint8).reshape(self.height, self.width, 3)
+            world = np.frombuffer(
+                self.fbo.read(attachment=1, components=4, dtype="f4"),
+                dtype="f4").reshape(self.height, self.width, 4)
         rgb = rgb[::-1].copy()
         world = world[::-1].copy()
         return rgb, world[:, :, :3], world[:, :, 3] > 0.5
 
     def release(self):
         """Drop the GL objects and the context."""
-        for obj in (self.vao, self.vbo, self.ibo, self.tex, self.fbo,
-                    self.color_rb, self.world_rb, self.depth_rb):
-            try:
-                obj.release()
-            except Exception:
-                pass
+        with self.ctx:
+            for obj in (self.vao, self.vbo, self.ibo, self.tex, self.fbo,
+                        self.color_rb, self.world_rb, self.depth_rb):
+                try:
+                    obj.release()
+                except Exception:
+                    pass
         self.ctx.release()
