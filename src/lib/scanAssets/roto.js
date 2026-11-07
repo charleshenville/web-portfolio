@@ -23,12 +23,22 @@ const written = {}; // take -> entry, from a write this session (ahead of the bu
 // Writing mattes rewrites the index this module imports. Accepting the update
 // here keeps webpack from refreshing the whole compositor for it.
 if (module.hot) {
-    module.hot.accept('../../data/mattes.json', () => listeners.forEach((fn) => fn()));
+    module.hot.accept('../../data/mattes.json', () => {
+        // The bundle has caught up with the disk.
+        Object.keys(written).forEach((k) => delete written[k]);
+        listeners.forEach((fn) => fn());
+    });
 }
+
+const stamp = (entry) => Math.max(0, ...((entry && entry.objects) || []).map((o) => o.writtenAt || 0));
 
 /** The published mattes for a take: `[{ id, name, color, file, rev, frames, ... }]`. */
 export function mattesFor(take) {
-    const entry = written[take] || bundledIndex[take];
+    // Whichever is newer: a write from the tool this session, or the index
+    // (which a pipeline run may have rewritten since).
+    const a = written[take];
+    const b = bundledIndex[take];
+    const entry = a && (!b || stamp(a) >= stamp(b)) ? a : b;
     return entry && Array.isArray(entry.objects) ? entry.objects : [];
 }
 

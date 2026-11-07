@@ -292,9 +292,16 @@ applied, and they refine that, as they did originally.
 
 It reuses the masks in `work/` when every object has one on every frame,
 and otherwise (or with `--repropagate`, e.g. on a fresh clone) re-runs SAM 2
-from the saved clicks, round by round as they were made: the clicks from
-before the first tracking pass, a pass, the corrections made after it,
-another pass. Brush strokes are reapplied on top as always.
+from the session: each tracking pass as it was run in the tool (whole take,
+or forwards or backwards from a frame, and as far as it got before being
+stopped), with the clicks made before it put in first, one at a time in the
+order they were made. Both orders matter: whether a frame had been tracked
+when it was clicked decides whether SAM 2 reads the click as a new object or
+a correction, and each click refines the mask the one before it gave. On
+onetwo, one whole-take pass per round with each frame's clicks sent at once
+gave masks a third smaller mid-take; replayed as made, every sampled frame
+matches the tool's to three decimals. Brush strokes are painted on top as
+always.
 
 **In the compositor.** A take's mattes are decoded frame by frame in step
 with the footage (WebCodecs, the reversed copy while ping-ponging), in the

@@ -132,7 +132,8 @@ def load_session(take: str) -> dict:
     for o in sess.get("objects", []):
         o.setdefault("prompts", {})
         o.setdefault("strokes", {})
-        o.setdefault("round", 0)
+        o.setdefault("passes", [])
+        o.setdefault("round", len(o["passes"]))
     return sess
 
 
@@ -142,6 +143,9 @@ def session_json(sess: dict) -> str:
     # [x, y] / [x, y, label] / [x0, y0, x1, y1] onto one line.
     text = re.sub(r"\[\s+(-?[\d.e+-]+(?:,\s+-?[\d.e+-]+){1,3})\s+\]",
                   lambda m: "[" + re.sub(r",\s+", ", ", m.group(1)) + "]", text)
+    # A tracking pass onto one line.
+    text = re.sub(r'\{\s+("mode": "[a-z]+"),\s+("frame": \d+)(?:,\s+("done": \d+))?\s+\}',
+                  lambda m: "{" + ", ".join(g for g in m.groups() if g) + "}", text)
     # A stroke's whole path onto one line.
     text = re.sub(r'("pts": )\[\s+((?:\[[^\[\]]*\],?\s*)+)\]',
                   lambda m: m.group(1) + "[" + re.sub(r"\s+", " ", m.group(2)).strip() + "]", text)
@@ -479,6 +483,14 @@ class Engine:
                     p.add_new_mask(self.state, frame, obj, prev > 127)
                 else:
                     self._track_to(obj, frame, prev)
+            elif len(pts) > 1:
+                # Nothing to go on but the clicks: feed them in the order
+                # they were made, each refining the mask the last one gave,
+                # as the tool did. All at once, SAM 2 can settle on a
+                # different object - a box without its lid, say.
+                for k in range(1, len(pts)):
+                    part = {"points": pts[:k], "box": box}
+                    self._apply(obj, frame, part, store, init)
         kw = {}
         if pts:
             kw["points"] = [[q[0], q[1]] for q in pts]
@@ -543,13 +555,16 @@ class Engine:
             out_d["non_cond_frame_outputs"].pop(f, None)
 
     def propagate(self, obj: str, mode: str, frame: int, store: MaskStore,
-                  progress=None, cancel: threading.Event | None = None) -> int:
+                  progress=None, cancel: threading.Event | None = None,
+                  limit: int | None = None) -> int:
         """
         Track one object through the take; returns how many frames were done.
 
         `mode` is 'all' (forwards from its first keyframe to the end, then
         backwards from it to the start), 'forward' or 'backward' from `frame`.
         Only this object is tracked, so fixing one does not re-run the rest.
+        `limit` stops after that many frames (replaying a pass that was
+        stopped part way).
         """
         import torch
         p = self.predictor
@@ -577,7 +592,7 @@ class Engine:
             done = 0
             for order, reverse in passes:
                 for f in order:
-                    if cancel is not None and cancel.is_set():
+                    if (cancel is not None and cancel.is_set()) or (limit is not None and done >= limit):
                         return done
                     if f in cond:
                         logits = cond[f]["pred_masks"]
@@ -782,11 +797,17 @@ def write_mattes(sess: dict, store: MaskStore, objs: list[str] | None = None,
 
 def replay(engine: Engine, sess: dict, store: MaskStore, obj: dict, log=print) -> None:
     """
-    Re-run an object from its prompts alone: its masks are dropped and SAM 2
-    is driven as it was in the tool, round by round - the clicks made before
-    the first propagation, a pass through the whole take, the corrections made
-    after it, another pass, and so on - so a correction is again made against
-    the tracked mask it was correcting.
+    Re-run an object from its session alone: its masks are dropped and SAM 2
+    is driven as it was in the tool - each tracking pass as it was run (whole
+    take, or forwards or backwards from a frame, and as far as it got),
+    with the clicks made before it put in first. Which frames had been
+    tracked when a click was made decides whether SAM 2 takes it as a fresh
+    object or a correction, so replaying the passes themselves, not one
+    whole-take pass per round, is what reproduces the masks.
+
+    A click edited later is replayed in its latest form, in the round it was
+    last changed; brush strokes are not the model's and are painted on when
+    the matte is written, as always.
     """
     import torch
     store.drop(obj["id"])
@@ -795,16 +816,23 @@ def replay(engine: Engine, sess: dict, store: MaskStore, obj: dict, log=print) -
     if not prompts:
         log(f"[roto] {obj['id']} ({obj['name']}): no clicks, skipped")
         return
-    rounds = sorted({p.get("round", 0) for p in prompts.values()})
-    for r in rounds:
+    passes = list(obj.get("passes") or [])
+    last = max(p.get("round", 0) for p in prompts.values())
+    # Clicks after the last pass still want one through the whole take.
+    if not passes or last >= len(passes):
+        passes += [{"mode": "all", "frame": 0}] * (last + 1 - len(passes))
+    for r, ps in enumerate(passes):
         with engine.gpu, torch.inference_mode(), engine.autocast():
             for f in sorted(k for k, p in prompts.items() if p.get("round", 0) == r):
                 store.put(obj["id"], f, engine._apply(obj["id"], f, prompts[f], store))
+        if engine._obj_idx(obj["id"]) is None:
+            continue
         t0 = time.time()
-        n = engine.propagate(obj["id"], "all", 0, store)
-        log(f"[roto] {obj['id']} ({obj['name']}) round {r}: {n} frames "
-            f"in {time.time() - t0:.0f}s ({(time.time() - t0) / max(1, n):.2f} s/frame)")
-    obj["stale"] = False
+        n = engine.propagate(obj["id"], ps["mode"], int(ps.get("frame", 0)), store,
+                             limit=ps.get("done"))
+        log(f"[roto] {obj['id']} ({obj['name']}) pass {r + 1}/{len(passes)} "
+            f"({ps['mode']} from {ps.get('frame', 0)}): {n} frames in {time.time() - t0:.0f}s "
+            f"({(time.time() - t0) / max(1, n):.2f} s/frame)", flush=True)
 
 
 def rebuild(take: str, repropagate: bool = False, model: str = "base_plus", log=print) -> dict | None:

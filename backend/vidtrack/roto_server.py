@@ -282,7 +282,7 @@ def make_handler(R: Roto):
                     oid = f"o{n}"
                     o = {"id": oid, "name": d.get("name") or f"Object {n}",
                          "color": d.get("color") or roto.COLOURS[(n - 1) % len(roto.COLOURS)],
-                         "prompts": {}, "strokes": {}, "round": 0, "stale": False}
+                         "prompts": {}, "strokes": {}, "passes": [], "round": 0, "stale": False}
                     sess["objects"].append(o)
                     R.bump(oid)
                 elif act == "update":
@@ -378,7 +378,12 @@ def make_handler(R: Roto):
                     with R.lock:
                         if mode == "all" and not R.cancel.is_set():
                             o["stale"] = False
-                        o["round"] = o.get("round", 0) + 1
+                        # The pass as run, so `roto.py` can replay the session.
+                        ps = {"mode": mode, "frame": frame}
+                        if R.cancel.is_set():
+                            ps["done"] = n
+                        o.setdefault("passes", []).append(ps)
+                        o["round"] = len(o["passes"])
                         R.bump(o["id"])
                         R.save()
                     return {"frames": n}
