@@ -651,16 +651,24 @@ def smooth_poses(frames: list, window: int) -> list:
     Solving each frame independently is what keeps the result drift-free, but
     it also lets neighbouring frames jitter against each other. The real camera
     is a hand holding a phone, so there is nothing genuine at that frequency.
+
+    The window narrows symmetrically towards either end of the take. Cut off
+    on one side only, it would average a frame with its neighbours on the
+    other, and a camera that is moving would lag behind itself there - by up
+    to half a window of travel on the first and last frames (some 20px on a
+    walking take).
     """
     if len(frames) < 3 or window < 3:
         return frames
     half = window // 2
+    n = len(frames)
 
     tv = np.array([f["tvec"] for f in frames], dtype=np.float64)
     rot = Rotation.from_quat(np.array([f["qvec_xyzw"] for f in frames]))
 
     for i, f in enumerate(frames):
-        lo, hi = max(0, i - half), min(len(frames), i + half + 1)
+        k = min(half, i, n - 1 - i)
+        lo, hi = i - k, i + k + 1
         f["tvec"] = tv[lo:hi].mean(axis=0).tolist()
         # Rotations are averaged in their own chart, not componentwise.
         f["qvec_xyzw"] = rot[lo:hi].mean().as_quat().tolist()
