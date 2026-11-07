@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import {
     Play, Pause, SlidersHorizontal, X, Download,
     Camera, Trash2, RotateCcw, Save, Plus, Music, Boxes, Spline, Upload,
-    PersonStanding, FolderOpen, FileDown,
+    PersonStanding, FolderOpen, FileDown, Monitor, Frame, Shapes,
 } from 'lucide-react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
@@ -42,6 +42,22 @@ import { kickEnvelope, kickHits, kickLevelAt } from '../lib/protagonist/kicks';
 import { bodyDims } from '../lib/protagonist/model';
 import { SLOTS, SLOT_INFO } from '../lib/protagonist/parts';
 import { RARITIES } from '../lib/protagonist/spec';
+import {
+    loadLibrary, saveLibrary, downloadLibrary, patchAsset, CATEGORIES, RIGS, DEFAULT_SCREEN,
+} from '../lib/scanAssets/library';
+import { MOD_DEFAULTS } from '../lib/scanAssets/modulate';
+import {
+    PropModel, makePropItem, reviveProp, fitCornersToMesh,
+} from '../lib/scanAssets/props';
+import {
+    SackboyModel, makeSackboyItem, reviveSackboy, SACKBOY_DEFAULTS, SACKBOY_POSES,
+    SACKBOY_JOINT_MENU,
+} from '../lib/scanAssets/sackboy';
+import {
+    WindowModel, WindowCompositor, makeWindowItem, reviveWindow, cornersFacing, LAYER,
+} from '../lib/scanAssets/windows';
+import { PUBLIC_VIDEOS, storeUpload, listUploads, deleteUpload } from '../lib/scanAssets/screenVideo';
+import CurveEditor, { placeCurveDot } from './CurveEditor';
 import styles from './vfx.module.css';
 
 // Camera poses come from backend/vidtrack: a pose is solved per frame, and
@@ -148,6 +164,11 @@ const DEFAULT_LAYERS = {
     // in and out of a shot without editing each item.
     sceneOpacity: 1,
 
+    // The scan's own points, mesh and wireframe drawn behind the footage
+    // instead of over it, so they only show through windows (or where the
+    // footage is faded).
+    scanBehind: false,
+
     // Post FX over the finished composite, the audio visualizer's look. Both
     // start off so a take reads as the plain solve until you ask for more.
     // The floor is in scene brightness, so footage glows too - a window or a
@@ -199,7 +220,23 @@ const clamp01 = (v) => Math.max(0, Math.min(1, v));
 // curves these are posed and animated rather than driven by the spectrum.
 const MODELS = [
     { id: 'protagonist', name: 'Protagonist' },
+    ...RIGS.map((r) => ({ id: r.id, name: r.name })),
 ];
+
+// Sackboy on the Bench: perched on the seat (its top is at +0.06), facing
+// out over the path like the protagonist. He faces +Z where the protagonist
+// faces -Z, hence the half turn.
+const SACKBOY_SPAWNS = {
+    bench: { op: { posX: -0.283, posY: 0.06, posZ: 0.283, rotY: 135 }, pose: 'sit' },
+};
+
+const LAYER_OPTIONS = [['front', 'In front of video'], ['behind', 'Behind video']];
+
+const VIDEO_FITS = [[null, 'Default'], ['cover', 'Cover'], ['contain', 'Contain'], ['stretch', 'Stretch']];
+
+// Pixel sort options, as the Pixel Sorter names them.
+const SORT_BY = ['brightness', 'hue', 'saturation', 'lightness', 'red', 'green', 'blue'];
+const SORT_THRESHOLD = ['brightness', 'saturation', 'hue', 'none'];
 
 // Ways to draw a model, each on or off on its own.
 const MODEL_VIEWS = [
@@ -248,6 +285,11 @@ const PROJECT_VERSION = 1;
 function reviveItem(raw) {
     if (!raw || typeof raw !== 'object') return null;
     const id = typeof raw.id === 'string' ? raw.id : nextInstanceId();
+    if (raw.kind === 'prop') {
+        return typeof raw.assetId === 'string' ? reviveProp(raw, id) : null;
+    }
+    if (raw.kind === 'window') return reviveWindow(raw, id);
+    if (raw.kind === 'model' && raw.modelId === 'sackboy') return reviveSackboy(raw, id);
     if (raw.kind === 'model') {
         const op = migrateModelOp(raw.op || {});
         const base = makeModelItem(id, op, 'sit');
@@ -328,6 +370,33 @@ function ScanCompositor() {
     // Placed models, by item id. Kept apart from the reactive records: they
     // animate themselves rather than being driven by the spectrum.
     const modelObjectsRef = useRef(new Map());
+    // Placed props and screens, and windows, by item id.
+    const propObjectsRef = useRef(new Map());
+    const windowObjectsRef = useRef(new Map());
+    // The asset library (which GLBs are props and which are screens, and
+    // where each screen's surface is). Saved by itself, outside projects:
+    // it describes the assets, not a shot.
+    const [library, setLibrary] = useState(loadLibrary);
+    const libraryRef = useRef(library);
+    useEffect(() => { libraryRef.current = library; }, [library]);
+    const [librarySaved, setLibrarySaved] = useState(null); // null | 'saving' | 'repo' | 'browser'
+    const librarySaveRef = useRef(0);
+    const [addPropId, setAddPropId] = useState('');
+    const [addScreenId, setAddScreenId] = useState('');
+    // Viewport editing beyond the pose gizmo: moving the selected object, or
+    // the corners of the selected window / screen. `handle` is which corner
+    // (0-3: TL, TR, BR, BL) or 4 for the whole patch.
+    const [editMode, setEditMode] = useState(null); // null | 'move' | 'corners'
+    const [cornerHandle, setCornerHandle] = useState(4);
+    const editRef = useRef({ mode: null, itemId: null, handle: 4 });
+    const [uploads, setUploads] = useState([]);
+    const videoInputRef = useRef(null);
+    // Bumped when an asset finishes loading, so effects that look objects up
+    // (the gizmos) run again.
+    const [assetTick, setAssetTick] = useState(0);
+    // Live readouts in the panels, written straight from the render loop.
+    const modUiRef = useRef({});
+    const freeClockRef = useRef(0);
     const tapRef = useRef([]);
     // Where the loaded track came from, so a project can load it again.
     const [musicSource, setMusicSource] = useState(null);
@@ -394,7 +463,6 @@ function ScanCompositor() {
         () => clips.find((c) => c.id === clipId) || null,
         [clips, clipId],
     );
-
     // Two stacked control columns. Each element sits clear of whatever is to
     // its right: a panel takes a full column, a closed one only its toggle. So
     // the Scene panel moves aside only when the compositor panel is open, and
@@ -536,8 +604,15 @@ function ScanCompositor() {
         const fill = new THREE.DirectionalLight(0xffffff, 0.35);
         fill.position.set(-2, -1, -2);
         scene.add(fill);
+        // Things behind the video are drawn on their own camera layer, and a
+        // light only reaches the layers it is on.
+        [ambient, key, fill].forEach((l) => l.layers.enableAll());
         renderer.shadowMap.enabled = true;
         renderer.shadowMap.type = THREE.PCFShadowMap;
+        // The scene is drawn in several passes a frame (behind the video,
+        // windows, in front); shadows are worked out only for the two that
+        // draw objects, rather than again for every pass.
+        renderer.shadowMap.autoUpdate = false;
 
         // The tracked camera's frustum is rebuilt from the solved intrinsics
         // each frame, so its constructor arguments are placeholders.
@@ -600,6 +675,45 @@ function ScanCompositor() {
         });
         gizmo.addEventListener('objectChange', () => three.current.onGizmoChange?.());
 
+        // Moving things: the selected object bodily, or one corner of a
+        // window or screen (or the whole patch) through a proxy that stands
+        // where that corner is.
+        const moveGizmo = new TransformControls(freeCamera, renderer.domElement);
+        moveGizmo.setMode('translate');
+        moveGizmo.setSpace('world');
+        moveGizmo.setSize(0.55);
+        moveGizmo.enabled = false;
+        moveGizmo.visible = false;
+        scene.add(moveGizmo);
+        moveGizmo.addEventListener('dragging-changed', (e) => {
+            const tt = three.current;
+            tt.controls.enabled = !e.value && rigRef.current.cameraMode === 'free';
+            tt.moveDragging = e.value;
+            if (!e.value) tt.onMoveCommit?.();
+        });
+        moveGizmo.addEventListener('objectChange', () => three.current.onMoveChange?.());
+        const cornerProxy = new THREE.Object3D();
+        modelRoot.add(cornerProxy);
+
+        // Corner markers for the patch being edited: four corners and the
+        // middle. Drawn on the overlay layer, over everything.
+        const cornerHandles = new THREE.Group();
+        const cornerGeo = new THREE.OctahedronGeometry(1, 0);
+        for (let i = 0; i < 5; i++) {
+            const m = new THREE.Mesh(cornerGeo, new THREE.MeshBasicMaterial({
+                color: 0xffffff, depthTest: false, depthWrite: false, transparent: true, opacity: 0.9, toneMapped: false,
+            }));
+            m.layers.set(LAYER.OVERLAY);
+            m.renderOrder = 1001;
+            m.userData.corner = i;
+            m.userData.handle = true;
+            cornerHandles.add(m);
+        }
+        cornerHandles.visible = false;
+        modelRoot.add(cornerHandles);
+
+        const compositor = new WindowCompositor(renderer);
+
         // Picking a joint: the marker nearest the click on screen, within a
         // finger's width. A scan is shot from a few metres off, so the
         // markers are only a few pixels across and ray-picking them would be
@@ -609,7 +723,24 @@ function ScanCompositor() {
         const onPick = (e) => {
             const ed = poseEditRef.current;
             const tt = three.current;
-            if (!ed.on || e.button !== 0 || gizmo.dragging || gizmo.axis) return;
+            if (e.button !== 0 || moveGizmo.dragging || moveGizmo.axis) return;
+            // Corners first: the same nearest-marker-on-screen pick.
+            if (editRef.current.mode === 'corners' && cornerHandles.visible && tt.activeCamera) {
+                const box = renderer.domElement.getBoundingClientRect();
+                const p = new THREE.Vector3();
+                let best = null;
+                cornerHandles.children.forEach((h) => {
+                    h.getWorldPosition(p).project(tt.activeCamera);
+                    if (p.z < -1 || p.z > 1) return;
+                    const dx = ((p.x + 1) / 2) * box.width + box.left - e.clientX;
+                    const dy = ((1 - p.y) / 2) * box.height + box.top - e.clientY;
+                    const d = Math.hypot(dx, dy);
+                    if (d < PICK_PX && (!best || d < best.d)) best = { d, i: h.userData.corner };
+                });
+                if (best) tt.onCornerPick?.(best.i);
+                return;
+            }
+            if (!ed.on || gizmo.dragging || gizmo.axis) return;
             const rec = modelObjectsRef.current.get(ed.itemId);
             const cam = tt.activeCamera;
             if (!rec || !cam) return;
@@ -634,6 +765,7 @@ function ScanCompositor() {
             bgScene, bgCamera, bgQuad,
             composer, bloomPass, hazePass, gizmo,
             sun: key, ambient, fill,
+            moveGizmo, cornerProxy, cornerHandles, compositor,
         };
 
         return () => {
@@ -641,6 +773,11 @@ function ScanCompositor() {
             renderer.domElement.removeEventListener('pointerdown', onPick);
             gizmo.detach();
             gizmo.dispose();
+            moveGizmo.detach();
+            moveGizmo.dispose();
+            compositor.dispose();
+            cornerGeo.dispose();
+            cornerHandles.children.forEach((m) => m.material.dispose());
             composer.dispose();
             bloomPass.dispose();
             controls.dispose();
@@ -835,7 +972,24 @@ function ScanCompositor() {
 
     // A model arrives where the take says it belongs (on the Bench, sitting
     // on the bench), or else standing at the middle of the scan.
+    // Where something new should stand: the middle of the scan, on whatever
+    // the scan's lowest points around there say the floor is.
+    const scanCentre = useCallback(() => {
+        const c = three.current.cloud?.geometry?.boundingSphere?.center;
+        const r = (v) => Math.round(v * 1000) / 1000;
+        return c ? { posX: r(c.x), posY: r(c.y), posZ: r(c.z) } : { posX: 0, posY: 0, posZ: 0 };
+    }, []);
+
     const addModel = useCallback(() => {
+        if (addModelId === 'sackboy') {
+            const spawn = SACKBOY_SPAWNS[clipId];
+            const item = spawn
+                ? makeSackboyItem(nextInstanceId(), spawn.op, spawn.pose)
+                : makeSackboyItem(nextInstanceId(), scanCentre(), 'stand');
+            setSceneItems((prev) => [...prev, item]);
+            setSelectedId(item.id);
+            return;
+        }
         const spawn = MODEL_SPAWNS[clipId];
         let item;
         if (spawn) {
@@ -850,7 +1004,39 @@ function ScanCompositor() {
         }
         setSceneItems((prev) => [...prev, item]);
         setSelectedId(item.id);
-    }, [clipId]);
+    }, [clipId, addModelId, scanCentre]);
+
+    // A prop or screen from the library, standing at the middle of the scan.
+    const addProp = useCallback((assetId) => {
+        if (!assetId) return;
+        const item = makePropItem(nextInstanceId(), assetId, scanCentre());
+        setSceneItems((prev) => [...prev, item]);
+        setSelectedId(item.id);
+        setEditMode('move');
+    }, [scanCentre]);
+
+    // A window: a square facing the camera, as far off as the middle of the
+    // scan, about a third of the frame across. Corners are editing at once.
+    const addWindow = useCallback(() => {
+        const t = three.current;
+        const cam = t.activeCamera || t.camera;
+        if (!cam || !t.modelRoot) return;
+        const c = t.cloud?.geometry?.boundingSphere?.center;
+        const centre = c ? t.modelRoot.localToWorld(c.clone()) : new THREE.Vector3();
+        const dist = Math.max(0.3, centre.distanceTo(cam.getWorldPosition(new THREE.Vector3())));
+        // The frame's height at that distance: from the solve's intrinsics
+        // for the tracked camera (its fov is a placeholder), else the fov.
+        const intr = trackRef.current?.intrinsics;
+        const span = rigRef.current.cameraMode !== 'free' && intr?.fy
+            ? intr.height / intr.fy
+            : 2 * Math.tan(THREE.MathUtils.degToRad(cam.fov || 50) / 2);
+        const size = dist * span * 0.35;
+        const item = makeWindowItem(nextInstanceId(), cornersFacing(cam, t.modelRoot, dist, size));
+        setSceneItems((prev) => [...prev, item]);
+        setSelectedId(item.id);
+        setEditMode('corners');
+        setCornerHandle(4);
+    }, []);
 
     // Edit the selected model: its parameters and pose together, so one
     // change cannot land half-applied.
@@ -882,6 +1068,13 @@ function ScanCompositor() {
     }, [updateSelected, releaseLegs]);
 
     const applyPosePreset = useCallback((presetId) => {
+        const sel = sceneItemsRef.current.find((i) => i.id === selectedIdRef.current);
+        if (sel?.modelId === 'sackboy') {
+            const made = SACKBOY_POSES[presetId]?.make();
+            if (!made) return;
+            updateSelected((i) => ({ ...i, op: { ...i.op, ...made.op }, pose: made.pose }));
+            return;
+        }
         const preset = POSES[presetId];
         if (!preset) return;
         updateSelected((i) => {
@@ -935,7 +1128,14 @@ function ScanCompositor() {
         wanted.forEach((item, id) => {
             let rec = map.get(id);
             if (!rec) {
-                rec = new ProtagonistModel(item);
+                if (item.modelId === 'sackboy') {
+                    rec = new SackboyModel(item);
+                    // He loads asynchronously; the gizmo and markers look
+                    // for his bones again once he is in.
+                    rec.onReady = () => { three.current.needsRender = true; setAssetTick((n) => n + 1); };
+                } else {
+                    rec = new ProtagonistModel(item);
+                }
                 map.set(id, rec);
                 t.modelRoot.add(rec.object);
             } else {
@@ -966,6 +1166,9 @@ function ScanCompositor() {
         const bone = rec?.bones?.[poseJoint];
         if (bone) {
             if (gizmo.object !== bone) gizmo.attach(bone);
+            // Sackboy's bones point along their own X, so his rings are drawn
+            // in the world's axes, which read the same as his angles do.
+            gizmo.setSpace(rec.gizmoSpace || 'local');
             gizmo.enabled = true;
             gizmo.visible = true;
         } else {
@@ -974,7 +1177,30 @@ function ScanCompositor() {
             gizmo.visible = false;
         }
         t.needsRender = true;
-    }, [poseEdit, poseJoint, selectedId, sceneItems]);
+    }, [poseEdit, poseJoint, selectedId, sceneItems, assetTick]);
+
+    // A joint the selected model does not have (an ear on Sackboy, a jaw on
+    // the protagonist) falls back to the head.
+    useEffect(() => {
+        const sel = sceneItems.find((i) => i.id === selectedId);
+        if (sel?.kind !== 'model') return;
+        const menu = sel.modelId === 'sackboy' ? SACKBOY_JOINT_MENU : JOINTS;
+        if (!menu.some(([j]) => j === poseJoint)) setPoseJoint('head');
+    }, [selectedId, sceneItems, poseJoint]);
+
+    // Viewport editing follows the selection: it ends when the selection
+    // changes to something it cannot apply to.
+    useEffect(() => {
+        const sel = sceneItems.find((i) => i.id === selectedId);
+        const entry = sel?.kind === 'prop' ? libraryRef.current.assets.find((a) => a.id === sel.assetId) : null;
+        const cornersOk = sel?.kind === 'window' || entry?.category === 'screen';
+        if (!sel || (editMode === 'corners' && !cornersOk) || (editMode === 'move' && sel.kind === 'window')) {
+            if (editMode) setEditMode(null);
+        }
+    }, [selectedId, sceneItems, editMode]);
+    useEffect(() => { setCornerHandle(4); }, [selectedId]);
+    useEffect(() => { if (editMode) setPoseEdit(false); }, [editMode]);
+    useEffect(() => { if (poseEdit) setEditMode(null); }, [poseEdit]);
 
     // The gizmo writes the bone directly; read it back into the pose. Wired
     // through `three.current` so the listeners, made once, see current state.
@@ -992,6 +1218,241 @@ function ScanCompositor() {
         };
         t.onGizmoCommit = t.onGizmoChange;
     }, [pickJoint]);
+
+    // ---- Props, screens and windows -----------------------------------------
+
+    // Build, update and drop props and screens to match the item list. The
+    // library is part of what they are (size, screen surface), so a library
+    // edit updates every placed copy of that asset.
+    useEffect(() => {
+        const t = three.current;
+        if (!t.modelRoot) return;
+        const map = propObjectsRef.current;
+        const wanted = new Map(sceneItems.filter((i) => i.kind === 'prop').map((i) => [i.id, i]));
+        Array.from(map.keys()).forEach((id) => {
+            if (wanted.has(id)) return;
+            const rec = map.get(id);
+            if (t.moveGizmo?.object === rec.object) t.moveGizmo.detach();
+            rec.dispose();
+            map.delete(id);
+        });
+        wanted.forEach((item, id) => {
+            const entry = library.assets.find((a) => a.id === item.assetId);
+            if (!entry) return;
+            let rec = map.get(id);
+            if (!rec || rec.entry.file !== entry.file) {
+                rec?.dispose();
+                rec = new PropModel(item, entry);
+                rec.onReady = () => { three.current.needsRender = true; setAssetTick((n) => n + 1); };
+                map.set(id, rec);
+            } else {
+                rec.sync(item, entry);
+            }
+            if (rec.object.parent !== t.modelRoot) t.modelRoot.add(rec.object);
+        });
+        t.needsRender = true;
+    }, [sceneItems, library]);
+
+    useEffect(() => {
+        const t = three.current;
+        if (!t.modelRoot) return;
+        const map = windowObjectsRef.current;
+        const wanted = new Map(sceneItems.filter((i) => i.kind === 'window').map((i) => [i.id, i]));
+        Array.from(map.keys()).forEach((id) => {
+            if (wanted.has(id)) return;
+            map.get(id).dispose();
+            map.delete(id);
+        });
+        wanted.forEach((item, id) => {
+            let rec = map.get(id);
+            // A hot reload swaps the class under a live window; rebuild it
+            // rather than drive an instance of the old one.
+            if (rec && !(rec instanceof WindowModel)) {
+                rec.dispose();
+                map.delete(id);
+                rec = null;
+            }
+            if (!rec) {
+                rec = new WindowModel(item);
+                map.set(id, rec);
+            } else {
+                rec.sync(item);
+            }
+            if (rec.object.parent !== t.modelRoot) t.modelRoot.add(rec.object);
+        });
+        t.needsRender = true;
+    }, [sceneItems]);
+
+    // Uploaded screen videos, kept in this browser.
+    useEffect(() => { listUploads().then(setUploads); }, []);
+
+    const onVideoFile = useCallback(async (file) => {
+        if (!file) return;
+        try {
+            const id = await storeUpload(file);
+            setUploads(await listUploads());
+            setSceneItems((prev) => prev.map((i) => (
+                i.id === selectedIdRef.current ? { ...i, op: { ...i.op, video: id } } : i
+            )));
+        } catch (e) {
+            setStatus(`Could not keep that video: ${e.message}`);
+        }
+    }, []);
+
+    // ---- The asset library ----
+
+    // Apply an edit to one asset and save it. Saves are queued so the last
+    // edit always lands last; mid-drag edits only update the screen and are
+    // saved when the drag ends.
+    const editAsset = useCallback((id, fn, save = true) => {
+        setLibrary((prev) => {
+            const next = patchAsset(prev, id, fn);
+            libraryRef.current = next;
+            return next;
+        });
+        if (!save) return;
+        const n = ++librarySaveRef.current;
+        setLibrarySaved('saving');
+        // After the state update, so the save carries this edit.
+        setTimeout(() => {
+            saveLibrary(libraryRef.current).then((where) => {
+                if (n === librarySaveRef.current) setLibrarySaved(where);
+            });
+        }, 0);
+    }, []);
+
+    const saveLibraryNow = useCallback(() => {
+        const n = ++librarySaveRef.current;
+        setLibrarySaved('saving');
+        saveLibrary(libraryRef.current).then((where) => {
+            if (n === librarySaveRef.current) setLibrarySaved(where);
+        });
+    }, []);
+
+    // ---- Viewport editing: moving objects, and corners ----
+
+    // The patch being edited: the selected window's corners (in the scan's
+    // frame) or the selected screen's (in its GLB's own units), and the
+    // space they are written in.
+    const cornerTarget = useCallback(() => {
+        const ed = editRef.current;
+        if (ed.mode !== 'corners') return null;
+        const item = sceneItemsRef.current.find((i) => i.id === ed.itemId);
+        if (!item) return null;
+        const t = three.current;
+        if (item.kind === 'window') {
+            return { corners: item.op.corners, space: t.modelRoot, item };
+        }
+        const rec = propObjectsRef.current.get(item.id);
+        const entry = libraryRef.current.assets.find((a) => a.id === item.assetId);
+        if (!rec || !rec.ready || entry?.category !== 'screen') return null;
+        return { corners: { ...DEFAULT_SCREEN, ...entry.screen }.corners, space: rec.norm, item, entry };
+    }, []);
+
+    const placeCornerHandles = useCallback(() => {
+        const t = three.current;
+        const target = cornerTarget();
+        const handles = t.cornerHandles;
+        if (!handles) return;
+        if (!target) {
+            handles.visible = false;
+            return;
+        }
+        if (handles.parent !== target.space) target.space.add(handles);
+        handles.visible = true;
+        const C = target.corners.map((c) => new THREE.Vector3().fromArray(c));
+        const mid = C.reduce((a, c) => a.add(c), new THREE.Vector3()).multiplyScalar(0.25);
+        const active = editRef.current.handle;
+        handles.children.forEach((m, i) => {
+            m.position.copy(i < 4 ? C[i] : mid);
+            m.material.color.set(i === active ? '#ffb347' : (i === 4 ? '#7fe3ff' : '#ffffff'));
+            m.userData.active = i === active;
+        });
+    }, [cornerTarget]);
+
+    // Attach the move gizmo to whatever the edit is about.
+    useEffect(() => {
+        const t = three.current;
+        const gz = t.moveGizmo;
+        if (!gz) return;
+        const sel = sceneItems.find((i) => i.id === selectedId);
+        editRef.current = { mode: editMode, itemId: sel ? sel.id : null, handle: cornerHandle };
+        let obj = null;
+        if (editMode === 'move' && sel) {
+            if (sel.kind === 'prop') obj = propObjectsRef.current.get(sel.id)?.object;
+            else if (sel.kind === 'model') obj = modelObjectsRef.current.get(sel.id)?.object;
+            else if (sel.kind === 'asset' || sel.kind === 'curve') obj = sceneObjectsRef.current.get(sel.id)?.transformTarget;
+        } else if (editMode === 'corners') {
+            const target = cornerTarget();
+            if (target && !t.moveDragging) {
+                const proxy = t.cornerProxy;
+                if (proxy.parent !== target.space) target.space.add(proxy);
+                const C = target.corners.map((c) => new THREE.Vector3().fromArray(c));
+                proxy.position.copy(cornerHandle < 4 ? C[cornerHandle]
+                    : C.reduce((a, c) => a.add(c), new THREE.Vector3()).multiplyScalar(0.25));
+                proxy.updateMatrixWorld(true);
+                obj = proxy;
+            } else if (target) {
+                obj = t.cornerProxy;
+            }
+        }
+        placeCornerHandles();
+        if (obj) {
+            if (gz.object !== obj) gz.attach(obj);
+            gz.enabled = true;
+            gz.visible = true;
+        } else {
+            gz.detach();
+            gz.enabled = false;
+            gz.visible = false;
+        }
+        t.needsRender = true;
+    }, [editMode, cornerHandle, selectedId, sceneItems, library, assetTick, cornerTarget, placeCornerHandles]);
+
+    // The gizmo moved something: write it back into the item (or library).
+    useEffect(() => {
+        const t = three.current;
+        const r4 = (v) => Math.round(v * 1e4) / 1e4;
+        t.onCornerPick = (i) => setCornerHandle(i);
+        t.onMoveChange = () => {
+            const ed = editRef.current;
+            const gz = t.moveGizmo;
+            if (!gz.object) return;
+            if (ed.mode === 'move') {
+                const p = gz.object.position;
+                setSceneItems((prev) => prev.map((i) => (
+                    i.id === ed.itemId ? { ...i, op: { ...i.op, posX: r4(p.x), posY: r4(p.y), posZ: r4(p.z) } } : i
+                )));
+                return;
+            }
+            const target = cornerTarget();
+            if (!target) return;
+            const p = t.cornerProxy.position;
+            let corners;
+            if (ed.handle < 4) {
+                corners = target.corners.map((c, k) => (k === ed.handle ? [r4(p.x), r4(p.y), r4(p.z)] : c));
+            } else {
+                const C = target.corners.map((c) => new THREE.Vector3().fromArray(c));
+                const mid = C.reduce((a, c) => a.add(c), new THREE.Vector3()).multiplyScalar(0.25);
+                const d = p.clone().sub(mid);
+                corners = C.map((c) => c.add(d).toArray().map(r4));
+            }
+            if (target.item.kind === 'window') {
+                setSceneItems((prev) => prev.map((i) => (
+                    i.id === target.item.id ? { ...i, op: { ...i.op, corners } } : i
+                )));
+            } else {
+                // Saved once the drag ends, not on every step of it.
+                editAsset(target.entry.id, (a) => ({ ...a, screen: { ...DEFAULT_SCREEN, ...a.screen, corners } }), false);
+            }
+        };
+        t.onMoveCommit = () => {
+            const ed = editRef.current;
+            if (ed.mode !== 'corners') return;
+            const target = cornerTarget();
+            if (target?.entry) saveLibraryNow();
+        };
+    }, [cornerTarget, editAsset, saveLibraryNow]);
 
     // Reconcile the scene graph with the item list: add what is new, drop what
     // is gone, and rebuild only the items whose geometry parameters moved.
@@ -1703,6 +2164,9 @@ function ScanCompositor() {
         cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
         cam.near = near;
         cam.far = far;
+        // Not used for the projection (that is set above), but the gizmos
+        // size themselves on screen from it.
+        cam.fov = THREE.MathUtils.radToDeg(2 * Math.atan(height / (2 * fy)));
     }, []);
 
     useEffect(() => { applyLayers(layers); }, [layers, applyLayers, rig.cameraMode]);
@@ -1748,6 +2212,9 @@ function ScanCompositor() {
         modelObjectsRef.current.forEach((rec) => {
             if (rec.object.visible) box.expandByObject(rec.object);
         });
+        propObjectsRef.current.forEach((rec) => {
+            if (rec.ready && rec.object.visible && rec.op.castShadow) box.expandByObject(rec.object);
+        });
         const casting = S.shadows && !box.isEmpty();
         t.sun.castShadow = casting;
         if (t.shadowCatcher) {
@@ -1776,7 +2243,55 @@ function ScanCompositor() {
         }
     }, []);
 
-    const renderFrame = useCallback((time) => {
+    // Put every placed thing on the camera layer its item asks for, the
+    // scan's own layers where the layer stack puts them, and every editing
+    // marker on the overlay. Done each frame because models rebuild their
+    // meshes. Returns how many things are behind the video.
+    const assignLayers = useCallback(() => {
+        const t = three.current;
+        const L = layersRef.current;
+        let behind = 0;
+        const put = (obj, back) => {
+            const mask = 1 << (back ? LAYER.BEHIND : LAYER.FRONT);
+            obj.traverse((o) => {
+                if (o.userData.handle) o.layers.set(LAYER.OVERLAY);
+                else if (o.layers.mask !== mask) o.layers.mask = mask;
+            });
+            if (back && obj.visible) behind++;
+        };
+        const items = new Map(sceneItemsRef.current.map((i) => [i.id, i]));
+        const isBack = (id) => items.get(id)?.op?.depthLayer === 'behind';
+        modelObjectsRef.current.forEach((rec, id) => put(rec.object, isBack(id)));
+        propObjectsRef.current.forEach((rec, id) => put(rec.object, isBack(id)));
+        sceneObjectsRef.current.forEach((rec, id) => { if (rec.object3D) put(rec.object3D, isBack(id)); });
+        const scanBack = !!L.scanBehind;
+        [t.mesh, t.cloud, t.wire].forEach((o) => {
+            if (!o) return;
+            o.layers.set(scanBack ? LAYER.BEHIND : LAYER.FRONT);
+            if (scanBack && o.visible) behind++;
+        });
+        // The depth-only scan hides things behind the real object on either side.
+        if (t.occluder) { t.occluder.layers.set(LAYER.FRONT); t.occluder.layers.enable(LAYER.BEHIND); }
+        return behind;
+    }, []);
+
+    // Markers stay the same size on screen however far off they are.
+    const sizeHandles = useCallback((cam) => {
+        const t = three.current;
+        const h = t.cornerHandles;
+        if (!h || !h.visible) return;
+        const p = new THREE.Vector3();
+        const s = new THREE.Vector3();
+        const camAt = cam.getWorldPosition(new THREE.Vector3());
+        h.parent.getWorldScale(s);
+        h.children.forEach((m) => {
+            m.getWorldPosition(p);
+            const k = p.distanceTo(camAt) * (m.userData.active ? 0.016 : 0.011);
+            m.scale.setScalar(k / Math.max(1e-6, s.x));
+        });
+    }, []);
+
+    const renderFrame = useCallback((time, opts = {}) => {
         const t = three.current;
         const trackData = trackRef.current;
         if (!t.renderer || !trackData) return;
@@ -1823,29 +2338,109 @@ function ScanCompositor() {
         // Picking and the pose gizmo work in whichever camera is drawing.
         t.activeCamera = cam;
         if (t.gizmo) t.gizmo.camera = cam;
+        if (t.moveGizmo) t.moveGizmo.camera = cam;
         placeSun();
+
+        // Sort everything onto its camera layer: in front of the video or
+        // behind it, with the editing markers on the overlay.
+        const behindCount = assignLayers();
+        placeCornerHandles();
+        sizeHandles(cam);
 
         // With glow or haze on, the composite goes to the composer's buffer
         // and the passes finish it; otherwise straight to the canvas, so a
         // plain take costs nothing extra.
+        const r = t.renderer;
         const fx = t.composer && (L.bloomStrength > 0 || L.haze > 0);
-        t.renderer.setRenderTarget(fx ? t.composer.readBuffer : null);
-        t.renderer.clear();
-        if (t.bgQuad.visible) {
-            t.renderer.render(t.bgScene, t.bgCamera);
-            t.renderer.clearDepth();
-        }
+        const out = fx ? t.composer.readBuffer : null;
         // Placed objects count too, so the 3D pass still runs when the scan's
         // own layers are all off and only the scene is being composited.
-        if (L.cloudOn || L.meshOn || L.wireOn || sceneObjectsRef.current.size
-            || modelObjectsRef.current.size) {
-            t.renderer.render(t.scene, cam);
+        const drawScene = L.cloudOn || L.meshOn || L.wireOn || sceneObjectsRef.current.size
+            || modelObjectsRef.current.size || propObjectsRef.current.size;
+        const wins = Array.from(windowObjectsRef.current.values()).filter((w) => w.open);
+        const footage = t.bgQuad.visible;
+
+        // three works out the clear colour's encoding for whichever target is
+        // bound when it is set (sRGB for the canvas, linear for a buffer), and
+        // every render() resets it for its own target. So it is set again for
+        // each target cleared here, or a buffer gets the canvas's numbers and
+        // the backdrop comes out the wrong colour.
+        const bg = t.backdrop || (t.backdrop = new THREE.Color());
+        bg.set(L.bgColor);
+        const clearTo = (target) => {
+            r.setRenderTarget(target);
+            r.setClearColor(bg, 1);
+            r.clear();
+        };
+
+        if (!behindCount && !wins.length) {
+            clearTo(out);
+            if (footage) {
+                r.render(t.bgScene, t.bgCamera);
+                r.clearDepth();
+            }
+            cam.layers.set(LAYER.FRONT);
+            r.shadowMap.needsUpdate = true;
+            if (drawScene) r.render(t.scene, cam);
+        } else {
+            const comp = t.compositor;
+            comp.ensure();
+            const cutWins = footage ? wins.filter((w) => w.op.cut) : [];
+            const fxWins = wins.filter((w) => w.hasFx);
+
+            // 1. Behind the video, on its own, over the backdrop.
+            clearTo(comp.behindRT);
+            if (behindCount) {
+                cam.layers.set(LAYER.BEHIND);
+                r.shadowMap.needsUpdate = true;
+                r.render(t.scene, cam);
+            } else {
+                // The target is multisampled, and its texture only receives
+                // what was drawn (even a clear) when a render() finishes. With
+                // nothing behind, it would otherwise never show the backdrop.
+                comp.resolve();
+            }
+
+            // 2. That, the footage over it, and the windows cutting the
+            //    footage back out.
+            clearTo(fxWins.length ? comp.compRT : out);
+            comp.blit(comp.behindRT.texture);
+            if (footage) r.render(t.bgScene, t.bgCamera);
+            if (cutWins.length) {
+                wins.forEach((w) => { w.cutMesh.visible = cutWins.includes(w); comp.prepareCut(w); });
+                cam.layers.set(LAYER.WIN_CUT);
+                r.render(t.scene, cam);
+            }
+
+            // 3. Window effects, reading what 2 made.
+            if (fxWins.length) {
+                fxWins.filter((w) => w.op.sortOn).forEach((w) => comp.sortWindow(w, cam, !!opts.sortNow));
+                clearTo(out);
+                comp.blit(comp.compRT.texture);
+                wins.forEach((w) => { w.fxMesh.visible = fxWins.includes(w); comp.prepareFx(w); });
+                cam.layers.set(LAYER.WIN_FX);
+                r.render(t.scene, cam);
+            }
+
+            // 4. In front of the video.
+            r.clearDepth();
+            cam.layers.set(LAYER.FRONT);
+            r.shadowMap.needsUpdate = true;
+            if (drawScene) r.render(t.scene, cam);
         }
         if (fx) {
-            t.renderer.setRenderTarget(null);
+            r.setRenderTarget(null);
             t.composer.render();
         }
-    }, [poseAt, applyIntrinsics, placeSun]);
+        // Editing markers last, on the finished frame: never glowed, never
+        // exported.
+        if (!exportingRef.current) {
+            r.setRenderTarget(null);
+            cam.layers.set(LAYER.OVERLAY);
+            r.render(t.scene, cam);
+        }
+        cam.layers.set(LAYER.FRONT);
+    }, [poseAt, applyIntrinsics, placeSun, assignLayers, placeCornerHandles, sizeHandles]);
 
     // Push the spectrum through the scan's own point cloud. Only the points
     // actually being drawn are touched, so the density slider doubles as the
@@ -1942,6 +2537,9 @@ function ScanCompositor() {
         modelObjectsRef.current.forEach((rec) => {
             rec.setOpacity(L.sceneOpacity * (L.opacityScene ? mult : 1));
         });
+        propObjectsRef.current.forEach((rec) => {
+            rec.setOpacity(L.sceneOpacity * (L.opacityScene ? mult : 1));
+        });
     }, []);
 
     // Pose and animate every placed model. `beat` is where the music is, in
@@ -1972,8 +2570,54 @@ function ScanCompositor() {
                 drawWidth: size.x,
                 drawHeight: size.y,
                 kick,
+                music,
+                musicTime: beat,
             });
         });
+    }, []);
+
+    // Props pulse with their modulators and screens follow the clock; windows
+    // read theirs. `time` is where the music is (null without a track) and
+    // `clock` the screens' clock: the music's, or a free one with no track.
+    const driveProps = useCallback((dt, {
+        music, time, take = null, clock, playing, exporting = false,
+    }) => {
+        propObjectsRef.current.forEach((rec) => {
+            rec.update(dt, { music, time, clock, playing, exporting });
+        });
+        // A window shows at its drawn size only while one of its corners is
+        // being dragged, so the shape being edited is the one on screen;
+        // otherwise it animates, corner markers or not.
+        const ed = editRef.current;
+        const dragging = !!three.current.moveDragging;
+        windowObjectsRef.current.forEach((rec, id) => rec.update(music, time, {
+            take,
+            hold: dragging && ed.mode === 'corners' && ed.itemId === id,
+        }));
+    }, []);
+
+    // The selected item's modulator readouts in its panel: the level going
+    // in, what comes out of the curve, and a dot on the curve.
+    const driveModMeters = useCallback(() => {
+        const sel = selectedIdRef.current;
+        const ui = modUiRef.current;
+        const show = (name, m, curve) => {
+            const u = ui[name];
+            if (!u) return;
+            if (u.meter) u.meter.style.width = `${Math.round(Math.max(0, Math.min(1, m.input)) * 100)}%`;
+            if (u.out) u.out.style.width = `${Math.round(Math.max(0, Math.min(1, m.value)) * 100)}%`;
+            if (u.flash) u.flash.style.opacity = m.flash || 0;
+            if (u.dot) placeCurveDot(u.dot, curve, m.x || 0, m.value > 0.001 || m.input > 0.001);
+        };
+        const p = propObjectsRef.current.get(sel);
+        if (p) show('scale', p.mod, p.op.mod.curve);
+        const w = windowObjectsRef.current.get(sel);
+        if (w) {
+            show('hue', w.hue, w.op.hueMod.curve);
+            show('sort', w.sortLevel, w.op.sortMod.curve);
+        }
+        const m = modelObjectsRef.current.get(sel);
+        if (m && m.mouth) show('mouth', m.mouth, m.op.mouth.curve);
     }, []);
 
 
@@ -2053,6 +2697,17 @@ function ScanCompositor() {
             const hasTrack = !!audioEl && !!audioEl.src && !!audioBufferRef.current;
             driveModels(dt, hasTrack ? audioEl.currentTime : null,
                 hasTrack ? audioBufferRef.current : null);
+            // Screens run on the music's clock, or on their own while the
+            // transport plays when there is no track.
+            if (!hasTrack && playingRef.current) freeClockRef.current += dt * speedRef.current;
+            driveProps(dt, {
+                music: hasTrack ? audioBufferRef.current : null,
+                time: hasTrack ? audioEl.currentTime : null,
+                take: time,
+                clock: hasTrack ? audioEl.currentTime : freeClockRef.current,
+                playing: playingRef.current,
+            });
+            driveModMeters();
 
             // The selected model's kick meter: its band's level, and a flash
             // on every hit the threshold lets through.
@@ -2068,8 +2723,8 @@ function ScanCompositor() {
         };
         t.raf = requestAnimationFrame(tick);
         return () => cancelAnimationFrame(t.raf);
-    }, [renderFrame, driveCloud, driveOpacity, driveModels, track, takeTime,
-        seekTake, goForward, goBackward]);
+    }, [renderFrame, driveCloud, driveOpacity, driveModels, driveProps, driveModMeters,
+        track, takeTime, seekTake, goForward, goBackward]);
 
     // ---- Views -----------------------------------------------------------
 
@@ -2665,6 +3320,12 @@ function ScanCompositor() {
         modelObjectsRef.current.forEach((rec) => { rec.reset(); rec.hideHandles(true); });
         const gizmoWasVisible = t.gizmo?.visible;
         if (t.gizmo) t.gizmo.visible = false;
+        const moveWasVisible = t.moveGizmo?.visible;
+        if (t.moveGizmo) t.moveGizmo.visible = false;
+        // Screens decode their own frames for the export, as the take does.
+        setExportStage('Opening screen videos...');
+        await Promise.all(Array.from(propObjectsRef.current.values()).map((rec) => rec.openExport()));
+        setExportStage('Preparing...');
         t.ss = ss;
         t.renderer.setPixelRatio(1);
         t.renderer.setSize(w * ss, h * ss, false);
@@ -2880,11 +3541,20 @@ function ScanCompositor() {
                 driveCloud(freq, !!spectrum);
                 driveOpacity(freq, !!spectrum);
                 // The music wraps round in the export as in the preview.
-                driveModels(1 / fps, music
+                const musicTime = music
                     ? (musicOffset + i / fps) % Math.max(1e-6, music.duration)
-                    : null, music);
+                    : null;
+                driveModels(1 / fps, musicTime, music);
+                // Screens on the music's clock, or on the export's own.
+                const screenClock = music ? musicTime : i / fps;
+                // eslint-disable-next-line no-await-in-loop
+                await Promise.all(Array.from(propObjectsRef.current.values())
+                    .map((rec) => rec.exportFrame(screenClock)));
+                driveProps(1 / fps, {
+                    music, time: musicTime, take: time, clock: screenClock, playing: true, exporting: true,
+                });
 
-                renderFrame(time);
+                renderFrame(time, { sortNow: true });
 
                 let source = t.renderer.domElement;
                 if (downCtx) {
@@ -2944,6 +3614,8 @@ function ScanCompositor() {
             applyLayers(prevLayers);
             modelObjectsRef.current.forEach((rec) => rec.hideHandles(false));
             if (t.gizmo) t.gizmo.visible = !!gizmoWasVisible;
+            if (t.moveGizmo) t.moveGizmo.visible = !!moveWasVisible;
+            propObjectsRef.current.forEach((rec) => rec.closeExport());
             exportingRef.current = false;
             setIsExporting(false);
             setExportProgress(0);
@@ -2969,7 +3641,7 @@ function ScanCompositor() {
         }
     }, [clipId, exportScale, exportQuality, exportLength, exportLoops, loopMode,
         exportMusicStart, exportVideoStart,
-        muted, renderFrame, applyLayers, driveCloud, driveOpacity, driveModels,
+        muted, renderFrame, applyLayers, driveCloud, driveOpacity, driveModels, driveProps,
         clipAudio, buildExportAudio, showVideo]);
 
     // ---- Control helpers -------------------------------------------------
@@ -3031,10 +3703,474 @@ function ScanCompositor() {
         return `${m}:${r}`;
     };
 
+    // ---- Shared bits of the new panels ----
+
+    const btnRow = { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 };
+
+    // A row of buttons picking one value.
+    const segRow = (options, value, pick, cols = options.length) => (
+        <div className={styles.vfx_segRow} style={{ gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
+            {options.map(([id, name]) => (
+                <button
+                    key={String(id)}
+                    type="button"
+                    className={`${styles.vfx_segBtn} ${value === id ? styles.vfx_segBtnOn : ''}`}
+                    onClick={() => pick(id)}
+                >
+                    {name}
+                </button>
+            ))}
+        </div>
+    );
+
+    // Edit one field of an object inside the selected item's parameters
+    // (a modulator), in the shape `slider` and `toggle` expect.
+    const setNested = (field) => (key) => (value) => updateSelected((i) => ({
+        ...i, op: { ...i.op, [field]: { ...MOD_DEFAULTS, ...(i.op[field] || {}), [key]: value } },
+    }));
+
+    // In front of the footage or behind it.
+    const layerSeg = (op) => (
+        <>
+            <div className={styles.vfx_hint} style={{ margin: '4px 0 5px' }}>Layer</div>
+            {segRow(LAYER_OPTIONS, op.depthLayer || 'front', (v) => setItemParam('depthLayer')(v), 2)}
+        </>
+    );
+
+    // A modulator: what in the track drives it, and the curve it goes
+    // through. `name` keys its live meter and curve dot.
+    const meterRef = (name, part) => (el) => {
+        modUiRef.current[name] = { ...(modUiRef.current[name] || {}), [part]: el };
+    };
+    const renderMod = (name, modIn, setMod, hint) => {
+        const mod = { ...MOD_DEFAULTS, ...(modIn || {}) };
+        const meterBox = {
+            gridColumn: '2 / 4', position: 'relative', height: 10, background: 'rgba(255,255,255,0.08)', overflow: 'hidden',
+        };
+        return (
+            <>
+                {segRow([['off', 'Off'], ['band', 'Band level'], ['kick', 'Kick hits']], mod.source, (v) => setMod('source')(v))}
+                {mod.source !== 'off' && (
+                    <>
+                        <div className={styles.vfx_row}>
+                            <span className={styles.vfx_label}>In / out</span>
+                            <div style={{ ...meterBox, height: 14 }}>
+                                <div ref={meterRef(name, 'meter')} style={{ position: 'absolute', left: 0, top: 0, height: 7, width: '0%', background: 'var(--fg)', opacity: 0.55 }} />
+                                <div ref={meterRef(name, 'out')} style={{ position: 'absolute', left: 0, bottom: 0, height: 7, width: '0%', background: 'var(--accent)', opacity: 0.85 }} />
+                                <div ref={meterRef(name, 'flash')} style={{ position: 'absolute', inset: 0, background: 'var(--accent)', opacity: 0 }} />
+                                {mod.source === 'kick' && (
+                                    <div style={{ position: 'absolute', top: 0, height: 7, width: 2, left: `calc(${mod.threshold * 100}% - 1px)`, background: 'var(--accent)' }} />
+                                )}
+                            </div>
+                        </div>
+                        {slider('Low (Hz)', 'low', 20, 8000, 1, mod, setMod)}
+                        {slider('High (Hz)', 'high', 30, 16000, 1, mod, setMod)}
+                        {mod.source === 'kick' ? (
+                            <>
+                                {slider('Threshold', 'threshold', 0, 1, 0.005, mod, setMod)}
+                                {slider('Min gap (s)', 'gap', 0.05, 1, 0.01, mod, setMod)}
+                                {slider('Attack (s)', 'attack', 0.001, 0.3, 0.001, mod, setMod)}
+                                {slider('Release (s)', 'release', 0.02, 2, 0.01, mod, setMod)}
+                                <div className={styles.vfx_hint} style={{ margin: '4px 0 5px' }}>React to every</div>
+                                {segRow([[1, 'kick'], [2, '2nd'], [4, '4th']], mod.every, (v) => setMod('every')(v))}
+                            </>
+                        ) : (
+                            slider('Smoothing (s)', 'smooth', 0, 1, 0.005, mod, setMod)
+                        )}
+                        <div className={styles.vfx_hint} style={{ margin: '6px 0 5px' }}>
+                            {mod.source === 'kick'
+                                ? 'Motion after a hit: the curve is read from the hit (right) to fully released (left)'
+                                : 'Map: band level in (across) to amount out (up)'}
+                        </div>
+                        <CurveEditor
+                            points={mod.curve}
+                            onChange={(pts) => setMod('curve')(pts)}
+                            dotRef={meterRef(name, 'dot')}
+                            xLabel={mod.source === 'kick' ? 'hit →' : 'level'}
+                            yLabel="amount"
+                        />
+                        {toggle('Invert', 'invert', mod, setMod)}
+                    </>
+                )}
+                {hint && <div className={styles.vfx_hint}>{hint}</div>}
+            </>
+        );
+    };
+
+    // Library sizing and, for screens, where the screen is on the model.
+    // Edits here are to the asset, so they apply to every placed copy and
+    // are saved apart from projects.
+    const renderLibraryPanel = (item, entry, rec) => {
+        const screen = { ...DEFAULT_SCREEN, ...(entry.screen || {}) };
+        const setEntry = (key) => (v) => editAsset(entry.id, (a) => ({ ...a, [key]: v }));
+        const setScreen = (key) => (v) => editAsset(entry.id, (a) => ({ ...a, screen: { ...DEFAULT_SCREEN, ...a.screen, [key]: v } }));
+        const savedNote = {
+            saving: 'Saving...',
+            repo: 'Saved to src/data/scanAssetLibrary.json.',
+            browser: 'Saved in this browser. No dev server to write the file here, so download the JSON and drop it over src/data/scanAssetLibrary.json to keep it.',
+        }[librarySaved];
+        return (
+            <div className={styles.vfx_section}>
+                <div className={styles.vfx_sectionTitle}>Library · {entry.name}</div>
+                {segRow(CATEGORIES.map((c) => [c.id, c.name]), entry.category, (v) => setEntry('category')(v), 2)}
+                {slider('Size (m)', 'size', 0.02, 3, 0.005, entry, setEntry)}
+                {entry.category === 'screen' && (
+                    <>
+                        {toggle('Edit screen corners', 'editCorners', { editCorners: editMode === 'corners' },
+                            () => (v) => setEditMode(v ? 'corners' : null))}
+                        {editMode === 'corners' && (
+                            <div className={styles.vfx_hint} style={{ marginBottom: 8 }}>
+                                Click a corner marker (orange is picked; blue
+                                in the middle moves the whole screen) and drag
+                                the arrows. Top-left, top-right, bottom-right,
+                                bottom-left as the picture should read.
+                            </div>
+                        )}
+                        {editMode === 'corners' && segRow(
+                            [[0, 'TL'], [1, 'TR'], [2, 'BR'], [3, 'BL'], [4, 'All']], cornerHandle, setCornerHandle, 5,
+                        )}
+                        {rec?.parts?.length > 0 && (
+                            <select
+                                className={styles.vfx_select}
+                                style={{ marginBottom: 9 }}
+                                value=""
+                                onChange={(e) => {
+                                    const part = rec.parts[parseInt(e.target.value, 10)];
+                                    const corners = part && fitCornersToMesh(part.mesh, rec.norm);
+                                    if (corners) setScreen('corners')(corners);
+                                }}
+                            >
+                                <option value="">Fit the screen to a part...</option>
+                                {rec.parts.map((p, i) => (
+                                    // eslint-disable-next-line react/no-array-index-key
+                                    <option key={i} value={i}>{p.name}{p.material ? ` (${p.material})` : ''}</option>
+                                ))}
+                            </select>
+                        )}
+                        {slider('Lift off surface', 'lift', 0, 0.05, 0.0001, screen, setScreen)}
+                        <div className={styles.vfx_hint} style={{ margin: '4px 0 5px' }}>Default fit</div>
+                        {segRow(VIDEO_FITS.slice(1), screen.fit, (v) => setScreen('fit')(v), 3)}
+                    </>
+                )}
+                <div className={styles.vfx_segRow} style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}>
+                    <button type="button" className={styles.vfx_segBtn} style={btnRow} onClick={saveLibraryNow}>
+                        <Save size={12} />
+                        Save
+                    </button>
+                    <button type="button" className={styles.vfx_segBtn} style={btnRow} onClick={() => downloadLibrary(libraryRef.current)}>
+                        <FileDown size={12} />
+                        Download .json
+                    </button>
+                </div>
+                {savedNote && <div className={styles.vfx_fileName} style={{ whiteSpace: 'normal' }}>{savedNote}</div>}
+                <div className={styles.vfx_hint} style={{ marginTop: 6 }}>
+                    The library is the assets themselves, not this shot:
+                    category, size and the screen&apos;s corners (in the
+                    model&apos;s own units, so they survive any resizing).
+                    Every change saves straight into the repo under npm
+                    start, and into this browser either way.
+                    {entry.credit ? ` ${entry.credit}.` : ''}
+                </div>
+            </div>
+        );
+    };
+
+    const renderPropPanel = (item) => {
+        const entry = library.assets.find((a) => a.id === item.assetId);
+        if (!entry) {
+            return (
+                <div className={styles.vfx_section}>
+                    <div className={styles.vfx_hint}>&quot;{item.assetId}&quot; is not in the asset library.</div>
+                </div>
+            );
+        }
+        const op = item.op;
+        const set = setItemParam;
+        const rec = propObjectsRef.current.get(item.id);
+        const isScreen = entry.category === 'screen';
+        const takes = clips.map((c) => ({ id: `take:${c.id}`, name: `Take: ${c.label}` }));
+        const missing = op.video && rec?.video?.missing;
+        return (
+            <>
+                <div className={styles.vfx_section}>
+                    <div className={styles.vfx_sectionTitle}>{entry.name}</div>
+                    {!rec?.ready && <div className={styles.vfx_hint} style={{ marginBottom: 6 }}>Loading...</div>}
+                    {slider('Pos X', 'posX', -10, 10, 0.005, op, set)}
+                    {slider('Pos Y', 'posY', -10, 10, 0.005, op, set)}
+                    {slider('Pos Z', 'posZ', -10, 10, 0.005, op, set)}
+                    {slider('Turn', 'rotY', -180, 180, 0.5, op, set)}
+                    {slider('Tilt X', 'rotX', -180, 180, 0.5, op, set)}
+                    {slider('Tilt Z', 'rotZ', -180, 180, 0.5, op, set)}
+                    {slider('Scale', 'scale', 0.05, 8, 0.01, op, set)}
+                    {toggle('Move in viewport', 'editMove', { editMove: editMode === 'move' },
+                        () => (v) => setEditMode(v ? 'move' : null))}
+                    {toggle('Casts a shadow', 'castShadow', op, set)}
+                    {slider('Opacity', 'opacity', 0, 1, 0.01, op, set)}
+                    {layerSeg(op)}
+                    <div className={styles.vfx_hint}>
+                        Stands with its base at the position, in the
+                        scan&apos;s own frame. Behind the video, it only shows
+                        through a window (or where the footage is faded).
+                    </div>
+                </div>
+
+                {isScreen && (
+                    <div className={styles.vfx_section}>
+                        <div className={styles.vfx_sectionTitle}>Screen</div>
+                        {toggle('Screen on', 'screenOn', op, set)}
+                        <select
+                            className={styles.vfx_select}
+                            style={{ marginBottom: 9 }}
+                            value={op.video || ''}
+                            onChange={(e) => {
+                                if (e.target.value === '__upload') { videoInputRef.current.click(); return; }
+                                set('video')(e.target.value || null);
+                            }}
+                        >
+                            <option value="">No video</option>
+                            <optgroup label="Takes">
+                                {takes.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                            </optgroup>
+                            <optgroup label="Bundled">
+                                {PUBLIC_VIDEOS.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                            </optgroup>
+                            {uploads.length > 0 && (
+                                <optgroup label="Uploaded (kept in this browser)">
+                                    {uploads.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                                </optgroup>
+                            )}
+                            <option value="__upload">Upload a video...</option>
+                        </select>
+                        {missing && (
+                            <div className={styles.vfx_hint} style={{ marginBottom: 8 }}>
+                                That upload is not in this browser any more; upload it again.
+                            </div>
+                        )}
+                        {op.video && op.video.startsWith('upload:') && (
+                            <button
+                                type="button"
+                                className={styles.vfx_select}
+                                style={{ ...btnRow, marginBottom: 9 }}
+                                onClick={async () => {
+                                    await deleteUpload(op.video);
+                                    setUploads(await listUploads());
+                                    set('video')(null);
+                                }}
+                            >
+                                <Trash2 size={12} />
+                                Forget this upload
+                            </button>
+                        )}
+                        {slider('Start (s)', 'videoOffset', 0, Math.max(1, rec?.video?.duration || 30), 0.01, op, set)}
+                        {slider('Rate', 'videoRate', 0, 4, 0.01, op, set)}
+                        {slider('Brightness', 'brightness', 0, 4, 0.01, op, set)}
+                        <div className={styles.vfx_hint} style={{ margin: '4px 0 5px' }}>Fit</div>
+                        {segRow(VIDEO_FITS, op.fit ?? null, (v) => set('fit')(v), 4)}
+                        <div className={styles.vfx_hint} style={{ margin: '4px 0 5px' }}>Turn the picture</div>
+                        {segRow([[0, '0°'], [90, '90°'], [180, '180°'], [270, '270°']], op.rotate || 0, (v) => set('rotate')(v), 4)}
+                        {toggle('Mirror', 'flipX', op, set)}
+                        <div className={styles.vfx_hint}>
+                            Plays on the music&apos;s clock (its own with no
+                            track), looping, from Start; an export decodes
+                            the exact frame for every frame it writes. Uploads
+                            are kept in this browser, so the screen still has
+                            its picture after a reload. Brightness over 1
+                            makes it glow with Glow on.
+                        </div>
+                    </div>
+                )}
+
+                <div className={styles.vfx_section}>
+                    <div className={styles.vfx_sectionTitle}>Pulse</div>
+                    {slider('Amount', 'reactAmount', -0.5, 1, 0.005, op, set)}
+                    {slider('Width (X)', 'reactX', 0, 1, 0.01, op, set)}
+                    {slider('Height (Y)', 'reactY', 0, 1, 0.01, op, set)}
+                    {slider('Depth (Z)', 'reactZ', 0, 1, 0.01, op, set)}
+                    {renderMod('scale', op.mod, setNested('mod'),
+                        'Scale grows by Amount times the curve’s output, from the base up, on whichever axes you weight. Read from the decoded track, so the export pulses on exactly the frames the preview does.')}
+                </div>
+
+                {renderLibraryPanel(item, entry, rec)}
+            </>
+        );
+    };
+
+    const renderWindowPanel = (item) => {
+        const op = item.op;
+        const set = setItemParam;
+        const selectRow = (label, key, options) => (
+            <div className={styles.vfx_row} key={key}>
+                <span className={styles.vfx_label}>{label}</span>
+                <select
+                    className={styles.vfx_select}
+                    style={{ gridColumn: '2 / 4' }}
+                    value={op[key]}
+                    onChange={(e) => set(key)(e.target.value)}
+                >
+                    {options.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+            </div>
+        );
+        return (
+            <>
+                <div className={styles.vfx_section}>
+                    <div className={styles.vfx_sectionTitle}>Window</div>
+                    {toggle('Edit corners', 'editCorners', { editCorners: editMode === 'corners' },
+                        () => (v) => setEditMode(v ? 'corners' : null))}
+                    {editMode === 'corners' && segRow(
+                        [[0, 'TL'], [1, 'TR'], [2, 'BR'], [3, 'BL'], [4, 'All']], cornerHandle, setCornerHandle, 5,
+                    )}
+                    {toggle('Show outline', 'outline', op, set)}
+                    <button
+                        type="button"
+                        className={styles.vfx_select}
+                        style={btnRow}
+                        onClick={() => {
+                            const t = three.current;
+                            const cam = t.activeCamera || t.camera;
+                            const C = op.corners.map((c) => t.modelRoot.localToWorld(new THREE.Vector3().fromArray(c)));
+                            const mid = C.reduce((a, c) => a.add(c), new THREE.Vector3()).multiplyScalar(0.25);
+                            const dist = Math.max(0.05, mid.distanceTo(cam.getWorldPosition(new THREE.Vector3())));
+                            const size = (C[0].distanceTo(C[1]) + C[3].distanceTo(C[2])) / 2;
+                            set('corners')(cornersFacing(cam, t.modelRoot, dist, size));
+                        }}
+                    >
+                        <RotateCcw size={12} />
+                        Square up to the camera
+                    </button>
+                    <div className={styles.vfx_hint} style={{ marginTop: 8 }}>
+                        Four corners in the scan&apos;s own space, so the
+                        window stays on its patch of the take as the camera
+                        moves. Click a corner marker to move that corner, or
+                        the middle one to move the whole window.
+                    </div>
+                </div>
+
+                <div className={styles.vfx_section}>
+                    <div className={styles.vfx_sectionTitle}>Size over time</div>
+                    {toggle('Animate', 'sizeOn', op, set)}
+                    {op.sizeOn && (() => {
+                        const hasMusic = !!audioBufferRef.current;
+                        const music = hasMusic && op.sizeClock === 'music';
+                        const dur = music
+                            ? audioBufferRef.current.duration
+                            : (videoRef.current?.duration || 0);
+                        const max = Number.isFinite(dur) && dur > 0 ? Math.ceil(dur * 100) / 100 : 60;
+                        const now = () => {
+                            const v = music
+                                ? audioRef.current?.currentTime || 0
+                                : takeTime(dirRef.current < 0 ? revVideoRef.current : videoRef.current);
+                            return Math.round(v * 100) / 100;
+                        };
+                        return (
+                            <>
+                                {hasMusic && segRow(
+                                    [['take', 'Footage clock'], ['music', 'Music clock']],
+                                    op.sizeClock, (v) => set('sizeClock')(v), 2,
+                                )}
+                                {slider('Start (s)', 'sizeFrom', 0, max, 0.01, op, set)}
+                                {slider('End (s)', 'sizeTo', 0, max, 0.01, op, set)}
+                                <div className={styles.vfx_segRow} style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}>
+                                    <button type="button" className={styles.vfx_segBtn} onClick={() => set('sizeFrom')(now())}>
+                                        Start at playhead
+                                    </button>
+                                    <button type="button" className={styles.vfx_segBtn} onClick={() => set('sizeTo')(now())}>
+                                        End at playhead
+                                    </button>
+                                </div>
+                                {slider('Start width', 'startW', 0, 3, 0.01, op, set)}
+                                {slider('Start height', 'startH', 0, 3, 0.01, op, set)}
+                                {slider('End width', 'endW', 0, 3, 0.01, op, set)}
+                                {slider('End height', 'endH', 0, 3, 0.01, op, set)}
+                                <div className={styles.vfx_hint} style={{ margin: '6px 0 5px' }}>Grows from</div>
+                                {segRow(
+                                    [['centre', 'Centre'], ['top', 'Top'], ['bottom', 'Bottom'], ['left', 'Left'], ['right', 'Right']],
+                                    op.sizeAnchor, (v) => set('sizeAnchor')(v), 5,
+                                )}
+                                <div className={styles.vfx_hint} style={{ margin: '6px 0 5px' }}>Easing</div>
+                                {segRow(
+                                    [['linear', 'Linear'], ['in', 'In'], ['out', 'Out'], ['inOut', 'In-out']],
+                                    op.sizeEase, (v) => set('sizeEase')(v), 4,
+                                )}
+                                <div className={styles.vfx_hint} style={{ marginTop: 8 }}>
+                                    Width and height are multiples of the
+                                    window as drawn (1 is its corners, 0 shut).
+                                    It holds the start size before Start and
+                                    the end size after End
+                                    {music ? ', timed on the music' : ', timed on the footage, so a bounced or looped take plays it back with the footage'}.
+                                    The corner markers stay on the drawn
+                                    corners, and while you drag one the
+                                    window shows at its drawn size.
+                                </div>
+                            </>
+                        );
+                    })()}
+                </div>
+
+                <div className={styles.vfx_section}>
+                    <div className={styles.vfx_sectionTitle}>Cut out the footage</div>
+                    {toggle('Cut', 'cut', op, set)}
+                    {slider('Opacity', 'cutOpacity', 0, 1, 0.01, op, set)}
+                    {slider('Feather', 'feather', 0, 0.5, 0.005, op, set)}
+                    <div className={styles.vfx_hint}>
+                        Takes the footage out inside the window, so anything
+                        set to Behind video shows through (and the backdrop
+                        where there is nothing).
+                    </div>
+                </div>
+
+                <div className={styles.vfx_section}>
+                    <div className={styles.vfx_sectionTitle}>Hue shift</div>
+                    {toggle('On', 'hueOn', op, set)}
+                    {op.hueOn && (
+                        <>
+                            {slider('Base (°)', 'hueBase', -180, 180, 1, op, set)}
+                            {slider('Swing (°)', 'hueAmount', -360, 360, 1, op, set)}
+                            {slider('Saturation', 'hueSat', 0, 3, 0.01, op, set)}
+                            {renderMod('hue', op.hueMod, setNested('hueMod'),
+                                'The hue turns by Swing times the curve’s output, on top of Base.')}
+                        </>
+                    )}
+                </div>
+
+                <div className={styles.vfx_section}>
+                    <div className={styles.vfx_sectionTitle}>Pixel sort</div>
+                    {toggle('On', 'sortOn', op, set)}
+                    {op.sortOn && (
+                        <>
+                            {selectRow('Sort by', 'sortBy', SORT_BY)}
+                            {selectRow('Threshold', 'thresholdMode', SORT_THRESHOLD)}
+                            {op.thresholdMode !== 'none' && (
+                                <>
+                                    {slider('Low %', 'low', 0, 100, 1, op, set)}
+                                    {slider('High %', 'high', 0, 100, 1, op, set)}
+                                </>
+                            )}
+                            {segRow([['vertical', 'Vertical'], ['horizontal', 'Horizontal']], op.direction, (v) => set('direction')(v), 2)}
+                            {slider('Seg max px', 'segmentMaxLength', 0, 2000, 10, op, set)}
+                            {toggle('Reverse', 'reverse', op, set)}
+                            {slider('RGB shift', 'rgbShift', 0, 64, 1, op, set)}
+                            {slider('Resolution', 'sortScale', 0.1, 1, 0.05, op, set)}
+                            {slider('Mix', 'sortMix', 0, 1, 0.01, op, set)}
+                            <div className={styles.vfx_hint} style={{ margin: '6px 0 5px' }}>The music moves</div>
+                            {segRow([['mix', 'Mix'], ['low', 'Threshold'], ['length', 'Length']], op.sortModTarget, (v) => set('sortModTarget')(v), 3)}
+                            {slider('Depth', 'sortModAmount', 0, 1, 0.01, op, set)}
+                            {renderMod('sort', op.sortMod, setNested('sortMod'),
+                                'The Pixel Sorter’s engine on whatever is under the window: the footage, or what the cut reveals. Mix fades the sort in with the music; Threshold opens the band so more of the picture sorts; Length grows the streaks. The preview sorts a frame behind on a worker; an export sorts every frame exactly.')}
+                        </>
+                    )}
+                </div>
+            </>
+        );
+    };
+
     // The selected model's controls: how it is drawn, where it is, its pose,
     // the nod and the ears, and the body itself.
     const renderModelPanel = (item) => {
-        const op = { ...MODEL_DEFAULTS, ...item.op };
+        // Sackboy shares this panel: the pose editor, nod and views are the
+        // same idea on a different rig.
+        const sack = item.modelId === 'sackboy';
+        const op = { ...(sack ? SACKBOY_DEFAULTS : MODEL_DEFAULTS), ...item.op };
         const set = setItemParam;
         const btnStyle = { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 };
         const seg = (key, options, cols = options.length) => (
@@ -3068,13 +4204,17 @@ function ScanCompositor() {
         const angSet = (k) => setJointAngle(poseJoint, { x: 0, y: 1, z: 2 }[k]);
         const legLocked = op.plantFeet && LEG_JOINTS.includes(poseJoint);
         const other = mirrorJoint(poseJoint);
-        const spawn = MODEL_SPAWNS[clipId];
+        const spawn = sack ? SACKBOY_SPAWNS[clipId] : MODEL_SPAWNS[clipId];
         const rec = modelObjectsRef.current.get(item.id);
+        const poses = sack ? SACKBOY_POSES : POSES;
+        const jointMenu = sack ? SACKBOY_JOINT_MENU : JOINTS;
+        const colourName = sack ? 'Texture' : 'Part colours';
 
         return (
             <>
                 <div className={styles.vfx_section}>
-                    <div className={styles.vfx_sectionTitle}>Protagonist</div>
+                    <div className={styles.vfx_sectionTitle}>{sack ? 'Sackboy' : 'Protagonist'}</div>
+                    {sack && !rec?.ready && <div className={styles.vfx_hint} style={{ marginBottom: 6 }}>Loading...</div>}
                     {/* Toggles rather than one choice: any mix can be on. */}
                     <div className={styles.vfx_segRow} style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
                         {MODEL_VIEWS.map((v) => (
@@ -3092,7 +4232,9 @@ function ScanCompositor() {
                     {op.viewWire && (
                         <>
                             <div className={styles.vfx_hint} style={{ margin: '0 0 5px' }}>Wireframe</div>
-                            {seg('wireColorMode', [['model', 'Part colours'], ['solid', 'Solid']], 2)}
+                            {sack && seg('wireMode', [['all', 'Every edge'], ['feature', 'Creases only']], 2)}
+                            {sack && op.wireMode === 'feature' && slider('Crease angle', 'wireAngle', 1, 90, 1, op, set)}
+                            {seg('wireColorMode', [['model', colourName], ['solid', 'Solid']], 2)}
                             {op.wireColorMode === 'solid' && colour('Colour', 'wireColor')}
                             {slider('Thickness', 'wireThickness', 0.0002, 0.008, 0.0001, op, set)}
                         </>
@@ -3100,7 +4242,7 @@ function ScanCompositor() {
                     {op.viewPoints && (
                         <>
                             <div className={styles.vfx_hint} style={{ margin: '0 0 5px' }}>Points</div>
-                            {seg('pointColorMode', [['model', 'Part colours'], ['solid', 'Solid']], 2)}
+                            {seg('pointColorMode', [['model', colourName], ['solid', 'Solid']], 2)}
                             {op.pointColorMode === 'solid' && colour('Colour', 'pointColor')}
                             {slider('Points', 'pointCount', 2000, 150000, 1000, op, set)}
                             {slider('Size', 'pointSize', 0.001, 0.05, 0.0005, op, set)}
@@ -3109,6 +4251,16 @@ function ScanCompositor() {
                     {!op.viewTextured && (op.viewWire || op.viewPoints)
                         && toggle('Hide far side', 'selfOcclude', op, set)}
                     {slider('Opacity', 'opacity', 0, 1, 0.01, op, set)}
+                    {layerSeg(op)}
+                    {sack ? (
+                        <div className={styles.vfx_hint}>
+                            Turn on any mix. Textured is his own knitted
+                            skin; the wireframe is every edge of his mesh (or
+                            only its creases); points are scattered over him by
+                            area. Lines and points are skinned to his bones, so
+                            they follow every pose and nod.
+                        </div>
+                    ) : (
                     <div className={styles.vfx_hint}>
                         Turn on any mix. Textured is the game&apos;s own hull;
                         wireframe is every part&apos;s feature edges; points are
@@ -3119,8 +4271,10 @@ function ScanCompositor() {
                         {!op.viewTextured && !op.viewWire && !op.viewPoints
                             && ' (All three are off, so he is invisible.)'}
                     </div>
+                    )}
                 </div>
 
+                {!sack && (
                 <div className={styles.vfx_section}>
                     <div className={styles.vfx_sectionTitle}>Finish</div>
                     <div className={styles.vfx_hint} style={{ margin: '0 0 5px' }}>Reflects</div>
@@ -3152,6 +4306,7 @@ function ScanCompositor() {
                         the scan has nothing.
                     </div>
                 </div>
+                )}
 
                 <div className={styles.vfx_section}>
                     <div className={styles.vfx_sectionTitle}>Placement</div>
@@ -3162,6 +4317,10 @@ function ScanCompositor() {
                     {slider('Tilt X', 'rotX', -45, 45, 0.5, op, set)}
                     {slider('Tilt Z', 'rotZ', -45, 45, 0.5, op, set)}
                     {slider('Scale', 'scale', 0.1, 3, 0.01, op, set)}
+                    {sack && slider('Height (m)', 'height', 0.1, 2.5, 0.01, op, set)}
+                    {sack && toggle('Casts a shadow', 'castShadow', op, set)}
+                    {toggle('Move in viewport', 'editMove', { editMove: editMode === 'move' },
+                        () => (v) => setEditMode(v ? 'move' : null))}
                     {spawn && (
                         <button
                             type="button"
@@ -3178,7 +4337,7 @@ function ScanCompositor() {
                 <div className={styles.vfx_section}>
                     <div className={styles.vfx_sectionTitle}>Pose</div>
                     <div className={styles.vfx_segRow} style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
-                        {Object.entries(POSES).map(([id, p]) => (
+                        {Object.entries(poses).map(([id, p]) => (
                             <button key={id} type="button" className={styles.vfx_segBtn} onClick={() => applyPosePreset(id)}>
                                 {p.name}
                             </button>
@@ -3191,7 +4350,7 @@ function ScanCompositor() {
                         value={poseJoint}
                         onChange={(e) => pickJoint(e.target.value)}
                     >
-                        {JOINTS.map(([id, label]) => (
+                        {jointMenu.map(([id, label]) => (
                             <option key={id} value={id}>{label}</option>
                         ))}
                     </select>
@@ -3221,25 +4380,45 @@ function ScanCompositor() {
                             type="button"
                             className={styles.vfx_segBtn}
                             onClick={() => {
-                                const rest = POSES.stand.make(bodyDims(specOf(op).body)).pose[poseJoint];
+                                const rest = sack
+                                    ? SACKBOY_POSES.stand.make().pose[poseJoint]
+                                    : POSES.stand.make(bodyDims(specOf(op).body)).pose[poseJoint];
                                 updateSelected((i) => ({ ...i, pose: { ...i.pose, [poseJoint]: rest } }));
                             }}
                         >
                             Reset joint
                         </button>
                     </div>
-                    {slider('Hip height', 'hipHeight', 0.2, 1.3, 0.005, op, set)}
-                    {slider('Hips fwd', 'hipForward', -0.4, 0.4, 0.005, op, set)}
-                    {toggle('Plant feet', 'plantFeet', op, set)}
-                    {op.plantFeet && (
+                    {sack ? (
                         <>
-                            {slider('Feet fwd', 'footForward', -0.3, 0.9, 0.005, op, set)}
-                            {slider('Feet apart', 'footSpread', -0.1, 0.35, 0.005, op, set)}
+                            {slider('Hip height', 'hipHeight', -0.1, 0.6, 0.002, op, set)}
+                            {slider('Hips fwd', 'hipForward', -0.2, 0.2, 0.002, op, set)}
+                            {toggle('Plant feet', 'plantFeet', op, set)}
+                            {op.plantFeet && (
+                                <>
+                                    {slider('Feet fwd', 'footForward', -0.2, 0.4, 0.002, op, set)}
+                                    {slider('Feet apart', 'footSpread', -0.06, 0.2, 0.002, op, set)}
+                                </>
+                            )}
+                        </>
+                    ) : (
+                        <>
+                            {slider('Hip height', 'hipHeight', 0.2, 1.3, 0.005, op, set)}
+                            {slider('Hips fwd', 'hipForward', -0.4, 0.4, 0.005, op, set)}
+                            {toggle('Plant feet', 'plantFeet', op, set)}
+                            {op.plantFeet && (
+                                <>
+                                    {slider('Feet fwd', 'footForward', -0.3, 0.9, 0.005, op, set)}
+                                    {slider('Feet apart', 'footSpread', -0.1, 0.35, 0.005, op, set)}
+                                </>
+                            )}
                         </>
                     )}
                     {slider('Breathing', 'breathe', 0, 2, 0.01, op, set)}
                     <div className={styles.vfx_hint}>
-                        Angles are on top of standing with the arms hanging.
+                        {sack
+                            ? 'Angles are in his body\u2019s frame (X pitches about his left-right axis, Y turns, Z rolls) on top of the T-pose he was rigged in; hip height is in his own units above his feet (0.29 standing). '
+                            : 'Angles are on top of standing with the arms hanging. '}
                         With Edit in viewport on, click a joint marker (blue
                         left, pink right) and drag the rings. Planted feet keep
                         the feet on the ground while the hips move; grabbing a
@@ -3345,6 +4524,15 @@ function ScanCompositor() {
                     )}
                 </div>
 
+                {sack && (
+                    <div className={styles.vfx_section}>
+                        <div className={styles.vfx_sectionTitle}>Mouth</div>
+                        {slider('Opens (°)', 'mouthDepth', 0, 45, 0.5, op, set)}
+                        {renderMod('mouth', op.mouth, setNested('mouth'), 'The jaw drops with the band, as if he is singing along.')}
+                    </div>
+                )}
+
+                {!sack && (
                 <div className={styles.vfx_section}>
                     <div className={styles.vfx_sectionTitle}>Ears</div>
                     {toggle('Twitch', 'twitchOn', op, set)}
@@ -3361,7 +4549,9 @@ function ScanCompositor() {
                         pose editor.
                     </div>
                 </div>
+                )}
 
+                {!sack && (
                 <div className={styles.vfx_section}>
                     <div className={styles.vfx_sectionTitle}>Body</div>
                     {BODY_FIELDS.map(([key, label, min, max, step]) => slider(label, key, min, max, step, op, set))}
@@ -3403,6 +4593,12 @@ function ScanCompositor() {
                         him; the pose carries over.
                     </div>
                 </div>
+                )}
+                {sack && RIGS.find((r) => r.id === 'sackboy')?.credit && (
+                    <div className={styles.vfx_section}>
+                        <div className={styles.vfx_hint}>{RIGS.find((r) => r.id === 'sackboy').credit}</div>
+                    </div>
+                )}
             </>
         );
     };
@@ -3505,6 +4701,13 @@ function ScanCompositor() {
                 accept=".json,application/json"
                 style={{ display: 'none' }}
                 onChange={(e) => { onProjectFile(e.target.files[0]); e.target.value = ''; }}
+            />
+            <input
+                ref={videoInputRef}
+                type="file"
+                accept="video/*,.mp4,.mov,.webm"
+                style={{ display: 'none' }}
+                onChange={(e) => { onVideoFile(e.target.files[0]); e.target.value = ''; }}
             />
 
             {!menuOpen && (
@@ -3705,6 +4908,69 @@ function ScanCompositor() {
                                 On this take a model arrives sitting on the bench.
                             </div>
                         )}
+                        <div className={styles.vfx_hint} style={{ margin: '9px 0 5px' }}>Props</div>
+                        <div className={styles.vfx_playRow} style={{ marginBottom: 9 }}>
+                            <select
+                                className={styles.vfx_select}
+                                value={addPropId}
+                                onChange={(e) => setAddPropId(e.target.value)}
+                            >
+                                <option value="">Pick a prop...</option>
+                                {library.assets.filter((a) => a.category !== 'screen').map((a) => (
+                                    <option key={a.id} value={a.id}>{a.name}</option>
+                                ))}
+                            </select>
+                            <button
+                                type="button"
+                                aria-label="Add prop"
+                                className={styles.vfx_iconBtn}
+                                disabled={!track || !addPropId}
+                                onClick={() => addProp(addPropId)}
+                            >
+                                <Shapes size={14} />
+                            </button>
+                        </div>
+                        <div className={styles.vfx_hint} style={{ margin: '0 0 5px' }}>Screens</div>
+                        <div className={styles.vfx_playRow} style={{ marginBottom: 9 }}>
+                            <select
+                                className={styles.vfx_select}
+                                value={addScreenId}
+                                onChange={(e) => setAddScreenId(e.target.value)}
+                            >
+                                <option value="">Pick a screen...</option>
+                                {library.assets.filter((a) => a.category === 'screen').map((a) => (
+                                    <option key={a.id} value={a.id}>{a.name}</option>
+                                ))}
+                            </select>
+                            <button
+                                type="button"
+                                aria-label="Add screen"
+                                className={styles.vfx_iconBtn}
+                                disabled={!track || !addScreenId}
+                                onClick={() => addProp(addScreenId)}
+                            >
+                                <Monitor size={14} />
+                            </button>
+                        </div>
+                        <div className={styles.vfx_hint} style={{ margin: '0 0 5px' }}>Windows</div>
+                        <button
+                            type="button"
+                            className={styles.vfx_select}
+                            style={btnRow}
+                            disabled={!track}
+                            onClick={addWindow}
+                        >
+                            <Frame size={13} />
+                            Add a window
+                        </button>
+                        <div className={styles.vfx_hint} style={{ marginTop: 6 }}>
+                            Props pulse with the music; screens carry a video
+                            (which assets are screens, and where the screen
+                            is on each, is set in the asset library under any
+                            placed one). A window cuts the footage away to
+                            show what is behind it, and can hue-shift or
+                            pixel-sort its patch.
+                        </div>
                     </div>
 
                     {/* Items */}
@@ -3723,7 +4989,11 @@ function ScanCompositor() {
                             let name;
                             if (item.kind === 'curve') name = CURVES.find((c) => c.id === item.funcId)?.name;
                             else if (item.kind === 'model') name = MODELS.find((m) => m.id === item.modelId)?.name;
+                            else if (item.kind === 'prop') name = library.assets.find((a) => a.id === item.assetId)?.name;
+                            else if (item.kind === 'window') name = 'Window';
                             else name = ASSETS.find((a) => a.id === item.assetId)?.name;
+                            const screen = item.kind === 'prop' && library.assets.find((a) => a.id === item.assetId)?.category === 'screen';
+                            const behind = item.op?.depthLayer === 'behind';
                             return (
                                 <div className={styles.vfx_cutRow} key={item.id}>
                                     <button
@@ -3737,8 +5007,9 @@ function ScanCompositor() {
                                             selectedId === item.id ? null : item.id,
                                         )}
                                     >
-                                        {{ curve: '~ ', model: '☺ ' }[item.kind] || '• '}
+                                        {screen ? '▭ ' : ({ curve: '~ ', model: '☺ ', prop: '◆ ', window: '⬚ ' }[item.kind] || '• ')}
                                         {name || item.assetId || item.funcId || item.modelId}
+                                        {behind ? ' (behind)' : ''}
                                     </button>
                                     <button
                                         type="button"
@@ -3757,8 +5028,19 @@ function ScanCompositor() {
                     {/* Selected object parameters, straight from the shared
                         menu definition so both tools expose the same knobs. */}
                     {selected && selected.kind === 'model' && renderModelPanel(selected)}
+                    {selected && selected.kind === 'prop' && renderPropPanel(selected)}
+                    {selected && selected.kind === 'window' && renderWindowPanel(selected)}
 
-                    {selected && selected.kind !== 'model' && PARAM_GROUPS
+                    {selected && (selected.kind === 'asset' || selected.kind === 'curve') && (
+                        <div className={styles.vfx_section}>
+                            <div className={styles.vfx_sectionTitle}>Layer</div>
+                            {segRow(LAYER_OPTIONS, selected.op.depthLayer || 'front', (v) => setItemParam('depthLayer')(v), 2)}
+                            {toggle('Move in viewport', 'editMove', { editMove: editMode === 'move' },
+                                () => (v) => setEditMode(v ? 'move' : null))}
+                        </div>
+                    )}
+
+                    {selected && (selected.kind === 'asset' || selected.kind === 'curve') && PARAM_GROUPS
                         .filter((g) => g.scope === 'object'
                             && (g.kind === 'both' || g.kind === selected.kind
                                 || (g.kind === 'asset' && selected.kind === 'asset'))
@@ -3988,6 +5270,12 @@ function ScanCompositor() {
                         {toggle('Show footage', 'videoOn')}
                         {slider('Opacity', 'videoOpacity', 0, 1, 0.01)}
                         {colorRow('Backdrop', 'bgColor')}
+                        {toggle('Scan layers behind video', 'scanBehind')}
+                        <div className={styles.vfx_hint}>
+                            Puts the scan&apos;s points, mesh and wireframe
+                            behind the footage, so they only show through
+                            windows (or where the footage is faded).
+                        </div>
                     </div>
 
                     {/* Point cloud */}

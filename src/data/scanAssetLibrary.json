@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "assets": [
+    {
+      "id": "rock",
+      "name": "Flame rock",
+      "file": "rock.glb",
+      "category": "prop",
+      "size": 0.6,
+      "credit": "\"Flamerock\" by bilgehan.korkmaz, CC BY 4.0 (sketchfab.com/3d-models/flamerock-b1eaef7fc3194007ad823a51f414e4f8)"
+    },
+    {
+      "id": "boombox",
+      "name": "Boombox",
+      "file": "boombox.glb",
+      "category": "prop",
+      "size": 0.5,
+      "credit": "\"Low Poly Boombox (PS1/PS2 Style)\" by Drillimpact, CC BY 4.0 (sketchfab.com/3d-models/low-poly-boombox-ps1ps2-style-d9f19a9ddce04dac8586b34869d0c1ba)"
+    },
+    {
+      "id": "laptop",
+      "name": "Laptop",
+      "file": "laptop.glb",
+      "category": "screen",
+      "size": 0.36,
+      "credit": "\"Old Low-Poly Laptop | PSX Retro Prop\" by ZwiebelGames, CC BY 4.0 (sketchfab.com/3d-models/old-low-poly-laptop-psx-retro-prop-a2d9f3d0080b412983e19825aace11b5)",
+      "screen": {
+        "corners": [
+          [-0.779, 1.412, -1.645],
+          [0.786, 1.412, -1.645],
+          [0.786, 0.373, -1.075],
+          [-0.779, 0.373, -1.075]
+        ],
+        "lift": 0.004,
+        "fit": "cover"
+      }
+    },
+    {
+      "id": "monomachine",
+      "name": "Monomachine",
+      "file": "monomachine.glb",
+      "category": "screen",
+      "size": 0.34,
+      "credit": "\"Elektron Monomachine\" by mufffuzz, CC BY 4.0 (sketchfab.com/3d-models/elektron-monomachine-bdbf4d1c93b045c98236837725adee72)",
+      "screen": {
+        "corners": [
+          [-0.1135, 0.021, -0.0475],
+          [-0.043, 0.021, -0.0475],
+          [-0.043, 0.021, -0.0102],
+          [-0.1135, 0.021, -0.0102]
+        ],
+        "lift": 0.0004,
+        "fit": "cover"
+      }
+    }
+  ]
+}
