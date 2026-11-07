@@ -42,5 +42,25 @@
     {
         "id": "bahen_p3",
         "label": "Bahen P3"
+    },
+    {
+        "id": "vending",
+        "label": "Vending"
+    },
+    {
+        "id": "kickass",
+        "label": "Kickass"
+    },
+    {
+        "id": "nonchalant",
+        "label": "Nonchalant"
+    },
+    {
+        "id": "popeyes",
+        "label": "Popeyes"
+    },
+    {
+        "id": "onetwo",
+        "label": "One Two"
     }
 ]
