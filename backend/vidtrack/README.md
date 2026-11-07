@@ -158,6 +158,7 @@ web tool picks it up via `manifest.json`. Stages are resumable:
 | `export` | writes `track.json` and a web-playable H.264 copy |
 | `verify` | draws the solve back over the footage |
 | `publish` | copies assets across and registers the take |
+| `roto` | writes the take's object mattes from `roto/<take>.json` (see below) |
 
 `decimate.py` drops disconnected shells below ~0.4% of the face count before
 simplifying. A scan carries hundreds of them - leaves, gravel, scraps of fence -
@@ -208,6 +209,99 @@ about 25, or a solved-frame count well short of the total, means the pose is
 unreliable even though it technically solved — check `verify.py` before
 trusting it, and try more `--anchors` or a different `--keyframe`.
 
+## Object mattes (roto)
+
+A matte says, frame by frame, where a real object is in the footage, so the
+compositor can keep it in front of whatever is placed "in front of the video"
+(a **holdout**), or hold a window's cut or effects to inside or outside it.
+They are made in the compositor itself - Scene panel, **Roto mode** - with
+Meta's [SAM 2](https://github.com/facebookresearch/sam2) video predictor
+(Apache 2.0) running on this machine.
+
+**Making one.** In Roto mode the take holds on a frame. Add an object, then on
+the footage: click to include, alt-click (or right-click) to exclude, drag on
+empty footage for a box, drag a click to move it, right-click a click to take
+it away. The mask comes back as you click. **Whole take** tracks the object
+from its first clicked frame to the end and back to the start; scrub (`,` and
+`.`) to a frame it got wrong and click again there - that frame becomes a
+keyframe the model is held to - then track again (whole take, or only
+forwards or backwards from here). Where clicks are not enough, the **Brush**
+and **Eraser** paint the mask on that frame; paint always wins over the model
+and is reapplied whenever the object is re-tracked. **Write mattes** encodes
+every object.
+
+Everything you do is saved as you do it, to `roto/<take>.json` (committed:
+clicks, boxes, brush strokes, names). What the model made of it - an 8-bit
+mask per object per frame - is in `work/<take>/roto/` (not committed). A
+written matte is:
+
+- `public/mv/<take>/<take>_matte_<object>_<stamp>.mp4` and `..._rev.mp4`:
+  grayscale H.264 at the footage's size, frame count and rate, a keyframe
+  every 15 frames like the footage, the reverse for ping-pong. Each frame is
+  the mask averaged with its neighbours (Smooth, +/-1 frame by default, which
+  is what stops an edge shimmering), firmed back up (Choke moves the edge in
+  or out), the brush strokes painted over, then feathered (1.5 px).
+- an entry in `src/data/mattes.json`, which the build bundles: the tool finds
+  a take's mattes there, so the published site needs no server.
+
+Files under `public/` are never rewritten in place: the dev server reloads
+the page whenever one *changes* (it ignores new and deleted files), which
+would throw away the session. So a matte is encoded under `work/`, renamed
+into `public/` complete under a new stamp, and the old one deleted - and the
+session JSON lives here rather than beside the take.
+
+**The server.** `roto_server.py` keeps the model and one take's tracking
+state loaded on `127.0.0.1:8765`. The dev server (`src/setupProxy.js`)
+forwards `/__scan-compositor/roto/*` to it and starts it the first time Roto
+mode asks, logging to `roto_server.log`; it goes down with `npm start`. To
+run it yourself (another model, or to watch it):
+
+```
+../venv/bin/python roto_server.py --model small
+```
+
+Checkpoints are fetched into `checkpoints/` (gitignored) on first use.
+Measured on an M1 Pro (MPS), per frame of tracking, one object:
+
+| Model | float16 | float32 |
+| --- | --- | --- |
+| `base_plus` (default) | 1.0-1.1 s | 1.3-1.5 s |
+| `small` | 0.72 s | |
+| `tiny` | 0.6-0.68 s | |
+
+So a 300-frame take tracks in about five minutes on base-plus, which is
+worth it for hair and hands. A click costs about 0.6 s on a frame the model
+has not seen (the image encoder) and 0.05 s after that. The small models are
+not much faster because the floor is SAM 2's memory attention, not its
+encoder. Only the object being worked on is tracked, so fixing one does not
+re-run the others.
+
+SAM 2's own frame loader would hold the whole take as float32 at 1024x1024
+(12 MB a frame); the server reads frames off disk as the model asks for them
+instead. After a restart, the model has forgotten every mask it made, and a
+correction click means nothing without the mask it corrects; so a frame the
+model has no mask for is seeded with the one on disk before new clicks are
+applied, and they refine that, as they did originally.
+
+**Without the tool.** The `roto` stage writes the mattes from the session:
+
+```
+../venv/bin/python pipeline.py --name popeyes --only roto
+../venv/bin/python pipeline.py --name popeyes --only roto --repropagate
+```
+
+It reuses the masks in `work/` when every object has one on every frame,
+and otherwise (or with `--repropagate`, e.g. on a fresh clone) re-runs SAM 2
+from the saved clicks, round by round as they were made: the clicks from
+before the first tracking pass, a pass, the corrections made after it,
+another pass. Brush strokes are reapplied on top as always.
+
+**In the compositor.** A take's mattes are decoded frame by frame in step
+with the footage (WebCodecs, the reversed copy while ping-ponging), in the
+preview as in an export. Holdouts are on per matte by default and listed
+under Roto in the Scene panel; a window's panel has *Hold to a matte*, inside
+or outside.
+
 ## The SfM path
 
 `sfm.py` and `align.py` implement the COLMAP route and its registration step.
@@ -227,9 +321,13 @@ render.py        offscreen textured renderer (world position per pixel)
 verify.py        draws a solve back over its footage
 decimate.py      low-poly copies (coarse/medium/fine) for the wireframe
 export_track.py  convention/frame conversion -> track.json, <name>.mp4
+roto.py          object mattes: SAM 2 driving, masks, matte encoding (--only roto)
+roto_server.py   the compositor's Roto mode back end (started by npm start)
+roto/<name>.json a take's roto session: objects, clicks, brush strokes
 pipeline.py      orchestrator
 sfm.py/align.py  the unused SfM route; see above
-work/<name>/     frames and intermediates (gitignored)
+work/<name>/     frames and intermediates, roto masks (gitignored)
+checkpoints/     SAM 2 weights (gitignored, fetched on first use)
 assets/          working copies of the GLBs, clouds and wireframe meshes
 ```
 

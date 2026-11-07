@@ -6,6 +6,9 @@
 //   Effects - a layer over the window: a hue shift and a pixel sort (the
 //             Pixel Sorter's engine), each pushed about by the music.
 //
+// Either can be held to the inside or the outside of an object matte (see
+// roto.js), so a window can cut away the wall behind someone but not them.
+//
 // The compositor draws a frame in this order:
 //   1. everything set behind the video, into its own target;
 //   2. that, then the footage over it, then each window's cut, which lays
@@ -30,6 +33,10 @@ export const WINDOW_DEFAULTS = {
     cutOpacity: 1,
     feather: 0.02, // of the window's width, at each edge
     outline: true,
+    // An object matte to hold the cut and effects to: '' for none, else a
+    // matte id; 'inside' keeps them to the object, 'outside' off it.
+    matte: '',
+    matteMode: 'inside',
 
     hueOn: false,
     hueBase: 0, // degrees
@@ -142,10 +149,24 @@ void main() {
 
 const EDGE = /* glsl */`
 uniform float feather;
+uniform sampler2D tMatte;
+uniform float matteMode; // 0 none, 1 inside, -1 outside
+uniform vec2 matteRes;
 float edgeMask(vec2 uv) {
     float e = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
-    return feather > 0.0 ? smoothstep(0.0, feather, e) : 1.0;
+    float m = feather > 0.0 ? smoothstep(0.0, feather, e) : 1.0;
+    if (matteMode != 0.0) {
+        float k = smoothstep(0.03, 0.97, texture2D(tMatte, gl_FragCoord.xy / matteRes).r);
+        m *= matteMode > 0.0 ? k : 1.0 - k;
+    }
+    return m;
 }`;
+
+const matteUniforms = () => ({
+    tMatte: { value: null },
+    matteMode: { value: 0 },
+    matteRes: { value: new THREE.Vector2(1, 1) },
+});
 
 const COLOUR = /* glsl */`
 vec3 toSrgb(vec3 c) {
@@ -163,6 +184,7 @@ function cutMaterial() {
             resolution: { value: new THREE.Vector2(1, 1) },
             opacity: { value: 1 },
             feather: { value: 0.02 },
+            ...matteUniforms(),
         },
         vertexShader: VERT,
         fragmentShader: /* glsl */`
@@ -196,6 +218,7 @@ function fxMaterial() {
             hue: { value: 0 },
             sat: { value: 1 },
             feather: { value: 0.02 },
+            ...matteUniforms(),
         },
         vertexShader: VERT,
         fragmentShader: /* glsl */`
@@ -335,6 +358,21 @@ export class WindowModel {
     }
 
     get hasFx() { return this.op.hueOn || this.op.sortOn; }
+
+    /**
+     * Hold the cut and effects to a matte this frame: `tex` the matte's
+     * texture (null when it has none, or its matte is not loaded), `size`
+     * the drawing buffer.
+     */
+    setMatte(tex, size) {
+        const mode = tex && this.op.matte ? (this.op.matteMode === 'outside' ? -1 : 1) : 0;
+        [this.cutMat, this.fxMat].forEach((m) => {
+            const u = m.uniforms;
+            u.matteMode.value = mode;
+            u.tMatte.value = tex;
+            u.matteRes.value.copy(size);
+        });
+    }
 
     /** Whether the window covers anything this frame. */
     get open() { return this.frame.visible; }
