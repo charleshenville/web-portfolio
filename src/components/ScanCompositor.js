@@ -58,6 +58,10 @@ import {
     WindowModel, WindowCompositor, makeWindowItem, reviveWindow, cornersFacing, LAYER,
 } from '../lib/scanAssets/windows';
 import { PUBLIC_VIDEOS, storeUpload, listUploads, deleteUpload } from '../lib/scanAssets/screenVideo';
+import {
+    MatteSet, HoldoutPass, mattesFor, onMattesChanged,
+} from '../lib/scanAssets/roto';
+import RotoEditor from './RotoEditor';
 import CurveEditor, { placeCurveDot } from './CurveEditor';
 import styles from './vfx.module.css';
 
@@ -211,6 +215,12 @@ const DEFAULT_LAYERS = {
     opacityWire: false,
     opacityMesh: false,
     opacityScene: false,
+
+    // Object mattes (Roto): whether the take's published mattes are used at
+    // all, and which of them hold out what is in front of the video - by
+    // matte id, on unless set false.
+    mattesOn: true,
+    matteHoldout: {},
 };
 
 // Kept out of the views: these describe the solve, not the look, so recalling
@@ -321,6 +331,9 @@ function reviveItem(raw) {
 
 function ScanCompositor() {
     const mountRef = useRef(null);
+    // The canvas box, as state too: Roto mode draws its overlay into it.
+    const [mountEl, setMountEl] = useState(null);
+    const mountCallback = useCallback((el) => { mountRef.current = el; setMountEl(el); }, []);
     const videoRef = useRef(null);
     // The take reversed, published beside it. Ping-pong plays this forwards
     // rather than seeking the take backwards, which no browser does well.
@@ -418,6 +431,17 @@ function ScanCompositor() {
     const [musicSource, setMusicSource] = useState(null);
     const [sun, setSun] = useState(DEFAULT_SUN);
     const sunRef = useRef(sun);
+    // Roto mode: cutting object mattes out of the take (RotoEditor). While it
+    // is on the take is held paused on a frame, and drawn plain if asked.
+    const [rotoOn, setRotoOn] = useState(false);
+    const [rotoPlain, setRotoPlain] = useState(true);
+    const rotoRef = useRef({ on: false, plain: true });
+    useEffect(() => { rotoRef.current = { on: rotoOn, plain: rotoPlain }; three.current.needsRender = true; }, [rotoOn, rotoPlain]);
+    // The take's published mattes, decoded in step with the footage.
+    const matteSetRef = useRef(null);
+    if (!matteSetRef.current) matteSetRef.current = new MatteSet();
+    const [mattesTick, setMattesTick] = useState(0);
+    useEffect(() => onMattesChanged(() => setMattesTick((v) => v + 1)), []);
     useEffect(() => { sunRef.current = sun; }, [sun]);
     const selectedIdRef = useRef(null);
     // The kick meter in the model panel, written straight from the render
@@ -748,6 +772,7 @@ function ScanCompositor() {
         pulseSpace.add(pulseGuide);
 
         const compositor = new WindowCompositor(renderer);
+        const holdout = new HoldoutPass(renderer);
 
         // Picking a joint: the marker nearest the click on screen, within a
         // finger's width. A scan is shot from a few metres off, so the
@@ -802,7 +827,7 @@ function ScanCompositor() {
             bgScene, bgCamera, bgQuad,
             composer, bloomPass, hazePass, pointGlow, gizmo,
             sun: key, ambient, fill,
-            moveGizmo, cornerProxy, cornerHandles, compositor, pulseSpace, pulseGuide,
+            moveGizmo, cornerProxy, cornerHandles, compositor, pulseSpace, pulseGuide, holdout,
         };
 
         return () => {
@@ -813,6 +838,9 @@ function ScanCompositor() {
             moveGizmo.detach();
             moveGizmo.dispose();
             compositor.dispose();
+            holdout.dispose();
+            three.current.blackTex?.dispose();
+            matteSetRef.current?.dispose();
             cornerGeo.dispose();
             cornerHandles.children.forEach((m) => m.material.dispose());
             composer.dispose();
@@ -2033,6 +2061,29 @@ function ScanCompositor() {
         return () => { alive = false; };
     }, [clip, applyLayers]);
 
+    // ---- Object mattes ----------------------------------------------------
+
+    // The take's published mattes (Roto), decoded in step with the footage.
+    const [takeMattes, setTakeMattes] = useState([]);
+    useEffect(() => {
+        const list = clipId ? mattesFor(clipId) : [];
+        matteSetRef.current.set(clipId, list);
+        setTakeMattes(list);
+        three.current.needsRender = true;
+    }, [clipId, mattesTick]);
+
+    // The mattes this frame needs: those holding out, and those a window is
+    // held to.
+    const mattesInUse = useCallback(() => {
+        const L = layersRef.current;
+        if (!L.mattesOn) return { hold: [], all: [] };
+        const set = matteSetRef.current;
+        const hold = Array.from(set.tracks.keys()).filter((id) => (L.matteHoldout || {})[id] !== false);
+        const all = new Set(hold);
+        windowObjectsRef.current.forEach((w) => { if (w.op.matte && set.get(w.op.matte)) all.add(w.op.matte); });
+        return { hold, all: Array.from(all) };
+    }, []);
+
     // ---- Video element / texture ----------------------------------------
 
     // Each element gets its own texture; turning around swaps which one the
@@ -2427,6 +2478,15 @@ function ScanCompositor() {
         r.render(t.scene, cam);
         solids.forEach((o) => { o.visible = true; });
         lines.forEach((o) => { o.visible = true; });
+        // A held-out object stands in front of everything drawn, so the
+        // points behind it must not glow through it, or light it.
+        if (t.pointHold) {
+            if (!t.blackTex) {
+                t.blackTex = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+                t.blackTex.needsUpdate = true;
+            }
+            t.holdout.apply(t.blackTex);
+        }
     }, []);
 
     const renderFrame = useCallback((time, opts = {}) => {
@@ -2479,6 +2539,25 @@ function ScanCompositor() {
         if (t.moveGizmo) t.moveGizmo.camera = cam;
         placeSun();
 
+        // Rotoscoping on plain footage: just the frame, nothing over it.
+        const ro = rotoRef.current;
+        if (ro.on && ro.plain && !exportingRef.current) {
+            const r0 = t.renderer;
+            r0.setRenderTarget(null);
+            r0.setClearColor(0x000000, 1);
+            r0.clear();
+            if (t.videoTexture) {
+                const { visible } = t.bgQuad;
+                const op = t.bgQuad.material.opacity;
+                t.bgQuad.visible = true;
+                t.bgQuad.material.opacity = 1;
+                r0.render(t.bgScene, t.bgCamera);
+                t.bgQuad.visible = visible;
+                t.bgQuad.material.opacity = op;
+            }
+            return;
+        }
+
         // Sort everything onto its camera layer: in front of the video or
         // behind it, with the editing markers on the overlay.
         const behindCount = assignLayers();
@@ -2499,6 +2578,23 @@ function ScanCompositor() {
             || modelObjectsRef.current.size || propObjectsRef.current.size;
         const wins = Array.from(windowObjectsRef.current.values()).filter((w) => w.open);
         const footage = t.bgQuad.visible;
+        const size = t.compositor.ensure();
+
+        // Object mattes: the ones holding out what is in front of the video,
+        // and each window's, if it is held to one. Only over the footage -
+        // in free orbit a matte no longer lines up with anything.
+        const mattes = matteSetRef.current;
+        const inUse = mattesInUse();
+        const holdTex = footage ? inUse.hold.map((id) => mattes.texture(id)).filter(Boolean) : [];
+        const hold = holdTex.length > 0 && !!drawScene;
+        wins.forEach((w) => w.setMatte(
+            footage && L.mattesOn && w.op.matte ? mattes.texture(w.op.matte) : null, size,
+        ));
+        // With a holdout, everything up to the front pass is drawn aside, so
+        // it can be laid back over the front pass where the matte is.
+        const base = hold ? t.holdout.baseRT : out;
+        if (hold) t.holdout.build(holdTex, size);
+        t.pointHold = hold;
 
         // three works out the clear colour's encoding for whichever target is
         // bound when it is set (sRGB for the canvas, linear for a buffer), and
@@ -2514,14 +2610,16 @@ function ScanCompositor() {
         };
 
         if (!behindCount && !wins.length) {
-            clearTo(out);
+            clearTo(base);
             if (footage) {
                 r.render(t.bgScene, t.bgCamera);
                 r.clearDepth();
             }
-            cam.layers.set(LAYER.FRONT);
-            r.shadowMap.needsUpdate = true;
-            if (drawScene) r.render(t.scene, cam);
+            if (!hold) {
+                cam.layers.set(LAYER.FRONT);
+                r.shadowMap.needsUpdate = true;
+                if (drawScene) r.render(t.scene, cam);
+            }
         } else {
             const comp = t.compositor;
             comp.ensure();
@@ -2543,7 +2641,7 @@ function ScanCompositor() {
 
             // 2. That, the footage over it, and the windows cutting the
             //    footage back out.
-            clearTo(fxWins.length ? comp.compRT : out);
+            clearTo(fxWins.length ? comp.compRT : base);
             comp.blit(comp.behindRT.texture);
             if (footage) r.render(t.bgScene, t.bgCamera);
             if (cutWins.length) {
@@ -2555,7 +2653,7 @@ function ScanCompositor() {
             // 3. Window effects, reading what 2 made.
             if (fxWins.length) {
                 fxWins.filter((w) => w.op.sortOn).forEach((w) => comp.sortWindow(w, cam, !!opts.sortNow));
-                clearTo(out);
+                clearTo(base);
                 comp.blit(comp.compRT.texture);
                 wins.forEach((w) => { w.fxMesh.visible = fxWins.includes(w); comp.prepareFx(w); });
                 cam.layers.set(LAYER.WIN_FX);
@@ -2563,10 +2661,22 @@ function ScanCompositor() {
             }
 
             // 4. In front of the video.
-            r.clearDepth();
+            if (!hold) {
+                r.clearDepth();
+                cam.layers.set(LAYER.FRONT);
+                r.shadowMap.needsUpdate = true;
+                if (drawScene) r.render(t.scene, cam);
+            }
+        }
+        if (hold) {
+            // 4, held out: the shot so far, the front pass over it, and the
+            // shot again over that wherever a matted object is.
+            clearTo(out);
+            t.compositor.blit(t.holdout.baseRT.texture);
             cam.layers.set(LAYER.FRONT);
             r.shadowMap.needsUpdate = true;
-            if (drawScene) r.render(t.scene, cam);
+            r.render(t.scene, cam);
+            t.holdout.apply(t.holdout.baseRT.texture);
         }
         if (fx) {
             r.setRenderTarget(null);
@@ -2580,7 +2690,7 @@ function ScanCompositor() {
             r.render(t.scene, cam);
         }
         cam.layers.set(LAYER.FRONT);
-    }, [poseAt, applyIntrinsics, placeSun, assignLayers, placeCornerHandles, sizeHandles, drawPointSource]);
+    }, [poseAt, applyIntrinsics, placeSun, assignLayers, placeCornerHandles, sizeHandles, drawPointSource, mattesInUse]);
 
     // Push the spectrum through the scan's own point cloud. Only the points
     // actually being drawn are touched, so the density slider doubles as the
@@ -2866,12 +2976,20 @@ function ScanCompositor() {
                 if (kickFlashRef.current) kickFlashRef.current.style.opacity = k ? k.flash : 0;
             }
 
+            // Mattes onto the frame the footage is on.
+            const mi = mattesInUse();
+            if (mi.all.length && trackData) {
+                const idx = Math.max(0, Math.min(trackData.frame_count - 1,
+                    Math.floor(time * trackData.fps + 1e-3)));
+                matteSetRef.current.follow(mi.all, idx, back);
+            }
+
             renderFrame(time);
         };
         t.raf = requestAnimationFrame(tick);
         return () => cancelAnimationFrame(t.raf);
     }, [renderFrame, driveCloud, driveOpacity, driveModels, driveProps, driveModMeters,
-        track, takeTime, seekTake, goForward, goBackward]);
+        track, takeTime, seekTake, goForward, goBackward, mattesInUse]);
 
     // ---- Views -----------------------------------------------------------
 
@@ -3092,10 +3210,44 @@ function ScanCompositor() {
         three.current.videoDirty = 3;
     }, [exportMusicStart, exportVideoStart, showVideo, seekTake]);
 
+    // Roto mode holds the take still on a frame of the forward copy.
+    const seekFrame = useCallback((k) => {
+        const trackData = trackRef.current;
+        if (!trackData) return;
+        const f = Math.max(0, Math.min(trackData.frame_count - 1, Math.round(k)));
+        if (dirRef.current < 0) {
+            revVideoRef.current?.pause();
+            showVideo(1);
+        }
+        // Mid-frame, so rounding cannot land on its neighbour.
+        const at = (f + 0.5) / trackData.fps;
+        seekTake(at);
+        setCurrentTime(at);
+        three.current.videoDirty = 3;
+    }, [showVideo, seekTake]);
+
+    useEffect(() => {
+        if (!rotoOn) return;
+        const v = dirRef.current < 0 ? revVideoRef.current : videoRef.current;
+        if (playingRef.current) {
+            playingRef.current = false;
+            v?.pause();
+            audioRef.current?.pause();
+            setIsPlaying(false);
+        }
+        const trackData = trackRef.current;
+        if (trackData) seekFrame(Math.floor(takeTime(v) * trackData.fps + 1e-3));
+    }, [rotoOn, seekFrame, takeTime]);
+
+    // Leave Roto mode when the take changes; its session is per take.
+    useEffect(() => { setRotoOn(false); }, [clipId]);
+
     const togglePlay = useCallback(() => {
         const v = dirRef.current < 0 ? revVideoRef.current : videoRef.current;
         const a = audioRef.current;
         if (!v || exportingRef.current) return;
+        // Roto mode works on one frame at a time.
+        if (rotoRef.current.on && !playingRef.current) return;
         if (playingRef.current) {
             playingRef.current = false;
             v.pause();
@@ -3635,6 +3787,9 @@ function ScanCompositor() {
         const stampUs = (i) => Math.round((i * 1_000_000) / fps);
         const gop = Math.max(1, Math.round(fps * 2));
         let completed = false;
+        // Object mattes decode their exact frame too, from the reversed copy
+        // wherever the take runs backwards.
+        const matteIds = mattesInUse().all;
         setExportStage('Rendering...');
         // Timed from the end of the first frame, which carries the decoder
         // and texture setup and would make the early estimate wildly long.
@@ -3702,6 +3857,11 @@ function ScanCompositor() {
                 driveProps(1 / fps, {
                     music, time: musicTime, take: time, clock: screenClock, playing: true, exporting: true,
                 });
+
+                if (matteIds.length) {
+                    // eslint-disable-next-line no-await-in-loop
+                    await matteSetRef.current.exact(matteIds, src, dirs[i] < 0);
+                }
 
                 renderFrame(time, { sortNow: true });
 
@@ -3791,7 +3951,7 @@ function ScanCompositor() {
     }, [clipId, exportScale, exportQuality, exportLength, exportLoops, loopMode,
         exportMusicStart, exportVideoStart,
         muted, renderFrame, applyLayers, driveCloud, driveOpacity, driveModels, driveProps,
-        clipAudio, buildExportAudio, showVideo]);
+        clipAudio, buildExportAudio, showVideo, mattesInUse]);
 
     // ---- Control helpers -------------------------------------------------
 
@@ -4370,6 +4530,34 @@ function ScanCompositor() {
                 </div>
 
                 <div className={styles.vfx_section}>
+                    <div className={styles.vfx_sectionTitle}>Hold to a matte</div>
+                    <div className={styles.vfx_row}>
+                        <span className={styles.vfx_label}>Matte</span>
+                        <select
+                            className={styles.vfx_select}
+                            style={{ gridColumn: '2 / 4' }}
+                            value={op.matte || ''}
+                            onChange={(e) => set('matte')(e.target.value)}
+                        >
+                            <option value="">None: the whole window</option>
+                            {takeMattes.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                            {op.matte && !takeMattes.some((m) => m.id === op.matte) && (
+                                <option value={op.matte}>(missing matte)</option>
+                            )}
+                        </select>
+                    </div>
+                    {op.matte && segRow(
+                        [['inside', 'Inside the object'], ['outside', 'Outside it']],
+                        op.matteMode, (v) => set('matteMode')(v), 2,
+                    )}
+                    <div className={styles.vfx_hint}>
+                        {takeMattes.length
+                            ? 'Keeps the cut and the effects to where an object matte is (or is not), within the window.'
+                            : 'This take has no object mattes yet; make them in Roto mode, in the Scene panel.'}
+                    </div>
+                </div>
+
+                <div className={styles.vfx_section}>
                     <div className={styles.vfx_sectionTitle}>Hue shift</div>
                     {toggle('On', 'hueOn', op, set)}
                     {op.hueOn && (
@@ -4859,7 +5047,7 @@ function ScanCompositor() {
         <div className={styles.vfx}>
             <div className={styles.vfx_stage}>
                 <div className={styles.vfx_scanWrap}>
-                    <div ref={mountRef} className={styles.vfx_scanCanvas} />
+                    <div ref={mountCallback} className={styles.vfx_scanCanvas} />
                     {/* The element is the texture source and the clock; it is
                         never shown, since the composite is drawn in WebGL. */}
                     {clip && (
@@ -5042,6 +5230,31 @@ function ScanCompositor() {
                             exactly as previewed.
                         </div>
                     </div>
+
+                    {/* Roto */}
+                    <RotoEditor
+                        take={clipId}
+                        info={track && !track.unsolved ? { fps: track.fps, frames: track.frame_count } : null}
+                        frame={track && !track.unsolved
+                            ? Math.max(0, Math.min(track.frame_count - 1, Math.floor(currentTime * track.fps + 1e-3)))
+                            : 0}
+                        seekFrame={seekFrame}
+                        active={rotoOn}
+                        setActive={setRotoOn}
+                        plain={rotoPlain}
+                        setPlain={setRotoPlain}
+                        mountEl={mountEl}
+                        holdout={layers.matteHoldout || {}}
+                        setHoldout={(id, on) => setLayers((p) => ({
+                            ...p, matteHoldout: { ...(p.matteHoldout || {}), [id]: on },
+                        }))}
+                        onWritten={() => setMattesTick((v) => v + 1)}
+                    />
+                    {takeMattes.length > 0 && (
+                        <div className={styles.vfx_section} style={{ paddingTop: 0 }}>
+                            {toggle('Use mattes', 'mattesOn')}
+                        </div>
+                    )}
 
                     {/* Occlusion */}
                     <div className={styles.vfx_section}>

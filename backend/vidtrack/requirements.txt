@@ -8,3 +8,9 @@ pillow>=10.0
 moderngl>=5.10                   # offscreen GL for the model renderer
 fast-simplification>=0.1         # quadric decimation for the wireframe copy
 pycolmap>=3.10                   # only for the unused SfM path (sfm.py)
+# Object mattes (roto.py, roto_server.py). SAM 2 is not on PyPI; install it
+# after torch, without the CUDA extension (it only fills small holes):
+#   SAM2_BUILD_CUDA=0 ../venv/bin/pip install --no-build-isolation \
+#       "git+https://github.com/facebookresearch/sam2.git"
+torch>=2.5                       # MPS backend on Apple silicon
+torchvision>=0.20

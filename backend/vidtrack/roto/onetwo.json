@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "take": "onetwo",
+  "width": 1920,
+  "height": 1080,
+  "frames": 299,
+  "fps": 30.0,
+  "matte": {
+    "feather": 1.5,
+    "smooth": 1.0,
+    "choke": 0.0
+  },
+  "objects": [
+    {
+      "id": "o1",
+      "name": "Dumpster",
+      "color": "#ff5a5a",
+      "prompts": {
+        "290": {
+          "points": [
+            [350.0, 700.0, 1],
+            [150.0, 1000.0, 0]
+          ],
+          "box": null,
+          "round": 0
+        },
+        "0": {
+          "points": [
+            [497.1, 918.9, 1],
+            [672.9, 1004.8, 1],
+            [547.9, 754.8, 1]
+          ],
+          "box": null,
+          "round": 1
+        },
+        "279": {
+          "points": [
+            [260.8, 731.4, 1]
+          ],
+          "box": null,
+          "round": 2
+        }
+      },
+      "strokes": {},
+      "round": 3,
+      "stale": false,
+      "passes": [
+        {"mode": "forward", "frame": 290},
+        {"mode": "all", "frame": 0},
+        {"mode": "forward", "frame": 279}
+      ]
+    }
+  ],
+  "lastId": 1
+}

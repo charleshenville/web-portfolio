@@ -12,9 +12,17 @@
 // the page whenever anything under public changes, which would throw away the
 // session on every save. (A change in src is picked up by webpack, and the
 // library module accepts it without refreshing the tool.)
+//
+// It also forwards /__scan-compositor/roto/* to the rotoscoping server
+// (backend/vidtrack/roto_server.py: SAM 2, kept loaded on 127.0.0.1), and
+// starts that server the first time it is asked for, so `npm start` is all
+// the Roto panel needs. Like the library endpoint it answers only this
+// machine, and none of it exists in the build.
 
 const fs = require('fs');
+const http = require('http');
 const path = require('path');
+const { spawn } = require('child_process');
 
 const LIBRARY = path.join(__dirname, 'data', 'scanAssetLibrary.json');
 const ROUTE = '/__scan-compositor/library';
@@ -25,7 +33,98 @@ const isLocal = (req) => {
     return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
 };
 
+// ---- Roto ------------------------------------------------------------------
+
+const ROTO_ROUTE = '/__scan-compositor/roto';
+const ROTO_PORT = Number(process.env.ROTO_PORT) || 8765;
+const BACKEND = path.join(__dirname, '..', 'backend');
+const ROTO_PY = path.join(BACKEND, 'venv', 'bin', 'python');
+const ROTO_SERVER = path.join(BACKEND, 'vidtrack', 'roto_server.py');
+const ROTO_LOG = path.join(BACKEND, 'vidtrack', 'roto_server.log');
+
+let rotoProc = null;
+let rotoStarting = null;
+
+function rotoRequest(method, url, body, headers = {}) {
+    return new Promise((resolve, reject) => {
+        const req = http.request({
+            host: '127.0.0.1',
+            port: ROTO_PORT,
+            method,
+            path: url,
+            headers: { ...headers, 'Content-Length': body ? body.length : 0 },
+        }, resolve);
+        req.on('error', reject);
+        req.setTimeout(600000, () => req.destroy(new Error('roto server timed out')));
+        if (body) req.write(body);
+        req.end();
+    });
+}
+
+const rotoUp = () => rotoRequest('GET', '/health').then((r) => { r.resume(); return r.statusCode === 200; }, () => false);
+
+// Start the server, unless one is already listening (say, run by hand with
+// another model). It dies with the dev server.
+function startRoto() {
+    if (rotoStarting) return rotoStarting;
+    rotoStarting = (async () => {
+        if (await rotoUp()) return true;
+        if (!fs.existsSync(ROTO_PY)) throw new Error(`no Python at ${ROTO_PY}`);
+        const log = fs.openSync(ROTO_LOG, 'a');
+        rotoProc = spawn(ROTO_PY, [ROTO_SERVER, '--port', String(ROTO_PORT)], {
+            cwd: path.dirname(ROTO_SERVER),
+            stdio: ['ignore', log, log],
+            env: { ...process.env, PYTHONUNBUFFERED: '1' },
+        });
+        rotoProc.on('exit', () => { rotoProc = null; rotoStarting = null; });
+        for (let i = 0; i < 120; i++) {
+            // eslint-disable-next-line no-await-in-loop
+            await new Promise((r) => setTimeout(r, 250));
+            // eslint-disable-next-line no-await-in-loop
+            if (await rotoUp()) return true;
+            if (!rotoProc) break;
+        }
+        throw new Error(`the roto server did not start; see ${path.relative(process.cwd(), ROTO_LOG)}`);
+    })();
+    rotoStarting.catch(() => { rotoStarting = null; });
+    return rotoStarting;
+}
+
+// react-scripts exits on SIGINT/SIGTERM itself; take the model down with it.
+process.on('exit', () => { if (rotoProc) rotoProc.kill(); });
+
+function rotoProxy(req, res) {
+    if (!isLocal(req)) { res.status(403).end(); return; }
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', async () => {
+        const body = chunks.length ? Buffer.concat(chunks) : null;
+        const headers = { 'Content-Type': req.headers['content-type'] || 'application/json' };
+        let up;
+        try {
+            up = await rotoRequest(req.method, req.url, body, headers);
+        } catch (e) {
+            if (e.code !== 'ECONNREFUSED') { res.status(502).json({ error: e.message }); return; }
+            try {
+                await startRoto();
+                up = await rotoRequest(req.method, req.url, body, headers);
+            } catch (e2) {
+                res.status(502).json({ error: e2.message });
+                return;
+            }
+        }
+        res.status(up.statusCode);
+        ['content-type', 'content-length', 'x-roto-rev'].forEach((h) => {
+            if (up.headers[h] != null) res.set(h, up.headers[h]);
+        });
+        res.set('Cache-Control', 'no-store');
+        up.pipe(res);
+    });
+}
+
 module.exports = function scanCompositorLibrary(app) {
+    app.use(ROTO_ROUTE, rotoProxy);
+
     app.get(ROUTE, (req, res) => {
         if (!isLocal(req)) { res.status(403).end(); return; }
         res.set('Cache-Control', 'no-store');

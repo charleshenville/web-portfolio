@@ -12,10 +12,13 @@ than restarted:
     export  track.json plus an undistorted H.264 copy of the footage
     verify  the solve is drawn back over the footage
     publish GLB, PLY and manifest entry land in public/mv/
+    roto    object mattes from roto/<take>.json (made in the compositor's
+            Roto mode), re-running SAM 2 where its masks are missing
 
 Usage:
     python pipeline.py --video ~/Downloads/thing.MOV --glb ~/Downloads/thing.glb
     python pipeline.py --name thing --only refine,export
+    python pipeline.py --name thing --only roto [--repropagate]
 """
 
 import argparse
@@ -33,7 +36,7 @@ PUBLIC = HERE.parent.parent / "public" / "mv"
 PY = HERE.parent / "venv" / "bin" / "python"
 GLB_TO_PLY = HERE.parent / "glb_to_ply" / "glb_to_ply.py"
 
-STAGES = ["frames", "cloud", "solve", "refine", "export", "verify", "publish"]
+STAGES = ["frames", "cloud", "solve", "refine", "export", "verify", "publish", "roto"]
 
 
 def run(cmd: list, label: str) -> None:
@@ -164,6 +167,17 @@ def stage_publish(name: str, label: str) -> None:
     print(f"  registered '{name}' in {manifest_path}")
 
 
+def stage_roto(name: str, repropagate: bool, model: str) -> None:
+    """Write the take's object mattes from its roto session, if it has one."""
+    if not (HERE / "roto" / f"{name}.json").exists():
+        print(f"\n=== roto: {name} ===\n  no roto/{name}.json; skipped")
+        return
+    cmd = [PY, HERE / "roto.py", name, "--model", model]
+    if repropagate:
+        cmd += ["--repropagate"]
+    run(cmd, f"roto: {name}")
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Solve a scan video's camera track and publish it to the web tool")
@@ -183,6 +197,11 @@ def main():
                     help="filmed from inside the scan, e.g. a room")
     ap.add_argument("--points", type=int, default=300_000,
                     help="points sampled for the cloud layer")
+    ap.add_argument("--repropagate", action="store_true",
+                    help="roto: re-run SAM 2 from the saved clicks, not the stored masks")
+    ap.add_argument("--roto-model", default="base_plus",
+                    choices=["tiny", "small", "base_plus", "large"],
+                    help="roto: which SAM 2 checkpoint")
     ap.add_argument("--only", type=str, default=None,
                     help=f"comma-separated subset of: {','.join(STAGES)}")
     args = ap.parse_args()
@@ -222,6 +241,8 @@ def main():
         stage_verify(name, ASSETS / f"{name}.glb")
     if "publish" in todo:
         stage_publish(name, label)
+    if "roto" in todo:
+        stage_roto(name, args.repropagate, args.roto_model)
 
     print(f"\ndone: /vfx/scan-compositor -> {label}")
 

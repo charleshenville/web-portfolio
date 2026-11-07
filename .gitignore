@@ -33,3 +33,6 @@ yarn-error.log*
 #   backend/vidtrack/pipeline.py --name <take> --only export
 /public/mv/**/*.mp4
 /backend/vidtrack/__pycache__
+
+# SAM 2 weights for the roto stage (fetched by roto_server.py / pipeline.py)
+/backend/vidtrack/checkpoints
