@@ -909,21 +909,90 @@ export function computeSpectrogram(audioBuffer, {
 }
 
 /**
- * Cache the per-vertex geometry the radial displacement needs.
+ * Where the pulse comes from, as each vertex sees it: a direction to push
+ * along and a distance from the source. Every shape of pulse reduces to that.
  *
- * Direction and distance from the pulse origin, plus which FFT bin each vertex
- * listens to. Distances are normalised by the cloud's own extent rather than
- * the fixed divisor the instanced path uses, because a scan is a couple of
- * units across where a visualizer scene is tens - without that, every vertex
- * would read the same low bin and the whole thing would throb as one lump.
+ *   radial       from a point (ox, oy, oz), outwards in every direction
+ *   directional  from the back of the cloud along `dir`, like a wave rising
+ *                bottom to top: distance is how far along the axis a vertex
+ *                sits, and it pushes along the axis
+ *   plane        from a plane (a point on it and its normal), out of both
+ *                faces, away from the plane
+ *   line         from a line (a point on it and its direction), outwards
+ *                from it like a tube swelling
+ *
+ * @param {object} op { mode, ox, oy, oz, dir, plane, line }
+ * @returns {(x, y, z, out) => number} writes the push direction into out[0..2]
+ *   and returns the distance
+ */
+function pulseField(op) {
+    const mode = op.mode || 'radial';
+    const unit = (v) => {
+        const l = Math.hypot(v[0], v[1], v[2]);
+        return l > 1e-9 ? [v[0] / l, v[1] / l, v[2] / l] : [0, 1, 0];
+    };
+    if (mode === 'directional') {
+        const [ax, ay, az] = unit(op.dir || [0, 1, 0]);
+        // Distance runs from the back of the cloud; the caller shifts it so
+        // the least advanced vertex sits at zero.
+        return (x, y, z, out) => {
+            out[0] = ax; out[1] = ay; out[2] = az;
+            return x * ax + y * ay + z * az;
+        };
+    }
+    if (mode === 'plane' && op.plane) {
+        const [a, b, c] = op.plane;
+        const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        const v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        const [nx, ny, nz] = unit([u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]);
+        return (x, y, z, out) => {
+            const sd = (x - a[0]) * nx + (y - a[1]) * ny + (z - a[2]) * nz;
+            const sg = sd < 0 ? -1 : 1;
+            out[0] = nx * sg; out[1] = ny * sg; out[2] = nz * sg;
+            return Math.abs(sd);
+        };
+    }
+    if (mode === 'line' && op.line) {
+        const [a, b] = op.line;
+        const [ux, uy, uz] = unit([b[0] - a[0], b[1] - a[1], b[2] - a[2]]);
+        return (x, y, z, out) => {
+            const wx = x - a[0]; const wy = y - a[1]; const wz = z - a[2];
+            const t = wx * ux + wy * uy + wz * uz;
+            const px = wx - ux * t; const py = wy - uy * t; const pz = wz - uz * t;
+            const d = Math.hypot(px, py, pz);
+            if (d > 1e-9) { out[0] = px / d; out[1] = py / d; out[2] = pz / d; } else { out[0] = 0; out[1] = 0; out[2] = 0; }
+            return d;
+        };
+    }
+    const ox = op.ox || 0; const oy = op.oy || 0; const oz = op.oz || 0;
+    return (x, y, z, out) => {
+        const dx = x - ox; const dy = y - oy; const dz = z - oz;
+        const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (d > 1e-9) { out[0] = dx / d; out[1] = dy / d; out[2] = dz / d; } else { out[0] = 0; out[1] = 0; out[2] = 0; }
+        return d;
+    };
+}
+
+/**
+ * Cache the per-vertex geometry the displacement needs.
+ *
+ * Direction and distance from the pulse source, plus which FFT bin each
+ * vertex listens to: the nearest vertices hear the bottom of the band and the
+ * farthest the top, so the cloud moves in rings (or layers, or shells) out
+ * from the source rather than swelling as one. Distances are normalised by the
+ * cloud's own extent rather than the fixed divisor the instanced path uses,
+ * because a scan is a couple of units across where a visualizer scene is tens
+ * - without that, every vertex would read the same low bin and the whole thing
+ * would throb as one lump.
  *
  * @param {object} state cache, keyed so it rebuilds only when inputs change
  * @param {Float32Array} base resting positions, xyz per vertex
- * @param {object} op { freqLow, freqHigh, ox, oy, oz }
+ * @param {object} op { freqLow, freqHigh, mode, ox, oy, oz, dir, plane, line }
  * @param {number} bins FFT bin count
  */
 function ensureRadialState(state, base, op, bins) {
-    const key = `${op.ox}|${op.oy}|${op.oz}|${op.freqLow}|${op.freqHigh}|${bins}`;
+    const key = JSON.stringify([op.mode || 'radial', op.ox, op.oy, op.oz, op.dir, op.plane, op.line,
+        op.freqLow, op.freqHigh, bins]);
     if (state.key === key && state.dirs) return;
 
     const total = base.length / 3;
@@ -937,19 +1006,23 @@ function ensureRadialState(state, base, op, bins) {
     const hiBin = Math.round(Math.max(fLo, fHi) * (bins - 1));
     const bandSpan = Math.max(1, hiBin - loBin);
 
-    let maxDist = 0;
+    const field = pulseField(op);
+    const out = [0, 0, 0];
+    let minDist = Infinity;
+    let maxDist = -Infinity;
     for (let i = 0; i < total; i++) {
-        const dx = base[i * 3] - op.ox;
-        const dy = base[i * 3 + 1] - op.oy;
-        const dz = base[i * 3 + 2] - op.oz;
-        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        dists[i] = dist;
-        if (dist > maxDist) maxDist = dist;
-        if (dist > 1e-9) {
-            dirs[i * 3] = dx / dist;
-            dirs[i * 3 + 1] = dy / dist;
-            dirs[i * 3 + 2] = dz / dist;
-        }
+        const d = field(base[i * 3], base[i * 3 + 1], base[i * 3 + 2], out);
+        dists[i] = d;
+        dirs[i * 3] = out[0];
+        dirs[i * 3 + 1] = out[1];
+        dirs[i * 3 + 2] = out[2];
+        if (d < minDist) minDist = d;
+        if (d > maxDist) maxDist = d;
+    }
+    // A directional pulse measures from the back of the cloud, not the origin.
+    if ((op.mode || 'radial') === 'directional' && Number.isFinite(minDist)) {
+        for (let i = 0; i < total; i++) dists[i] -= minDist;
+        maxDist -= minDist;
     }
     const inv = maxDist > 1e-9 ? 1 / maxDist : 0;
     for (let i = 0; i < total; i++) {
@@ -965,14 +1038,20 @@ function ensureRadialState(state, base, op, bins) {
     state.key = key;
 }
 
-/** Displaced position of one vertex, written into out[0..2]. */
+/**
+ * Displaced position of one vertex, written into out[0..2]: pushed away from
+ * the pulse source along its direction, by its distance from the source times
+ * how loud its band is - so the far side of the cloud travels furthest, as the
+ * outer ring of a radial pulse always has.
+ */
 function displacedVertex(state, i, op, frequencyData, out) {
     const freq = frequencyData[state.freqIndex[i]] / 255;
     const randomFactor = 0.5 + (Math.random() - 0.5) * (op.scatter || 0);
-    const d = state.dists[i] * (1 + op.reactivity * (freq * randomFactor));
-    out[0] = op.ox + state.dirs[i * 3] * d;
-    out[1] = op.oy + state.dirs[i * 3 + 1] * d;
-    out[2] = op.oz + state.dirs[i * 3 + 2] * d;
+    const push = state.dists[i] * op.reactivity * freq * randomFactor;
+    const b = state.base;
+    out[0] = b[i * 3] + state.dirs[i * 3] * push;
+    out[1] = b[i * 3 + 1] + state.dirs[i * 3 + 1] * push;
+    out[2] = b[i * 3 + 2] + state.dirs[i * 3 + 2] * push;
 }
 
 /**
@@ -992,7 +1071,8 @@ function displacedVertex(state, i, op, frequencyData, out) {
  * @param {object} state cache held by the caller: { base, dirs, dists,
  *   freqIndex, key, dirty }
  * @param {THREE.BufferAttribute} attr the geometry's position attribute
- * @param {object} op { reactivity, scatter, freqLow, freqHigh, ox, oy, oz }
+ * @param {object} op { reactivity, scatter, freqLow, freqHigh, mode, ox, oy,
+ *   oz, dir, plane, line } - see pulseField
  * @param {Uint8Array|null} frequencyData FFT bins, or null when silent
  * @param {boolean} playing whether audio is actually running
  * @param {number} count how many points to touch (respects the draw range)

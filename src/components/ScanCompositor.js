@@ -17,6 +17,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { GammaCorrectionShader } from 'three/examples/jsm/shaders/GammaCorrectionShader.js';
 import DreamHazeShader from '../lib/dreamHaze';
+import { PointGlowPass } from '../lib/pointGlow';
 import {
     Muxer, ArrayBufferTarget, FileSystemWritableFileStreamTarget,
 } from 'mp4-muxer';
@@ -145,6 +146,14 @@ const DEFAULT_LAYERS = {
     cloudPulseX: 0,
     cloudPulseY: 0,
     cloudPulseZ: 0,
+    // Where the pulse comes from: a point ('radial'), a direction the wave
+    // travels along ('directional'), or a plane or line, set by handles in
+    // the viewport. The direction, plane and line are in the scan's own frame.
+    cloudPulseMode: 'radial',
+    cloudPulseDir: [0, 1, 0],
+    cloudPulseDirName: 'up',
+    cloudPulsePlane: null, // three points on it
+    cloudPulseLine: null, // two points on it
 
     meshOn: false,
     meshShading: 'matte',
@@ -178,6 +187,13 @@ const DEFAULT_LAYERS = {
     bloomStrength: 0,
     bloomRadius: 0.6,
     bloomThreshold: 0.8,
+    // 'all' blooms the finished frame (footage included); 'points' blooms
+    // only what is drawn as points, and can light the scene around them.
+    glowSource: 'all',
+    // Points only: how strongly their glow lights the surfaces around them,
+    // and how far that light reaches beyond the halo.
+    glowBleed: 0,
+    glowReach: 0.5,
     haze: 0,
 
     // One envelope, read off a chosen slice of the spectrum, multiplying the
@@ -652,6 +668,10 @@ function ScanCompositor() {
         // After gamma, so the tint works on display colour as it does in the
         // audio visualizer.
         const hazePass = new ShaderPass(DreamHazeShader);
+        // Either this or the bloom runs, never both: see glowSource.
+        const pointGlow = new PointGlowPass();
+        pointGlow.enabled = false;
+        composer.addPass(pointGlow);
         composer.addPass(bloomPass);
         composer.addPass(gammaPass);
         composer.addPass(hazePass);
@@ -712,6 +732,21 @@ function ScanCompositor() {
         cornerHandles.visible = false;
         modelRoot.add(cornerHandles);
 
+        // The scan cloud's own frame (the overlays' swell and offset), where
+        // the pulse plane and line live, and a guide drawing them while they
+        // are edited.
+        const pulseSpace = new THREE.Object3D();
+        modelRoot.add(pulseSpace);
+        const pulseGuide = new THREE.LineSegments(
+            new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(48 * 3), 3)),
+            new THREE.LineBasicMaterial({ color: 0xffb347, transparent: true, opacity: 0.85, depthTest: false, depthWrite: false }),
+        );
+        pulseGuide.layers.set(LAYER.OVERLAY);
+        pulseGuide.frustumCulled = false;
+        pulseGuide.renderOrder = 1000;
+        pulseGuide.visible = false;
+        pulseSpace.add(pulseGuide);
+
         const compositor = new WindowCompositor(renderer);
 
         // Picking a joint: the marker nearest the click on screen, within a
@@ -725,11 +760,13 @@ function ScanCompositor() {
             const tt = three.current;
             if (e.button !== 0 || moveGizmo.dragging || moveGizmo.axis) return;
             // Corners first: the same nearest-marker-on-screen pick.
-            if (editRef.current.mode === 'corners' && cornerHandles.visible && tt.activeCamera) {
+            const cornerMode = editRef.current.mode === 'corners' || editRef.current.mode === 'pulse';
+            if (cornerMode && cornerHandles.visible && tt.activeCamera) {
                 const box = renderer.domElement.getBoundingClientRect();
                 const p = new THREE.Vector3();
                 let best = null;
                 cornerHandles.children.forEach((h) => {
+                    if (!h.visible) return;
                     h.getWorldPosition(p).project(tt.activeCamera);
                     if (p.z < -1 || p.z > 1) return;
                     const dx = ((p.x + 1) / 2) * box.width + box.left - e.clientX;
@@ -763,9 +800,9 @@ function ScanCompositor() {
             ...three.current,
             renderer, scene, camera, freeCamera, controls, modelRoot,
             bgScene, bgCamera, bgQuad,
-            composer, bloomPass, hazePass, gizmo,
+            composer, bloomPass, hazePass, pointGlow, gizmo,
             sun: key, ambient, fill,
-            moveGizmo, cornerProxy, cornerHandles, compositor,
+            moveGizmo, cornerProxy, cornerHandles, compositor, pulseSpace, pulseGuide,
         };
 
         return () => {
@@ -780,6 +817,7 @@ function ScanCompositor() {
             cornerHandles.children.forEach((m) => m.material.dispose());
             composer.dispose();
             bloomPass.dispose();
+            pointGlow.dispose();
             controls.dispose();
             renderer.dispose();
             if (renderer.domElement.parentNode === mount) {
@@ -891,7 +929,7 @@ function ScanCompositor() {
         // then slides them as a body, which swell cannot do.
         const R = rigRef.current;
         const over = R.overscale ?? 1;
-        [t.cloud, t.wire].forEach((o) => {
+        [t.cloud, t.wire, t.pulseSpace].forEach((o) => {
             if (!o) return;
             o.scale.setScalar(over);
             o.position.set(R.overlayX ?? 0, R.overlayY ?? 0, R.overlayZ ?? 0);
@@ -900,7 +938,13 @@ function ScanCompositor() {
         t.renderer.setClearColor(new THREE.Color(L.bgColor), 1);
 
         if (t.composer) {
-            t.bloomPass.enabled = L.bloomStrength > 0;
+            const pointsOnly = L.glowSource === 'points';
+            t.bloomPass.enabled = !pointsOnly && L.bloomStrength > 0;
+            t.pointGlow.enabled = pointsOnly && (L.bloomStrength > 0 || (L.glowBleed ?? 0) > 0);
+            t.pointGlow.halo = L.bloomStrength;
+            t.pointGlow.spread = L.bloomRadius;
+            t.pointGlow.bleed = L.glowBleed ?? 0;
+            t.pointGlow.reach = L.glowReach ?? 0.5;
             t.bloomPass.strength = L.bloomStrength;
             t.bloomPass.radius = L.bloomRadius;
             t.bloomPass.threshold = L.bloomThreshold;
@@ -1191,6 +1235,8 @@ function ScanCompositor() {
     // Viewport editing follows the selection: it ends when the selection
     // changes to something it cannot apply to.
     useEffect(() => {
+        // The pulse plane or line belongs to the scan, not to a selection.
+        if (editMode === 'pulse') return;
         const sel = sceneItems.find((i) => i.id === selectedId);
         const entry = sel?.kind === 'prop' ? libraryRef.current.assets.find((a) => a.id === sel.assetId) : null;
         const cornersOk = sel?.kind === 'window' || entry?.category === 'screen';
@@ -1199,6 +1245,13 @@ function ScanCompositor() {
         }
     }, [selectedId, sceneItems, editMode]);
     useEffect(() => { setCornerHandle(4); }, [selectedId]);
+    useEffect(() => {
+        if (editMode === 'pulse') setCornerHandle(4);
+    }, [editMode]);
+    // Leaving the plane or line modes ends their editing.
+    useEffect(() => {
+        if (editMode === 'pulse' && layers.cloudPulseMode !== 'plane' && layers.cloudPulseMode !== 'line') setEditMode(null);
+    }, [editMode, layers.cloudPulseMode]);
     useEffect(() => { if (editMode) setPoseEdit(false); }, [editMode]);
     useEffect(() => { if (poseEdit) setEditMode(null); }, [poseEdit]);
 
@@ -1336,6 +1389,14 @@ function ScanCompositor() {
     // space they are written in.
     const cornerTarget = useCallback(() => {
         const ed = editRef.current;
+        if (ed.mode === 'pulse') {
+            const L = layersRef.current;
+            const mode = L.cloudPulseMode;
+            const pts = mode === 'plane' ? L.cloudPulsePlane : mode === 'line' ? L.cloudPulseLine : null;
+            const t = three.current;
+            if (!pts || !t.pulseSpace) return null;
+            return { corners: pts, space: t.pulseSpace, pulse: mode };
+        }
         if (ed.mode !== 'corners') return null;
         const item = sceneItemsRef.current.find((i) => i.id === ed.itemId);
         if (!item) return null;
@@ -1349,11 +1410,46 @@ function ScanCompositor() {
         return { corners: { ...DEFAULT_SCREEN, ...entry.screen }.corners, space: rec.norm, item, entry };
     }, []);
 
+    // The pulse plane as a square of the scan's size through its handles,
+    // with a stub along its normal; the pulse line run out past both handles.
+    const drawPulseGuide = useCallback((kind, C, mid) => {
+        const t = three.current;
+        const g = t.pulseGuide;
+        const attr = g.geometry.getAttribute('position');
+        const segs = [];
+        const r = (t.cloud?.geometry?.boundingSphere?.radius || 1) * 0.8;
+        if (kind === 'line') {
+            const d = C[1].clone().sub(C[0]).normalize();
+            segs.push([mid.clone().addScaledVector(d, -r * 1.5), mid.clone().addScaledVector(d, r * 1.5)]);
+        } else {
+            const u = C[1].clone().sub(C[0]);
+            const n = u.clone().cross(C[2].clone().sub(C[0])).normalize();
+            u.normalize();
+            const v = n.clone().cross(u).normalize();
+            const at = (a, b) => mid.clone().addScaledVector(u, a * r).addScaledVector(v, b * r);
+            const corners = [at(-1, -1), at(1, -1), at(1, 1), at(-1, 1)];
+            corners.forEach((c, i) => segs.push([c, corners[(i + 1) % 4]]));
+            for (let k = -0.5; k <= 0.51; k += 0.5) {
+                segs.push([at(k, -1), at(k, 1)]);
+                segs.push([at(-1, k), at(1, k)]);
+            }
+            segs.push([mid, mid.clone().addScaledVector(n, r * 0.35)]);
+            segs.push([C[0], C[1]], [C[1], C[2]], [C[2], C[0]]);
+        }
+        segs.slice(0, 24).forEach(([a, b], i) => {
+            attr.setXYZ(i * 2, a.x, a.y, a.z);
+            attr.setXYZ(i * 2 + 1, b.x, b.y, b.z);
+        });
+        g.geometry.setDrawRange(0, Math.min(24, segs.length) * 2);
+        attr.needsUpdate = true;
+    }, []);
+
     const placeCornerHandles = useCallback(() => {
         const t = three.current;
         const target = cornerTarget();
         const handles = t.cornerHandles;
         if (!handles) return;
+        if (t.pulseGuide) t.pulseGuide.visible = !!target?.pulse;
         if (!target) {
             handles.visible = false;
             return;
@@ -1361,14 +1457,17 @@ function ScanCompositor() {
         if (handles.parent !== target.space) target.space.add(handles);
         handles.visible = true;
         const C = target.corners.map((c) => new THREE.Vector3().fromArray(c));
-        const mid = C.reduce((a, c) => a.add(c), new THREE.Vector3()).multiplyScalar(0.25);
+        const mid = C.reduce((a, c) => a.add(c), new THREE.Vector3()).multiplyScalar(1 / C.length);
+        if (target.pulse) drawPulseGuide(target.pulse, C, mid);
         const active = editRef.current.handle;
         handles.children.forEach((m, i) => {
-            m.position.copy(i < 4 ? C[i] : mid);
+            // A plane has three handles and a line two, besides the middle.
+            m.visible = i < C.length || i === 4;
+            m.position.copy(i < C.length ? C[i] : mid);
             m.material.color.set(i === active ? '#ffb347' : (i === 4 ? '#7fe3ff' : '#ffffff'));
             m.userData.active = i === active;
         });
-    }, [cornerTarget]);
+    }, [cornerTarget, drawPulseGuide]);
 
     // Attach the move gizmo to whatever the edit is about.
     useEffect(() => {
@@ -1376,20 +1475,20 @@ function ScanCompositor() {
         const gz = t.moveGizmo;
         if (!gz) return;
         const sel = sceneItems.find((i) => i.id === selectedId);
-        editRef.current = { mode: editMode, itemId: sel ? sel.id : null, handle: cornerHandle };
+        editRef.current = { mode: editMode, itemId: editMode === 'pulse' ? null : (sel ? sel.id : null), handle: cornerHandle };
         let obj = null;
         if (editMode === 'move' && sel) {
             if (sel.kind === 'prop') obj = propObjectsRef.current.get(sel.id)?.object;
             else if (sel.kind === 'model') obj = modelObjectsRef.current.get(sel.id)?.object;
             else if (sel.kind === 'asset' || sel.kind === 'curve') obj = sceneObjectsRef.current.get(sel.id)?.transformTarget;
-        } else if (editMode === 'corners') {
+        } else if (editMode === 'corners' || editMode === 'pulse') {
             const target = cornerTarget();
             if (target && !t.moveDragging) {
                 const proxy = t.cornerProxy;
                 if (proxy.parent !== target.space) target.space.add(proxy);
                 const C = target.corners.map((c) => new THREE.Vector3().fromArray(c));
-                proxy.position.copy(cornerHandle < 4 ? C[cornerHandle]
-                    : C.reduce((a, c) => a.add(c), new THREE.Vector3()).multiplyScalar(0.25));
+                proxy.position.copy(cornerHandle < C.length ? C[cornerHandle]
+                    : C.reduce((a, c) => a.add(c), new THREE.Vector3()).multiplyScalar(1 / C.length));
                 proxy.updateMatrixWorld(true);
                 obj = proxy;
             } else if (target) {
@@ -1407,7 +1506,8 @@ function ScanCompositor() {
             gz.visible = false;
         }
         t.needsRender = true;
-    }, [editMode, cornerHandle, selectedId, sceneItems, library, assetTick, cornerTarget, placeCornerHandles]);
+    }, [editMode, cornerHandle, selectedId, sceneItems, library, assetTick, cornerTarget, placeCornerHandles,
+        layers.cloudPulseMode, layers.cloudPulsePlane, layers.cloudPulseLine]);
 
     // The gizmo moved something: write it back into the item (or library).
     useEffect(() => {
@@ -1429,13 +1529,17 @@ function ScanCompositor() {
             if (!target) return;
             const p = t.cornerProxy.position;
             let corners;
-            if (ed.handle < 4) {
+            if (ed.handle < target.corners.length) {
                 corners = target.corners.map((c, k) => (k === ed.handle ? [r4(p.x), r4(p.y), r4(p.z)] : c));
             } else {
                 const C = target.corners.map((c) => new THREE.Vector3().fromArray(c));
-                const mid = C.reduce((a, c) => a.add(c), new THREE.Vector3()).multiplyScalar(0.25);
+                const mid = C.reduce((a, c) => a.add(c), new THREE.Vector3()).multiplyScalar(1 / C.length);
                 const d = p.clone().sub(mid);
                 corners = C.map((c) => c.add(d).toArray().map(r4));
+            }
+            if (target.pulse) {
+                t.setLayer?.(target.pulse === 'plane' ? 'cloudPulsePlane' : 'cloudPulseLine')(corners);
+                return;
             }
             if (target.item.kind === 'window') {
                 setSceneItems((prev) => prev.map((i) => (
@@ -2291,6 +2395,40 @@ function ScanCompositor() {
         });
     }, []);
 
+    // The source for a points-only glow: everything drawn as points or dots in front
+    // of the video, and nothing else - except that solid objects still write
+    // depth, so a point behind the protagonist or the scan's mesh stays hidden
+    // and does not glow through it.
+    const drawPointSource = useCallback((r, cam) => {
+        const t = three.current;
+        const points = [];
+        const solids = [];
+        const lines = [];
+        t.scene.traverseVisible((o) => {
+            // The scan's cloud and models in points view are THREE.Points;
+            // placed point clouds and curve dots are instanced dot meshes.
+            if (o.isPoints || o.isInstancedMesh) points.push(o);
+            else if (o.isLineSegments2 || o.isLine) lines.push(o);
+            else if (o.isMesh) solids.push(o);
+        });
+        const mats = [];
+        solids.forEach((o) => {
+            (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => {
+                if (m && m.colorWrite) { m.colorWrite = false; mats.push(m); }
+            });
+        });
+        points.forEach((o) => { o.visible = false; });
+        lines.forEach((o) => { o.visible = false; });
+        cam.layers.set(LAYER.FRONT);
+        r.render(t.scene, cam);
+        mats.forEach((m) => { m.colorWrite = true; });
+        solids.forEach((o) => { o.visible = false; });
+        points.forEach((o) => { o.visible = true; });
+        r.render(t.scene, cam);
+        solids.forEach((o) => { o.visible = true; });
+        lines.forEach((o) => { o.visible = true; });
+    }, []);
+
     const renderFrame = useCallback((time, opts = {}) => {
         const t = three.current;
         const trackData = trackRef.current;
@@ -2351,7 +2489,9 @@ function ScanCompositor() {
         // and the passes finish it; otherwise straight to the canvas, so a
         // plain take costs nothing extra.
         const r = t.renderer;
-        const fx = t.composer && (L.bloomStrength > 0 || L.haze > 0);
+        const pointGlowOn = L.glowSource === 'points' && (L.bloomStrength > 0 || (L.glowBleed ?? 0) > 0);
+        const fx = t.composer && (L.bloomStrength > 0 || L.haze > 0 || pointGlowOn);
+        if (t.pointGlow) t.pointGlow.drawSource = pointGlowOn ? (rr) => drawPointSource(rr, cam) : null;
         const out = fx ? t.composer.readBuffer : null;
         // Placed objects count too, so the 3D pass still runs when the scan's
         // own layers are all off and only the scene is being composited.
@@ -2440,7 +2580,7 @@ function ScanCompositor() {
             r.render(t.scene, cam);
         }
         cam.layers.set(LAYER.FRONT);
-    }, [poseAt, applyIntrinsics, placeSun, assignLayers, placeCornerHandles, sizeHandles]);
+    }, [poseAt, applyIntrinsics, placeSun, assignLayers, placeCornerHandles, sizeHandles, drawPointSource]);
 
     // Push the spectrum through the scan's own point cloud. Only the points
     // actually being drawn are touched, so the density slider doubles as the
@@ -2448,6 +2588,13 @@ function ScanCompositor() {
     const driveCloud = useCallback((frequencyData, playing) => {
         const t = three.current;
         const L = layersRef.current;
+        const pulse = {
+            mode: L.cloudPulseMode || 'radial',
+            ox: L.cloudPulseX, oy: L.cloudPulseY, oz: L.cloudPulseZ,
+            dir: L.cloudPulseDir,
+            plane: L.cloudPulsePlane,
+            line: L.cloudPulseLine,
+        };
 
         // Same displacement for the wireframe, except computed per vertex and
         // scattered to both ends of every edge so the mesh stays welded.
@@ -2459,7 +2606,7 @@ function ScanCompositor() {
                     scatter: L.cloudScatter,
                     freqLow: L.cloudFreqLow,
                     freqHigh: L.cloudFreqHigh,
-                    ox: L.cloudPulseX, oy: L.cloudPulseY, oz: L.cloudPulseZ,
+                    ...pulse,
                 },
                 frequencyData, playing,
             );
@@ -2477,7 +2624,7 @@ function ScanCompositor() {
                 scatter: L.cloudScatter,
                 freqLow: L.cloudFreqLow,
                 freqHigh: L.cloudFreqHigh,
-                ox: L.cloudPulseX, oy: L.cloudPulseY, oz: L.cloudPulseZ,
+                ...pulse,
             },
             frequencyData, playing, count,
         );
@@ -2760,6 +2907,8 @@ function ScanCompositor() {
             return next;
         });
     }, []);
+    // The viewport handles write through this; the listeners are made once.
+    useEffect(() => { three.current.setLayer = setLayer; }, [setLayer]);
 
     const setRigKey = useCallback((key) => (value) => {
         setRig((prev) => ({ ...prev, [key]: value }));
@@ -3991,6 +4140,107 @@ function ScanCompositor() {
                 </div>
 
                 {renderLibraryPanel(item, entry, rec)}
+            </>
+        );
+    };
+
+    // Where the scan cloud's pulse comes from. Directions, planes and lines
+    // are set from the camera as it is when the button is pressed, and stored
+    // in the scan's own frame so they stay put as the take plays.
+    const renderPulseControls = () => {
+        const mode = layers.cloudPulseMode || 'radial';
+        const t = three.current;
+        const r4 = (v) => Math.round(v * 1e4) / 1e4;
+        const frame = () => {
+            const sp = t.pulseSpace;
+            const cam = t.activeCamera || t.camera;
+            if (!sp || !cam) return null;
+            sp.updateMatrixWorld(true);
+            const inv = new THREE.Matrix4().copy(sp.matrixWorld).invert();
+            const q = cam.getWorldQuaternion(new THREE.Quaternion());
+            const toLocal = (v) => v.clone().applyQuaternion(q).transformDirection(inv);
+            const bs = t.cloud?.geometry?.boundingSphere;
+            return {
+                up: new THREE.Vector3(0, 1, 0).transformDirection(inv),
+                right: toLocal(new THREE.Vector3(1, 0, 0)),
+                camUp: toLocal(new THREE.Vector3(0, 1, 0)),
+                toward: toLocal(new THREE.Vector3(0, 0, 1)),
+                c: bs ? bs.center.clone() : new THREE.Vector3(),
+                r: bs ? bs.radius * 0.5 : 0.5,
+            };
+        };
+        const pts = (...vs) => vs.map((v) => v.toArray().map(r4));
+        const presets = {
+            plane: {
+                flat: (f) => pts(f.c, f.c.clone().addScaledVector(f.right, f.r),
+                    f.c.clone().addScaledVector(f.up.clone().cross(f.right).normalize(), f.r)),
+                facing: (f) => pts(f.c, f.c.clone().addScaledVector(f.right, f.r), f.c.clone().addScaledVector(f.camUp, f.r)),
+                upright: (f) => pts(f.c, f.c.clone().addScaledVector(f.toward, f.r), f.c.clone().addScaledVector(f.up, f.r)),
+            },
+            line: {
+                upright: (f) => pts(f.c.clone().addScaledVector(f.up, -f.r), f.c.clone().addScaledVector(f.up, f.r)),
+                across: (f) => pts(f.c.clone().addScaledVector(f.right, -f.r), f.c.clone().addScaledVector(f.right, f.r)),
+                into: (f) => pts(f.c.clone().addScaledVector(f.toward, f.r), f.c.clone().addScaledVector(f.toward, -f.r)),
+            },
+        };
+        const place = (kind, which) => {
+            const f = frame();
+            if (f) setLayer(kind === 'plane' ? 'cloudPulsePlane' : 'cloudPulseLine')(presets[kind][which](f));
+        };
+        const pickMode = (m) => {
+            setLayer('cloudPulseMode')(m);
+            if (m === 'plane' && !layers.cloudPulsePlane) place('plane', 'flat');
+            if (m === 'line' && !layers.cloudPulseLine) place('line', 'upright');
+        };
+        const dirs = [
+            ['up', 'Upwards', (f) => f.up], ['down', 'Downwards', (f) => f.up.clone().negate()],
+            ['right', 'Left → right', (f) => f.right], ['left', 'Right → left', (f) => f.right.clone().negate()],
+            ['toward', 'Toward camera', (f) => f.toward], ['away', 'Away', (f) => f.toward.clone().negate()],
+        ];
+        const btn = (label, on, onClick, key) => (
+            <button key={key || label} type="button" className={`${styles.vfx_segBtn} ${on ? styles.vfx_segBtnOn : ''}`} onClick={onClick}>
+                {label}
+            </button>
+        );
+        const editing = editMode === 'pulse';
+        const handleSeg = (labels) => segRow(labels, cornerHandle, setCornerHandle, labels.length);
+        return (
+            <>
+                <div className={styles.vfx_hint} style={{ margin: '6px 0 5px' }}>Pulse from</div>
+                {segRow([['radial', 'Point'], ['directional', 'Direction'], ['plane', 'Plane'], ['line', 'Line']], mode, pickMode, 4)}
+                {mode === 'radial' && (
+                    <>
+                        {slider('Pulse X', 'cloudPulseX', -4, 4, 0.01)}
+                        {slider('Pulse Y', 'cloudPulseY', -4, 4, 0.01)}
+                        {slider('Pulse Z', 'cloudPulseZ', -4, 4, 0.01)}
+                    </>
+                )}
+                {mode === 'directional' && (
+                    <div className={styles.vfx_segRow} style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}>
+                        {dirs.map(([id, label, get]) => btn(label, layers.cloudPulseDirName === id, () => {
+                            const f = frame();
+                            if (!f) return;
+                            setLayer('cloudPulseDir')(get(f).normalize().toArray().map(r4));
+                            setLayer('cloudPulseDirName')(id);
+                        }, id))}
+                    </div>
+                )}
+                {(mode === 'plane' || mode === 'line') && (
+                    <>
+                        {toggle('Edit in viewport', 'editPulse', { editPulse: editing },
+                            () => (v) => setEditMode(v ? 'pulse' : null))}
+                        {editing && handleSeg(mode === 'plane'
+                            ? [[0, 'A'], [1, 'B'], [2, 'C'], [4, 'All']]
+                            : [[0, 'A'], [1, 'B'], [4, 'All']])}
+                        <div className={styles.vfx_segRow} style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
+                            {mode === 'plane'
+                                ? [['flat', 'Flat'], ['facing', 'Facing camera'], ['upright', 'Upright, side-on']]
+                                    .map(([id, label]) => btn(label, false, () => place('plane', id), id))
+                                : [['upright', 'Upright'], ['across', 'Across frame'], ['into', 'Into frame']]
+                                    .map(([id, label]) => btn(label, false, () => place('line', id), id))}
+                        </div>
+                    </>
+                )}
             </>
         );
     };
@@ -5312,14 +5562,17 @@ function ScanCompositor() {
                                 {slider('Scatter', 'cloudScatter', 0, 1, 0.001)}
                                 {slider('Freq low', 'cloudFreqLow', 0, 1, 0.01)}
                                 {slider('Freq high', 'cloudFreqHigh', 0, 1, 0.01)}
-                                {slider('Pulse X', 'cloudPulseX', -4, 4, 0.01)}
-                                {slider('Pulse Y', 'cloudPulseY', -4, 4, 0.01)}
-                                {slider('Pulse Z', 'cloudPulseZ', -4, 4, 0.01)}
+                                {renderPulseControls()}
                             </>
                         )}
                         <div className={styles.vfx_hint}>
                             {layers.cloudReact > 0
-                                ? 'Points push out from the pulse point by the band their distance maps to.'
+                                ? {
+                                    radial: 'Points push out from the pulse point, nearest on the low end of the band and farthest on the high end, so the cloud moves in rings.',
+                                    directional: 'A wave across the cloud: the side it starts from hears the low end of the band and the far side the high end, and points push along the direction. The directions are taken from the camera as it is now.',
+                                    plane: 'Points push away from the plane, out of both faces, in layers: nearest on the low end of the band. Drag its three handles, or the middle one to move it whole.',
+                                    line: 'Points push away from the line like a tube swelling, in shells: nearest on the low end of the band. Drag its two handles, or the middle one to move it whole.',
+                                }[layers.cloudPulseMode || 'radial']
                                 : 'Load a track in the Scene panel, then raise this to make the scanned object itself move.'}
                         </div>
                     </div>
@@ -5416,14 +5669,27 @@ function ScanCompositor() {
                     {/* Post FX */}
                     <div className={styles.vfx_section}>
                         <div className={styles.vfx_sectionTitle}>Glow &amp; haze</div>
+                        <div className={styles.vfx_hint} style={{ margin: '0 0 5px' }}>Glow from</div>
+                        {segRow(
+                            [['all', 'Everything'], ['points', 'Points only']],
+                            layers.glowSource || 'all', (v) => setLayer('glowSource')(v), 2,
+                        )}
                         {slider('Glow', 'bloomStrength', 0, 3, 0.01)}
                         {slider('Glow spread', 'bloomRadius', 0, 2, 0.01)}
-                        {slider('Glow floor', 'bloomThreshold', 0, 1, 0.01)}
+                        {(layers.glowSource || 'all') === 'all'
+                            ? slider('Glow floor', 'bloomThreshold', 0, 1, 0.01)
+                            : (
+                                <>
+                                    {slider('Bleed', 'glowBleed', 0, 4, 0.01, { ...layers, glowBleed: layers.glowBleed ?? 0 })}
+                                    {slider('Bleed reach', 'glowReach', 0, 1, 0.01, { ...layers, glowReach: layers.glowReach ?? 0.5 })}
+                                </>
+                            )}
                         {slider('Haze', 'haze', 0, 2, 0.01)}
                         <div className={styles.vfx_hint}>
-                            The audio visualizer&apos;s post FX, over the whole
-                            composite: anything brighter than the floor glows,
-                            footage included. Views and exports keep both.
+                            {(layers.glowSource || 'all') === 'all'
+                                ? 'The audio visualizer’s post FX, over the whole composite: anything brighter than the floor glows, footage included.'
+                                : 'Only what is drawn as points glows (the scan’s points, point clouds, and models in points view), and solid objects in front still hide it. Bleed is that glow falling on the scene as light: it lifts the footage and everything else around the points by their colour, scaled by each surface’s own, so they seem to light the place. Bleed reach carries that light further out than the halo. Glow alone keeps it a halo.'}
+                            {' '}Views and exports keep all of it.
                         </div>
                     </div>
 
