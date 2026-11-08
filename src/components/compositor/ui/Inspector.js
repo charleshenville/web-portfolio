@@ -3,6 +3,7 @@
 // editors their type needs; controllers, clips, tracks and media get theirs.
 
 import React, { useState, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
     ChevronDown, ChevronRight, Copy, Trash2, ArrowUp, ArrowDown, Circle, Square, Scissors,
 } from 'lucide-react';
@@ -21,6 +22,7 @@ import { mattesFor } from '../../../lib/scanAssets/roto';
 import { CATEGORIES, DEFAULT_SCREEN } from '../../../lib/scanAssets/library';
 import { fitCornersToMesh } from '../../../lib/scanAssets/props';
 import RotoEditor from './Roto';
+import { LOOK_FIELDS, LOOK_DEFAULTS, isNeutralLook } from '../../../lib/scanAssets/takeLooks';
 import { PUBLIC_VIDEOS } from '../../../lib/scanAssets/screenVideo';
 import { ParamRow, NumberBox } from './Params';
 import { useComp, useTick } from './context';
@@ -348,6 +350,36 @@ function LibraryPanel({ obj }) {
     );
 }
 
+function ScanLook({ obj }) {
+    const comp = useComp();
+    const scene = comp.project.scenes.find((s) => s.id === obj.sceneId);
+    const take = scene?.take;
+    if (!take) return null;
+    const look = { ...LOOK_DEFAULTS, ...(comp.looks[take] || {}) };
+    const note = {
+        saving: 'Saving\u2026',
+        repo: 'Saved to src/data/takeLooks.json.',
+        browser: 'Saved in this browser only (no dev server to write the file).',
+    }[comp.looksSaved];
+    return (
+        <>
+            {LOOK_FIELDS.map(([key, label, min, max, step]) => (
+                <ParamRow
+                    key={key}
+                    def={{ key, label, type: 'number', min, max, step, def: LOOK_DEFAULTS[key], link: false }}
+                    value={look[key]}
+                    onChange={(v) => comp.setLook(take, { [key]: v })}
+                    onCommit={comp.saveLooksNow}
+                />
+            ))}
+            <div className={styles.wideRow}>
+                <button type="button" className={styles.btn} disabled={isNeutralLook(look)} onClick={() => comp.setLook(take, null, true)}>Reset</button>
+            </div>
+            {note && <p className={styles.hint} style={{ marginTop: 6 }}>{note}</p>}
+        </>
+    );
+}
+
 function RotoSection({ obj }) {
     const comp = useComp();
     const scene = comp.project.scenes.find((s) => s.id === obj.sceneId);
@@ -408,6 +440,7 @@ const CUSTOM = {
     screenSource: ScreenSource,
     windowMatte: WindowMatte,
     roto: RotoSection,
+    scanLook: ScanLook,
     library: LibraryPanel,
     windowCorners: WindowCorners,
     pulseShape: PulseShape,
@@ -702,6 +735,136 @@ function ControllerInspector({ ctrl }) {
 
 // ---- Clips, tracks, media -----------------------------------------------------------
 
+/**
+ * Which camera a 3D clip films through: one, fixed, or whichever a Switch
+ * picks state by state, so the Switch's cuts on the timeline cut the view.
+ */
+function CameraPick({
+    clip, media, cams, set,
+}) {
+    const comp = useComp();
+    const switches = comp.project.controllers.filter((c) => c.type === 'switch');
+    const sw = clip.cameraSwitch;
+    const ctrl = sw && switches.find((c) => c.id === sw.controller);
+    const fixed = clip.camera || (media.kind === 'take' ? 'solve' : (cams[0]?.id || ''));
+    const options = (
+        <>
+            {media.kind === 'take' && <option value="solve">The take&apos;s solve</option>}
+            {cams.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </>
+    );
+    const setSwitch = (v) => { set('cameraSwitch')(v); comp.commit(); };
+    const pool = [...(media.kind === 'take' ? ['solve'] : []), ...cams.map((x) => x.id)];
+    const follow = (c, keep = true) => setSwitch({
+        controller: c.id,
+        map: Object.fromEntries(c.states.map((_, i) => [i, (keep && sw?.map?.[i]) || pool[i % Math.max(1, pool.length)]])),
+    });
+    // A Switch made for this: one state per camera, named after it.
+    const newCameraSwitch = () => {
+        const c = comp.addController('switch');
+        const states = pool.map((id) => (id === 'solve' ? 'Solve' : cams.find((x) => x.id === id)?.name || 'Camera'));
+        const next = { ...c, name: 'Cameras', states: states.length >= 2 ? states : [...states, 'B'] };
+        comp.updateController(c.id, () => next, true);
+        follow(next, false);
+    };
+    const [menu, setMenu] = useState(null);
+    return (
+        <>
+            {menu && (
+                <CameraMenu
+                    at={menu}
+                    switches={switches}
+                    current={ctrl?.id}
+                    onFollow={(c) => follow(c)}
+                    onNew={newCameraSwitch}
+                    onFixed={() => setSwitch(undefined)}
+                    onClose={() => setMenu(null)}
+                />
+            )}
+            <div onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY }); }} title="Right-click to cut between cameras with a Switch">
+            <Field label="Camera">
+                <select
+                    className={styles.select}
+                    value={ctrl ? `switch:${ctrl.id}` : fixed}
+                    onChange={(e) => {
+                        const v = e.target.value;
+                        if (v.startsWith('switch:')) {
+                            const id = v.slice(7);
+                            const c = switches.find((x) => x.id === id);
+                            // Start each state on a camera of its own, in turn.
+                            const pool = [...(media.kind === 'take' ? ['solve'] : []), ...cams.map((x) => x.id)];
+                            const map = Object.fromEntries(c.states.map((_, i) => [i, sw?.map?.[i] ?? pool[i % Math.max(1, pool.length)]]));
+                            setSwitch({ controller: id, map });
+                        } else {
+                            if (sw) set('cameraSwitch')(undefined);
+                            set('camera')(v);
+                            comp.commit();
+                        }
+                    }}
+                >
+                    {options}
+                    {switches.length > 0 && (
+                        <optgroup label="Follow a Switch">
+                            {switches.map((c) => <option key={c.id} value={`switch:${c.id}`}>{c.name}</option>)}
+                        </optgroup>
+                    )}
+                </select>
+            </Field>
+            {ctrl && ctrl.states.map((st, i) => (
+                <Field key={i} label={`When ${st}`}>
+                    <select
+                        className={styles.select}
+                        value={sw.map?.[i] ?? fixed}
+                        onChange={(e) => setSwitch({ ...sw, map: { ...sw.map, [i]: e.target.value } })}
+                    >
+                        {options}
+                    </select>
+                </Field>
+            ))}
+            </div>
+            {!ctrl && (
+                <p className={styles.hint}>Right-click Camera to cut between cameras with a Switch.</p>
+            )}
+        </>
+    );
+}
+
+/** The Camera row's right-click menu: follow a Switch, make one, or go fixed. */
+function CameraMenu({
+    at, switches, current, onFollow, onNew, onFixed, onClose,
+}) {
+    const ref = useRef(null);
+    React.useEffect(() => {
+        const away = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
+        const esc = (e) => { if (e.key === 'Escape') onClose(); };
+        window.addEventListener('pointerdown', away, true);
+        window.addEventListener('keydown', esc);
+        return () => { window.removeEventListener('pointerdown', away, true); window.removeEventListener('keydown', esc); };
+    }, [onClose]);
+    const pick = (fn) => () => { fn(); onClose(); };
+    return createPortal(
+        <div ref={ref} className={styles.menu} style={{ left: Math.min(at.x, window.innerWidth - 240), top: Math.min(at.y, window.innerHeight - 220) }}>
+            <div className={styles.menuTitle}>Camera</div>
+            <div className={styles.menuTitle}>Cut between cameras with</div>
+            {switches.map((c) => (
+                <button key={c.id} type="button" className={`${styles.menuItem} ${current === c.id ? styles.menuItemOn : ''}`} onClick={pick(() => onFollow(c))}>
+                    <span className={styles.swatch} style={{ background: c.color }} />
+                    <span className={styles.olName}>{c.name}</span>
+                    <span className={styles.olTag}>{c.states.length} states</span>
+                </button>
+            ))}
+            <button type="button" className={styles.menuItem} onClick={pick(onNew)}>New Switch, one state per camera</button>
+            {current && (
+                <>
+                    <div className={styles.menuSep} />
+                    <button type="button" className={styles.menuItem} onClick={pick(onFixed)}>Unlink (fixed camera)</button>
+                </>
+            )}
+        </div>,
+        document.body,
+    );
+}
+
 function ClipInspector({ clip }) {
     const comp = useComp();
     const media = comp.project.media.find((m) => m.id === clip.mediaId);
@@ -741,12 +904,7 @@ function ClipInspector({ clip }) {
                     <ParamRow def={{ key: 'withAudio', label: 'Its own sound', type: 'bool', link: false }} value={clip.withAudio !== false} onChange={(v) => { set('withAudio')(v); comp.commit(); }} />
                 )}
                 {(media?.kind === 'take' || media?.kind === 'stage') && (
-                    <Field label="Camera">
-                        <select className={styles.select} value={clip.camera || (media.kind === 'take' ? 'solve' : (cams[0]?.id || ''))} onChange={(e) => { set('camera')(e.target.value); comp.commit(); }}>
-                            {media.kind === 'take' && <option value="solve">The take&apos;s solve</option>}
-                            {cams.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                        </select>
-                    </Field>
+                    <CameraPick clip={clip} media={media} cams={cams} set={set} />
                 )}
                 {(media?.kind === 'take' || media?.kind === 'stage') && (
                     <div className={styles.wideRow}>

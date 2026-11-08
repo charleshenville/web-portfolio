@@ -31,6 +31,7 @@ import { WindowCompositor, LAYER, cornersFacing } from '../../../lib/scanAssets/
 import { MatteSet, HoldoutPass, mattesFor } from '../../../lib/scanAssets/roto';
 import { DEFAULT_SCREEN } from '../../../lib/scanAssets/library';
 import { makeFrame, resolveObject, resolveTrack } from '../model/resolve';
+import { switchAt as switchStateAt } from '../model/controllers';
 import { OBJECT_TYPES } from '../model/schema';
 import { programAt, clipSourceTime } from '../model/timeline';
 import { TakeRig, poseAt, applyIntrinsics } from './takeRig';
@@ -284,6 +285,9 @@ export default class Engine {
         this.controls?.dispose();
         this.windows?.dispose();
         this.holdout?.dispose();
+        this.footRT?.dispose();
+        this.scanDepthRT?.dispose();
+        this.blackTex?.dispose();
         this.mattes?.dispose();
         this.composer?.dispose();
         this.glowPasses?.forEach((g) => { g.bloom.dispose(); g.point.dispose(); });
@@ -346,6 +350,9 @@ export default class Engine {
     }
 
     setLibrary(fn) { this.library = fn; }
+
+    /** Where to read each take's scan colour correction from: `() => ({ take: look })`. */
+    setLooks(fn) { this.looks = fn; this.dirty = true; }
 
     setGizmoMode(m) {
         this.userGizmoMode = m;
@@ -553,7 +560,7 @@ export default class Engine {
         if (obj.type === 'camera') return { node: this.cameraProxy, kind: 'camera' };
         const a = this.adapterOf(obj.id)?.adapter;
         if (!a) return null;
-        if (obj.type === 'window') return null; // moved by its corners
+        if (obj.type === 'window' || obj.type === 'text') return null; // moved by their corners
         const node = a.gizmoTarget || a.object;
         return node ? { node, kind: 'object' } : null;
     }
@@ -636,7 +643,8 @@ export default class Engine {
         if (!ed || !S || this.exporting || this.roto?.on) return null;
         const obj = objects.find((o) => o.id === ed.objectId);
         if (!obj) return null;
-        if (obj.type === 'window') return { obj, kind: 'window', corners: obj.params.corners, space: S.root };
+        // Windows and text are both drawn by their corners, written to `corners`.
+        if (obj.type === 'window' || obj.type === 'text') return { obj, kind: 'window', corners: obj.params.corners, space: S.root };
         if (obj.type === 'prop') {
             const a = S.adapters.get(obj.id);
             const entry = this.library().assets.find((x) => x.id === obj.params.assetId);
@@ -915,8 +923,14 @@ export default class Engine {
             cam.aspect = aspect;
             cam.updateProjectionMatrix();
         } else {
-            const camObj = base?.clip.camera && base.clip.camera !== 'solve'
-                ? P.objects.find((o) => o.id === base.clip.camera)
+            // The clip's camera, or, when it follows a Switch, the camera
+            // the Switch's state now picks.
+            let camId = base?.clip.camera;
+            const sw = base?.clip.cameraSwitch;
+            const swCtrl = sw && P.controllers.find((c) => c.id === sw.controller && c.type === 'switch');
+            if (swCtrl) camId = sw.map?.[switchStateAt(swCtrl, t)] ?? camId;
+            const camObj = camId && camId !== 'solve'
+                ? objects.find((o) => o.id === camId && o.type === 'camera')
                 : (base?.media.kind === 'stage' ? objects.find((o) => o.type === 'camera') : null);
             if (camObj) {
                 const pose = cameraPoseAt(camObj, resolveObject(camObj, frame), t);
@@ -961,6 +975,7 @@ export default class Engine {
             const mesh = ofType('scanMesh');
             const wire = ofType('scanWire');
             rig.apply({ take: takeP, points: pts, mesh, wire }, drawSize, this.ss);
+            rig.applyLook(this.looks?.()[S.take]);
             rig.react(pts, wire, freq, live);
             behind.points = pts?.depthLayer === 'behind';
             behind.mesh = mesh?.depthLayer === 'behind';
@@ -1004,14 +1019,18 @@ export default class Engine {
 
         // ---- Footage
         const showFootage = this.mode === 'preview' && base?.media.kind === 'take' && (footageP?.visible !== false || !!this.roto?.on);
+        // With footage hidden, mattes can still put the real object in front:
+        // the footage is then followed but only ever drawn inside a matte.
+        const matteOnly = !showFootage && this.mode === 'preview' && base?.media.kind === 'take'
+            && !!takeP?.mattesOverHidden && takeP?.mattesOn !== false;
         let footageTex = null;
-        if (showFootage) {
+        if (showFootage || matteOnly) {
             footageTex = opts.exportFrame ? opts.exportFrame(base.media.id) : this.pool.follow(base.clip, base.media, t, { playing: !!opts.playing });
         }
-        this.bgQuad.visible = !!footageTex;
+        this.bgQuad.visible = !!footageTex && showFootage;
         if (footageTex) {
             if (this.bgQuad.material.map !== footageTex) { this.bgQuad.material.map = footageTex; this.bgQuad.material.needsUpdate = true; }
-            this.bgQuad.material.opacity = footageP.opacity ?? 1;
+            this.bgQuad.material.opacity = showFootage ? (footageP?.opacity ?? 1) : 1;
             this.coverQuad(this.bgQuad, rig?.track?.intrinsics, aspect);
         }
 
@@ -1027,7 +1046,7 @@ export default class Engine {
         }
         if (!exporting) {
             const keep = new Set();
-            if (showFootage) keep.add(base.media.id);
+            if (showFootage || matteOnly) keep.add(base.media.id);
             program.overlays.forEach((o) => keep.add(o.media.id));
             this.pool.park(keep);
         }
@@ -1048,7 +1067,7 @@ export default class Engine {
         }
 
         // Mattes on the take's frame.
-        const mattesOn = showFootage && takeP?.mattesOn !== false && rig?.track && !rig.track.unsolved;
+        const mattesOn = (showFootage || (matteOnly && !!footageTex)) && takeP?.mattesOn !== false && rig?.track && !rig.track.unsolved;
         let holdTex = [];
         if (S?.take) {
             this.mattes.set(S.take, mattesFor(S.take));
@@ -1065,7 +1084,9 @@ export default class Engine {
             }
         }
 
-        this.compose({ cam, behindCount, footage: !!footageTex, holdTex, layers, S, frame, sortNow: exporting, objects });
+        this.compose({
+            cam, behindCount, footage: this.bgQuad.visible, matteFootage: matteOnly && !!footageTex, holdTex, layers, S, frame, sortNow: exporting, objects,
+        });
         this.lastTime = t;
         this.dirty = false;
     }
@@ -1211,9 +1232,68 @@ export default class Engine {
         r.render(this.scene, cam);
         solids.forEach((o) => { o.visible = true; });
         lines.forEach((o) => { o.visible = true; });
+        // A held-out (matted) object stands in front of everything drawn,
+        // so the points behind it must neither glow through it nor light it.
+        if (this.pointHold) {
+            if (!this.blackTex) {
+                this.blackTex = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+                this.blackTex.needsUpdate = true;
+            }
+            this.holdout.apply(this.blackTex);
+        }
     }
 
-    compose({ cam, behindCount, footage, holdTex, layers, S, frame, sortNow, objects }) {
+    /**
+     * The scan's depth from `cam`, into a depth texture the size of the
+     * drawing buffer, whether or not the mesh is shown. Null without a scan.
+     */
+    renderScanDepth(S, cam, size) {
+        const rig = S?.rig;
+        if (!rig?.mesh) return null;
+        if (!this.scanDepthRT || this.scanDepthRT.width !== size.x || this.scanDepthRT.height !== size.y) {
+            this.scanDepthRT?.dispose();
+            this.scanDepthRT = new THREE.WebGLRenderTarget(size.x, size.y, { depthBuffer: true });
+            this.scanDepthRT.depthTexture = new THREE.DepthTexture(size.x, size.y);
+        }
+        if (!this.depthScene) {
+            this.depthScene = new THREE.Scene();
+            this.depthMesh = new THREE.Mesh(undefined, new THREE.MeshBasicMaterial({ colorWrite: false, side: THREE.DoubleSide }));
+            this.depthMesh.matrixAutoUpdate = false;
+            this.depthMesh.frustumCulled = false;
+            this.depthScene.add(this.depthMesh);
+        }
+        this.depthMesh.geometry = rig.mesh.geometry;
+        S.root.updateMatrixWorld(true);
+        this.depthMesh.matrix.copy(S.root.matrixWorld);
+        this.depthMesh.matrixWorld.copy(S.root.matrixWorld);
+        const r = this.renderer;
+        const prev = r.getRenderTarget();
+        cam.layers.set(LAYER.FRONT);
+        r.setRenderTarget(this.scanDepthRT);
+        r.setClearColor(0x000000, 1);
+        r.clear(true, true, false);
+        r.render(this.depthScene, cam);
+        r.setRenderTarget(prev);
+        return this.scanDepthRT.depthTexture;
+    }
+
+    /** The footage alone, full frame, into its own target: what a matte shows over hidden footage. */
+    footageOnly(size) {
+        if (!this.footRT) this.footRT = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false });
+        if (this.footRT.width !== size.x || this.footRT.height !== size.y) this.footRT.setSize(size.x, size.y);
+        const r = this.renderer;
+        r.setRenderTarget(this.footRT);
+        r.setClearColor(0x000000, 1);
+        r.clear();
+        this.bgQuad.visible = true;
+        r.render(this.bgScene, this.bgCamera);
+        this.bgQuad.visible = false;
+        return this.footRT.texture;
+    }
+
+    compose({
+        cam, behindCount, footage, matteFootage, holdTex, layers, S, frame, sortNow, objects,
+    }) {
         const r = this.renderer;
         const takeObj = objects.find((o) => o.type === 'take');
         const bgColor = takeObj?.params.bgColor || '#000000';
@@ -1224,15 +1304,39 @@ export default class Engine {
         const out = fx ? this.composer.readBuffer : null;
         const drawScene = !!S;
         const wins = [];
-        S?.adapters.forEach((a) => { if (a.model && a.model.cutMesh && a.open) wins.push(a.model); });
+        let screens = false;
+        S?.adapters.forEach((a) => {
+            if (!a.model?.cutMesh) return;
+            if (a.open) {
+                wins.push(a.model);
+                if (a.screen?.showing) screens = true;
+            } else {
+                // A window that is hidden (or squashed to nothing) draws none
+                // of its passes, and forgets its sort: otherwise its meshes keep
+                // the visibility they last had and the last sort stays stuck
+                // on screen while other windows draw.
+                a.model.cutMesh.visible = false;
+                if (a.model.fxMesh) a.model.fxMesh.visible = false;
+                a.model.dropSort?.();
+            }
+        });
         const size = this.windows.ensure();
+        // Windows and text that hide behind the scan read its depth.
+        let wantDepth = wins.some((w) => w.op.hideBehindScan);
+        S?.adapters.forEach((a) => { if (a.setScanDepth && a.model?.op?.hideBehindScan) wantDepth = true; });
+        const scanDepth = wantDepth ? this.renderScanDepth(S, cam, size) : null;
+        wins.forEach((w) => w.setScanDepth(scanDepth));
+        S?.adapters.forEach((a) => a.setScanDepth?.(scanDepth, size));
         // The footage quad is scaled up to cover the frame; mattes are cropped the same.
         const crop = this.matteCrop || (this.matteCrop = new THREE.Vector2());
         crop.set(1 / Math.max(1e-6, this.bgQuad.scale.x), 1 / Math.max(1e-6, this.bgQuad.scale.y));
         wins.forEach((w) => w.setMatte(footage && w.op.matte ? this.mattes.texture(w.op.matte) : null, size, crop));
         const hold = holdTex.length > 0 && drawScene;
         const target = hold ? this.holdout.baseRT : out;
-        if (hold) this.holdout.build(holdTex, size, crop);
+        // Over hidden footage a half-on patch inside a matte would let the
+        // scene show through the person; firm it up so only the outline is soft.
+        if (hold) this.holdout.build(holdTex, size, crop, matteFootage ? [0.25, 0.45] : null);
+        this.pointHold = hold;
 
         const bg = this.backdrop || (this.backdrop = new THREE.Color());
         bg.set(bgColor);
@@ -1274,6 +1378,12 @@ export default class Engine {
                 cam.layers.set(LAYER.WIN_FX);
                 r.render(this.scene, cam);
             }
+            // Windows showing a video: the picture over the window's cut and
+            // effects, as part of the window's own composite.
+            if (screens) {
+                cam.layers.set(LAYER.WIN_SCREEN);
+                r.render(this.scene, cam);
+            }
             if (!hold && drawScene) {
                 r.clearDepth();
                 cam.layers.set(LAYER.FRONT);
@@ -1282,12 +1392,14 @@ export default class Engine {
             }
         }
         if (hold) {
+            // Footage hidden: the matte shows the footage, not the shot under it.
+            const over = matteFootage ? this.footageOnly(size) : this.holdout.baseRT.texture;
             clearTo(out);
             this.windows.blit(this.holdout.baseRT.texture);
             cam.layers.set(LAYER.FRONT);
             r.shadowMap.needsUpdate = true;
             r.render(this.scene, cam);
-            this.holdout.apply(this.holdout.baseRT.texture);
+            this.holdout.apply(over);
         }
 
         // Plain video layers over the composite, before the effects.

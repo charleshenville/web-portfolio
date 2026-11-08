@@ -1246,3 +1246,21 @@ input.rotoBtn {
     border: 1px solid #ffb347;
     flex: none;
 }
+
+.textArea {
+    grid-column: 2 / 4;
+    width: 100%;
+    box-sizing: border-box;
+    resize: vertical;
+    background: none;
+    border: 1px solid var(--line);
+    color: var(--fg);
+    font: inherit;
+    padding: 4px;
+    line-height: 1.4;
+}
+
+.textArea:focus {
+    outline: none;
+    border-color: var(--line-strong);
+}

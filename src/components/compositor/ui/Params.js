@@ -233,6 +233,27 @@ export function ParamRow({ def, value, link, onChange, onLink, onCommit }) {
                 {linked && <span ref={tickRef} className={styles.linkDot} style={{ width: 14, height: 14, border: `1px solid ${ctrl.color}` }} />}
             </span>
         );
+    } else if (def.type === 'text') {
+        control = (
+            <textarea
+                className={styles.textArea}
+                rows={Math.min(8, Math.max(2, String(value || '').split('\n').length))}
+                value={value ?? ''}
+                onChange={(e) => onChange(e.target.value)}
+                onBlur={() => onCommit?.()}
+            />
+        );
+    } else if (def.type === 'string') {
+        control = (
+            <input
+                className={styles.num}
+                style={{ gridColumn: '2 / 4', textAlign: 'left' }}
+                value={value ?? ''}
+                placeholder={def.placeholder || ''}
+                onChange={(e) => onChange(e.target.value)}
+                onBlur={() => onCommit?.()}
+            />
+        );
     } else if (def.type === 'select') {
         control = (
             <select

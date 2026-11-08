@@ -24,6 +24,8 @@ import { SackboyModel, makeSackboyItem } from '../../../lib/scanAssets/sackboy';
 import { PropModel } from '../../../lib/scanAssets/props';
 import { WindowModel } from '../../../lib/scanAssets/windows';
 import { ENV_LAYER } from './takeRig';
+import PatchScreen from './patchScreen';
+import TextObject from './textObject';
 
 const plyCache = new Map();
 
@@ -244,6 +246,8 @@ class WindowAdapter {
         this.object = this.model.object;
         parent.add(this.object);
         this.last = null;
+        // A window can also be a screen: a video across its patch.
+        this.screen = new PatchScreen(this.model);
     }
 
     sync(obj, p) {
@@ -257,12 +261,47 @@ class WindowAdapter {
 
     get open() { return !this.hidden && this.model.open; }
 
-    update(dt, f) { this.model.update(f.music, f.time, { take: f.take, hold: f.holdWindow === this }); }
+    update(dt, f) {
+        this.model.update(f.music, f.time, { take: f.take, hold: f.holdWindow === this });
+        // The picture follows the window as drawn now (size over time included).
+        const op = this.last || {};
+        this.screen.sync(this.model.corners || op.corners, this.hidden ? { ...op, screenOn: false } : op);
+        this.screen.update(f.time, f.playing, f.exporting);
+    }
+
+    async openExport() { await this.screen.openExport(); }
+    async exportFrame(clock) { await this.screen.exportFrame(clock); }
+    closeExport() { this.screen.closeExport(); }
 
     dispose() {
+        this.screen.dispose();
         this.model.dispose();
         this.object.removeFromParent();
     }
+}
+
+// ---- Text ------------------------------------------------------------------------
+
+class TextAdapter {
+    constructor(obj, parent) {
+        this.text = new TextObject();
+        this.object = this.text.object;
+        parent.add(this.object);
+        // What the sun reads to decide whether this casts a shadow.
+        this.model = { op: {} };
+    }
+
+    sync(obj, p) {
+        this.text.sync(p);
+        this.model.op = p;
+        this.object.userData.objectId = obj.id;
+    }
+
+    update() {}
+
+    setScanDepth(tex, size) { this.text.setScanDepth(tex, size); }
+
+    dispose() { this.text.dispose(); }
 }
 
 export function makeAdapter(obj, parent, ctx) {
@@ -273,6 +312,7 @@ export function makeAdapter(obj, parent, ctx) {
         case 'sackboy': return new ModelAdapter(obj, parent, SackboyModel);
         case 'prop': return new PropAdapter(obj, parent, ctx.library);
         case 'window': return new WindowAdapter(obj, parent);
+        case 'text': return new TextAdapter(obj, parent);
         default: return null;
     }
 }

@@ -21,6 +21,7 @@ import {
 } from '../../../lib/protagonist/poser';
 import { SACKBOY_DEFAULTS } from '../../../lib/scanAssets/sackboy';
 import { PROP_DEFAULTS } from '../../../lib/scanAssets/props';
+import { FONTS } from '../engine/textObject';
 import { WINDOW_DEFAULTS } from '../../../lib/scanAssets/windows';
 
 // The colour grade's parameters (the track editor's, which this replaces).
@@ -41,6 +42,26 @@ const num = (key, label, min, max, step, def, extra = {}) => ({ key, label, type
 const bool = (key, label, def, extra = {}) => ({ key, label, type: 'bool', def, ...extra });
 const color = (key, label, def, extra = {}) => ({ key, label, type: 'color', def, ...extra });
 const select = (key, label, options, def, extra = {}) => ({ key, label, type: 'select', options, def, link: false, ...extra });
+const text = (key, label, def, extra = {}) => ({ key, label, type: 'text', def, link: false, ...extra });
+const string = (key, label, def, extra = {}) => ({ key, label, type: 'string', def, link: false, ...extra });
+
+// A video across a patch, as prop screens show one.
+const SCREEN_GROUP = (hint) => ({
+    title: 'Screen',
+    collapsed: true,
+    hint,
+    custom: 'screenSource',
+    params: [
+        bool('screenOn', 'Show the video', false),
+        num('videoOffset', 'Start (s)', 0, 120, 0.01, 0, { when: (p) => p.screenOn }),
+        num('videoRate', 'Rate', 0, 4, 0.01, 1, { when: (p) => p.screenOn }),
+        num('brightness', 'Brightness', 0, 4, 0.01, 1.4, { when: (p) => p.screenOn }),
+        num('videoSaturation', 'Saturation', 0, 3, 0.01, 1, { when: (p) => p.screenOn }),
+        select('fit', 'Fit', [['cover', 'Cover'], ['contain', 'Contain'], ['stretch', 'Stretch']], 'cover', { when: (p) => p.screenOn }),
+        select('rotate', 'Rotate', [[0, '0\u00b0'], [90, '90\u00b0'], [180, '180\u00b0'], [270, '270\u00b0']], 0, { when: (p) => p.screenOn }),
+        bool('flipX', 'Mirror', false, { when: (p) => p.screenOn, link: false }),
+    ],
+});
 
 const VISIBLE = bool('visible', 'Visible', true);
 const LAYER = select('depthLayer', 'Layer', [['front', 'In front of footage'], ['behind', 'Behind footage']], 'front');
@@ -113,7 +134,7 @@ export const OBJECT_TYPES = {
         defaults: {
             offsetX: 0, offsetY: 0, offsetZ: 0, rotX: 0, rotY: 0, rotZ: 0, scale: 1,
             overscale: 1, overlayX: 0, overlayY: 0, overlayZ: 0,
-            bgColor: '#000000', mattesOn: true, occlude: false,
+            bgColor: '#000000', mattesOn: true, mattesOverHidden: false, occlude: false,
         },
         groups: [
             {
@@ -146,7 +167,14 @@ export const OBJECT_TYPES = {
                     color('bgColor', 'Backdrop', '#000000'),
                     bool('occlude', 'Hide behind scan', false),
                     bool('mattesOn', 'Use mattes (holdouts & windows)', true),
+                    bool('mattesOverHidden', 'Mattes show over hidden footage', false, { when: (p) => p.mattesOn !== false }),
                 ],
+            },
+            {
+                title: 'Scan colour',
+                custom: 'scanLook',
+                collapsed: true,
+                hint: 'Corrects the scan\u2019s own texture (textured mesh, scan-coloured points) to match the footage. Saved with the take, not the project.',
             },
             { title: 'Roto', custom: 'roto', collapsed: true },
         ],
@@ -496,9 +524,17 @@ export const OBJECT_TYPES = {
         label: 'Window',
         category: 'placed',
         gizmo: 'corners',
-        defaults: { ...WINDOW_DEFAULTS, visible: true, hueMod: { ...WINDOW_DEFAULTS.hueMod, source: 'off' }, sortMod: { ...WINDOW_DEFAULTS.sortMod, source: 'off' } },
+        defaults: {
+            ...WINDOW_DEFAULTS,
+            visible: true,
+            hueMod: { ...WINDOW_DEFAULTS.hueMod, source: 'off' },
+            sortMod: { ...WINDOW_DEFAULTS.sortMod, source: 'off' },
+            screenOn: false, video: null, videoOffset: 0, videoRate: 1, brightness: 1.4, videoSaturation: 1, fit: 'cover', rotate: 0, flipX: false,
+            hideBehindScan: false,
+        },
         groups: [
             { title: 'Corners', custom: 'windowCorners' },
+            SCREEN_GROUP('Plays a video across the window, the way a prop screen does.'),
             {
                 title: 'Window',
                 params: [
@@ -507,6 +543,7 @@ export const OBJECT_TYPES = {
                     bool('cut', 'Cut out the footage', true),
                     num('cutOpacity', 'Cut opacity', 0, 1, 0.01, 1, { when: (p) => p.cut }),
                     num('feather', 'Feather', 0, 0.5, 0.005, 0.02),
+                    bool('hideBehindScan', 'Hide behind the scan', false),
                 ],
             },
             { title: 'Hold to a matte', custom: 'windowMatte', collapsed: true },
@@ -555,6 +592,76 @@ export const OBJECT_TYPES = {
         ],
     },
 
+    text: {
+        label: 'Text',
+        category: 'placed',
+        gizmo: 'corners',
+        defaults: {
+            visible: true,
+            corners: [[-0.5, 0.25, 0], [0.5, 0.25, 0], [0.5, -0.25, 0], [-0.5, -0.25, 0]],
+            text: 'Text',
+            fontFamily: 'grotesk',
+            fontCustom: '',
+            fontSize: 0.5,
+            weight: 600,
+            italic: false,
+            color: '#ffffff',
+            opacity: 1,
+            align: 'center',
+            valign: 'middle',
+            letterSpacing: 0,
+            lineHeight: 1.1,
+            bgColor: '#000000',
+            bgOpacity: 0,
+            padding: 0.05,
+            lit: false,
+            castShadow: false,
+            hideBehindScan: false,
+            depthLayer: 'front',
+            resolution: 512,
+        },
+        groups: [
+            { title: 'Corners', custom: 'windowCorners' },
+            {
+                title: 'Text',
+                params: [
+                    text('text', 'Text', 'Text'),
+                    select('fontFamily', 'Font', FONTS.map(([id, label]) => [id, label]), 'grotesk'),
+                    string('fontCustom', 'Font name', '', { when: (p) => p.fontFamily === 'custom' }),
+                    num('fontSize', 'Size', 0.02, 1.5, 0.005, 0.5),
+                    select('weight', 'Weight', [100, 200, 300, 400, 500, 600, 700, 800, 900].map((w) => [w, String(w)]), 600),
+                    bool('italic', 'Italic', false, { link: false }),
+                    color('color', 'Colour', '#ffffff'),
+                    OPACITY,
+                    select('align', 'Align', [['left', 'Left'], ['center', 'Centre'], ['right', 'Right']], 'center'),
+                    select('valign', 'Vertical', [['top', 'Top'], ['middle', 'Middle'], ['bottom', 'Bottom']], 'middle'),
+                    num('letterSpacing', 'Letter spacing', -0.2, 1, 0.005, 0),
+                    num('lineHeight', 'Line height', 0.6, 3, 0.01, 1.1),
+                    VISIBLE,
+                ],
+            },
+            {
+                title: 'Box',
+                collapsed: true,
+                params: [
+                    color('bgColor', 'Fill', '#000000'),
+                    num('bgOpacity', 'Fill opacity', 0, 1, 0.01, 0),
+                    num('padding', 'Padding', 0, 0.4, 0.005, 0.05),
+                    num('resolution', 'Sharpness (px)', 128, 2048, 32, 512, { link: false }),
+                ],
+            },
+            {
+                title: 'Light & shadow',
+                params: [
+                    bool('lit', 'Lit by the sun', false),
+                    bool('castShadow', 'Casts a shadow', false),
+                    bool('hideBehindScan', 'Hide behind the scan', false),
+                    LAYER,
+                ],
+            },
+        ],
+    },
+
     // ---- Effects (program level, applied in order) ----------------------------
 
     glow: {
@@ -596,7 +703,7 @@ export const OBJECT_TYPES = {
 
 /** What the Add menu offers, by section. */
 export const ADDABLE = {
-    placed: ['cloud', 'curve', 'protagonist', 'sackboy', 'prop', 'window'],
+    placed: ['cloud', 'curve', 'protagonist', 'sackboy', 'prop', 'window', 'text'],
     camera: ['camera'],
     effect: ['glow', 'haze', 'grade'],
 };

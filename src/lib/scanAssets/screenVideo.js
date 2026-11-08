@@ -112,6 +112,13 @@ export class ScreenVideo {
 
     onChange(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
 
+    /**
+     * The texture a screen should draw: during an export, the frame
+     * exportFrame last put up (the element is paused and off the export's
+     * clock); otherwise the element's own.
+     */
+    get shown() { return this.exportTex || this.texture; }
+
     emit() { this.listeners.forEach((fn) => fn(this)); }
 
     /** Point the screen at a source id (null for none). */
@@ -190,8 +197,10 @@ export class ScreenVideo {
 
     async openExport() {
         this.closeExport();
+        this.exportStats = { source: this.source, reader: false, decoded: 0, seeked: 0 };
         if (!this.url) return;
         this.reader = await Mp4FrameReader.open(this.url);
+        this.exportStats.reader = !!this.reader;
         this.el?.pause();
     }
 
@@ -201,6 +210,12 @@ export class ScreenVideo {
      * take this file.
      */
     async exportFrame(clock, op) {
+        const tex = await this.exportPicture(clock, op);
+        this.exportTex = tex || null;
+        return tex;
+    }
+
+    async exportPicture(clock, op) {
         if (!this.el || !this.duration) return this.texture;
         const at = this.timeFor(clock, op);
         const r = this.reader;
@@ -226,15 +241,30 @@ export class ScreenVideo {
                 }
                 this.frameTex.image = vf;
                 this.frameTex.needsUpdate = true;
+                if (this.exportStats) this.exportStats.decoded++;
                 return this.frameTex;
             }
         }
+        // No decoder (or it gave up): seek the element, and wait for the
+        // picture itself - 'seeked' can fire before the new frame is up, which
+        // would upload the old one.
         const el = this.el;
+        if (this.exportStats) this.exportStats.seeked++;
         if (Math.abs(el.currentTime - at) > 1 / 240) {
             await new Promise((resolve) => {
-                const done = () => { clearTimeout(timer); el.removeEventListener('seeked', done); resolve(); };
-                const timer = setTimeout(done, 2000);
-                el.addEventListener('seeked', done);
+                let timer = null;
+                const done = () => { clearTimeout(timer); el.removeEventListener('seeked', seeked); resolve(); };
+                const seeked = () => {
+                    clearTimeout(timer);
+                    if (el.requestVideoFrameCallback) {
+                        timer = setTimeout(done, 250);
+                        el.requestVideoFrameCallback(() => done());
+                    } else {
+                        done();
+                    }
+                };
+                timer = setTimeout(done, 2000);
+                el.addEventListener('seeked', seeked);
                 el.currentTime = at;
             });
         }
@@ -243,6 +273,8 @@ export class ScreenVideo {
     }
 
     closeExport() {
+        if (this.reader && this.exportStats) this.exportStats.recoveries = this.reader.recovered;
+        this.exportTex = null;
         this.reader?.close();
         this.reader = null;
         this.frameTex?.dispose();

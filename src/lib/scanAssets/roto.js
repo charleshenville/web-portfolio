@@ -290,16 +290,19 @@ export class HoldoutPass {
         this.scene = new THREE.Scene();
         this.cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
         this.maxMat = new THREE.ShaderMaterial({
-            uniforms: { tMatte: { value: null }, invert: { value: 0 }, crop: { value: new THREE.Vector2(1, 1) } },
+            uniforms: {
+                tMatte: { value: null }, invert: { value: 0 }, crop: { value: new THREE.Vector2(1, 1) }, edge: { value: new THREE.Vector2(0.03, 0.97) },
+            },
             vertexShader: QUAD_VERT,
             fragmentShader: /* glsl */`
                 uniform sampler2D tMatte;
                 uniform float invert;
                 uniform vec2 crop; // the footage's crop to the frame
+                uniform vec2 edge; // where the matte ramps from off to on
                 varying vec2 vUv;
                 void main() {
                     // H.264 keeps a little noise in the flat areas; snap it.
-                    float m = smoothstep(0.03, 0.97, texture2D(tMatte, (vUv - 0.5) * crop + 0.5).r);
+                    float m = smoothstep(edge.x, edge.y, texture2D(tMatte, (vUv - 0.5) * crop + 0.5).r);
                     gl_FragColor = vec4(vec3(mix(m, 1.0 - m, invert)), 1.0);
                 }`,
             depthTest: false,
@@ -341,7 +344,7 @@ export class HoldoutPass {
      * is cropped to cover the frame ((1, 1) when it fills it exactly), so a
      * matte lands on the object whatever shape the output is.
      */
-    build(textures, size, crop = null) {
+    build(textures, size, crop = null, edge = null) {
         this.ensure(size);
         const r = this.renderer;
         const prev = r.getRenderTarget();
@@ -350,6 +353,9 @@ export class HoldoutPass {
         r.clear(true, false, false);
         this.quad.material = this.maxMat;
         if (crop) this.maxMat.uniforms.crop.value.copy(crop); else this.maxMat.uniforms.crop.value.set(1, 1);
+        // `edge` [lo, hi]: a firmer matte (a narrower ramp) where nothing
+        // matching sits underneath it to hide a half-on interior.
+        this.maxMat.uniforms.edge.value.set(edge ? edge[0] : 0.03, edge ? edge[1] : 0.97);
         textures.forEach((tex) => {
             this.maxMat.uniforms.tMatte.value = tex;
             r.render(this.scene, this.cam);

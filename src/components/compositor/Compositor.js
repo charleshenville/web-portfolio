@@ -38,6 +38,7 @@ import {
     loadLibrary, saveLibrary, downloadLibrary, patchAsset, DEFAULT_SCREEN,
 } from '../../lib/scanAssets/library';
 import { MUSIC_ASSETS } from '../../lib/audioScene';
+import { loadLooks, saveLooks } from '../../lib/scanAssets/takeLooks';
 import { listUploads, storeUpload, PUBLIC_VIDEOS } from '../../lib/scanAssets/screenVideo';
 import { makeModelItem } from '../../lib/protagonist/poser';
 import { makeSackboyItem } from '../../lib/scanAssets/sackboy';
@@ -85,6 +86,11 @@ export default function Compositor() {
     const librarySave = useRef(0);
     const [librarySaved, setLibrarySaved] = useState(null);
     const [roto, setRoto] = useState({ on: false, plain: true, take: null });
+    // Each take's scan colour correction, saved apart from projects (like the library).
+    const [looks, setLooks] = useState(loadLooks);
+    const looksRef = useRef(looks);
+    const looksSave = useRef(0);
+    const [looksSaved, setLooksSaved] = useState(null);
     const [cornerOn, setCornerOn] = useState(null); // object id with corner editing on
     const [cornerHandle, setCornerHandle] = useState(4);
     const [uploads, setUploads] = useState([]);
@@ -173,6 +179,7 @@ export default function Compositor() {
         const engine = new Engine();
         engine.mount(mountRef.current);
         engine.setLibrary(() => libraryRef.current);
+        engine.setLooks(() => looksRef.current);
         engineRef.current = engine;
         // A handle for poking at it from the console while developing.
         if (process.env.NODE_ENV !== 'production') {
@@ -233,13 +240,31 @@ export default function Compositor() {
         if (engineRef.current) engineRef.current.dirty = true;
         if (save) saveLibraryNow();
     }, [saveLibraryNow]);
+    /** Change a take's scan correction; `save` false while a slider is dragged. */
+    const setLook = useCallback((take, patch, save = false) => {
+        const next = { ...looksRef.current, [take]: patch ? { ...(looksRef.current[take] || {}), ...patch, updatedAt: Date.now() } : undefined };
+        if (!patch) delete next[take];
+        looksRef.current = next;
+        setLooks(next);
+        if (engineRef.current) engineRef.current.dirty = true;
+        if (!save) return;
+        const n = ++looksSave.current;
+        setLooksSaved('saving');
+        saveLooks(next).then((where) => { if (n === looksSave.current) setLooksSaved(where); });
+    }, []);
+    const saveLooksNow = useCallback(() => {
+        const n = ++looksSave.current;
+        setLooksSaved('saving');
+        saveLooks(looksRef.current).then((where) => { if (n === looksSave.current) setLooksSaved(where); });
+    }, []);
+
     const editAssetRef = useRef(editAsset);
     editAssetRef.current = editAsset;
 
     // ---- Corner editing: a selected window always; a screen or the pulse shape when asked.
     const selectedObj = selection?.kind === 'object' ? project.objects.find((o) => o.id === selection.id) : null;
     const cornerEdit = selectedObj && selectedObj.gizmo !== false
-        && (selectedObj.type === 'window' || cornerOn === selectedObj.id)
+        && (selectedObj.type === 'window' || selectedObj.type === 'text' || cornerOn === selectedObj.id)
         ? { objectId: selectedObj.id, handle: cornerHandle } : null;
     const cornerKey = cornerEdit ? `${cornerEdit.objectId}:${cornerEdit.handle}` : '';
     useEffect(() => {
@@ -401,8 +426,10 @@ export default function Compositor() {
             const s = state ?? ((c.cuts.filter((k) => k.t <= t).pop()?.s ?? 0) + 1) % c.states.length;
             cuts.push({ id: newId('cut'), t, s });
             cuts.sort((a, b) => a.t - b.t);
-            // A cut to the state already on changes nothing; drop it.
-            return { ...c, cuts: cuts.filter((k, i) => i === 0 || k.s !== cuts[i - 1].s) };
+            // A cut only ever adds (or replaces the one at the playhead):
+            // the cuts after it stay exactly where and what they were, even
+            // where one now repeats the state before it.
+            return { ...c, cuts };
         }, true);
     }, [updateController]);
 
@@ -459,8 +486,17 @@ export default function Compositor() {
                     params = { posX: cam.position.x, posY: cam.position.y, posZ: cam.position.z, rotX: d(e.x), rotY: d(e.y), rotZ: d(e.z), fov: cam.fov };
                 }
             }
-            if (type === 'window') {
-                const corners = engineRef.current?.windowCorners(sceneId);
+            if (type === 'window' || type === 'text') {
+                let corners = engineRef.current?.windowCorners(sceneId);
+                if (corners && type === 'text') {
+                    // A line of text: half again as wide, half as tall.
+                    const [tl, tr, br, bl] = corners;
+                    const mid = [0, 1, 2].map((k) => (tl[k] + tr[k] + br[k] + bl[k]) / 4);
+                    const h = [0, 1, 2].map((k) => (tr[k] - tl[k]) / 2);
+                    const v = [0, 1, 2].map((k) => (tl[k] - bl[k]) / 2);
+                    const at = (a, b) => [0, 1, 2].map((k) => Math.round((mid[k] + h[k] * a + v[k] * b) * 1e4) / 1e4);
+                    corners = [at(-1.5, 0.5), at(1.5, 0.5), at(1.5, -0.5), at(-1.5, -0.5)];
+                }
                 if (corners) params = { corners };
             }
         }
@@ -939,6 +975,10 @@ export default function Compositor() {
         takes,
         library,
         librarySaved,
+        looks,
+        looksSaved,
+        setLook,
+        saveLooksNow,
         editAsset,
         saveLibraryNow,
         downloadLibrary: () => downloadLibrary(libraryRef.current),

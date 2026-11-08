@@ -15,6 +15,7 @@ import {
 } from '../../../lib/audioScene';
 import { LAYER } from '../../../lib/scanAssets/windows';
 import { takeBase } from './media';
+import { makeLookUniforms, setLookUniforms, hookLook } from '../../../lib/scanAssets/takeLooks';
 
 export const ENV_LAYER = 1;
 const D2R = Math.PI / 180;
@@ -93,6 +94,9 @@ export class TakeRig {
         this.textured = null;
         this.status = 'loading';
         this.disposed = false;
+        // The take's colour correction, shared by its textured mesh and its
+        // scan-coloured points (lib/scanAssets/takeLooks).
+        this.look = makeLookUniforms();
         // Points and wireframe swell and slide together, in their own frame.
         this.overlay = new THREE.Group();
         root.add(this.overlay);
@@ -117,6 +121,7 @@ export class TakeRig {
             geo.applyMatrix4(src.matrixWorld);
             geo.computeVertexNormals();
             this.textured = src.material;
+            hookLook(this.textured, this.look, 'map_fragment');
             this.mesh = new THREE.Mesh(geo, src.material);
             this.mesh.frustumCulled = false;
             this.root.add(this.mesh);
@@ -134,7 +139,9 @@ export class TakeRig {
                 base: Float32Array.from(cloudGeo.getAttribute('position').array),
                 dirs: null, dists: null, freqIndex: null, key: null, dirty: false,
             };
-            this.cloud = new THREE.Points(cloudGeo, new THREE.PointsMaterial({ transparent: true }));
+            const cloudMat = new THREE.PointsMaterial({ transparent: true });
+            hookLook(cloudMat, this.look, 'color_fragment');
+            this.cloud = new THREE.Points(cloudGeo, cloudMat);
             this.cloud.frustumCulled = false;
             this.overlay.add(this.cloud);
 
@@ -150,6 +157,9 @@ export class TakeRig {
         }
         this.onChange?.();
     }
+
+    /** Push a correction (or null for none) onto the scan's materials. */
+    applyLook(look) { setLookUniforms(this.look, look); }
 
     get sphere() { return this.cloud?.geometry?.boundingSphere || null; }
     get duration() { return this.track ? this.track.frame_count / this.track.fps : 0; }

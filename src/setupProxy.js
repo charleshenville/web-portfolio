@@ -177,7 +177,39 @@ function projectsRoute(req, res) {
     });
 }
 
+// ---- Scan colour corrections ----------------------------------------------------
+//
+// Per take, saved into src/data/takeLooks.json (in src so saving never
+// reloads the page; lib/scanAssets/takeLooks.js accepts the update).
+
+const LOOKS = path.join(__dirname, 'data', 'takeLooks.json');
+const LOOKS_ROUTE = '/__compositor/take-looks';
+const LOOK_KEYS = ['exposure', 'contrast', 'gamma', 'saturation', 'temperature'];
+
+function looksRoute(req, res) {
+    if (!isLocal(req)) { res.status(403).end(); return; }
+    res.set('Cache-Control', 'no-store');
+    if (req.method === 'GET') { res.type('application/json').send(fs.readFileSync(LOOKS, 'utf8')); return; }
+    if (req.method !== 'POST') { res.status(405).end(); return; }
+    const chunks = [];
+    let size = 0;
+    req.on('data', (c) => { size += c.length; if (size < MAX_BYTES) chunks.push(c); });
+    req.on('end', () => {
+        if (size >= MAX_BYTES) { res.status(413).end(); return; }
+        let data;
+        try { data = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (e) { res.status(400).json({ error: 'not JSON' }); return; }
+        const ok = data && typeof data === 'object' && !Array.isArray(data)
+            && Object.values(data).every((l) => l && typeof l === 'object' && LOOK_KEYS.every((k) => l[k] === undefined || Number.isFinite(l[k])));
+        if (!ok) { res.status(400).json({ error: 'not a set of take looks' }); return; }
+        const tmp = `${LOOKS}.tmp`;
+        fs.writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`);
+        fs.renameSync(tmp, LOOKS);
+        res.json({ ok: true, path: 'src/data/takeLooks.json' });
+    });
+}
+
 module.exports = function compositorDevServer(app) {
+    app.use(LOOKS_ROUTE, looksRoute);
     app.use(ROTO_ROUTE, rotoProxy);
     app.use(PROJECTS_ROUTE, projectsRoute);
 

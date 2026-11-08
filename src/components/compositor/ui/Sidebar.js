@@ -7,7 +7,7 @@ import { createPortal } from 'react-dom';
 import {
     Eye, EyeOff, Move3d, Box, Camera, Sun, Sparkles, Activity, Plus, Trash2, Copy,
     ChevronDown, ChevronRight, Spline, PersonStanding, Square, Monitor, AlertTriangle, Clapperboard,
-    Circle, Layers, ArrowUp, ArrowDown, Shapes, Frame,
+    Circle, Layers, ArrowUp, ArrowDown, Shapes, Frame, Type,
 } from 'lucide-react';
 import { Film, Music } from './icons';
 import { OBJECT_TYPES, ADDABLE, paramDefs } from '../model/schema';
@@ -30,6 +30,7 @@ const ICONS = {
     sackboy: PersonStanding,
     prop: Shapes,
     window: Square,
+    text: Type,
     glow: Sparkles,
     haze: Sparkles,
     grade: Sparkles,

@@ -248,6 +248,11 @@ const MAX_IN_FLIGHT = 4;
 // Encoded samples are read from the file in runs rather than one slice each.
 const RUN_BYTES = 8 * 1024 * 1024;
 const RUN_SAMPLES = 64;
+// Failures in a row a reader rebuilds its decoder for before giving up. The
+// browser can take a decoder back under memory pressure (a big export
+// running alongside); that should cost a re-decode from a keyframe, not the
+// rest of the clip.
+const MAX_RECOVERIES = 6;
 
 export class Mp4FrameReader {
     // Open a URL or a File/Blob. Resolves to null when the file or the
@@ -321,16 +326,45 @@ export class Mp4FrameReader {
         this.wake = null;
         this.run = null;
         this.ahead = null;
-        this.decoder = new window.VideoDecoder({
+        this.failures = 0;
+        this.recovered = 0;
+        this.decoder = this.makeDecoder();
+        this.restart(0);
+    }
+
+    makeDecoder() {
+        const dec = new window.VideoDecoder({
             output: (frame) => {
+                if (this.decoder !== dec) { frame.close(); return; }
                 this.held.push(frame);
                 const p = Math.round(frame.timestamp / 1000);
                 if (p > this.lastOut) this.lastOut = p;
                 this.poke();
             },
-            error: (e) => { this.error = e; this.poke(); },
+            error: (e) => {
+                if (this.decoder !== dec) return;
+                this.error = e;
+                this.poke();
+            },
         });
-        this.restart(0);
+        return dec;
+    }
+
+    // After a failure: a fresh decoder (an errored one is closed for good)
+    // and fresh reads, starting again from frame p's keyframe. False once it
+    // has failed too often in a row to be worth another go.
+    recover(p) {
+        if (this.failures >= MAX_RECOVERIES || !this.blob) return false;
+        this.failures++;
+        this.recovered++;
+        const old = this.decoder;
+        this.decoder = this.makeDecoder();
+        try { old.close(); } catch (e) { /* already closed */ }
+        this.error = null;
+        this.run = null;
+        this.ahead = null;
+        this.restart(this.keyBefore[this.decodeIndex[p]]);
+        return !this.error;
     }
 
     // The frame on screen at `seconds`, as <video> would show it after a seek
@@ -386,16 +420,17 @@ export class Mp4FrameReader {
     // picture coming out, the decoder taking more input, or an error. The
     // timer is only there in case a browser lacks the dequeue event.
     waitForDecoder() {
+        const dec = this.decoder;
         return new Promise((resolve) => {
             let timer = null;
             const done = () => {
                 clearTimeout(timer);
-                this.decoder.removeEventListener?.('dequeue', done);
+                dec.removeEventListener?.('dequeue', done);
                 if (this.wake === done) this.wake = null;
                 resolve();
             };
             this.wake = done;
-            this.decoder.addEventListener?.('dequeue', done);
+            dec.addEventListener?.('dequeue', done);
             timer = setTimeout(done, 50);
         });
     }
@@ -487,7 +522,7 @@ export class Mp4FrameReader {
     async frame(p) {
         const n = this.frameCount;
         p = Math.max(0, Math.min(n - 1, Math.round(p)));
-        if (this.error) return null;
+        if (this.error && !this.recover(p)) return null;
 
         const drop = () => {
             while (this.held.length
@@ -498,10 +533,12 @@ export class Mp4FrameReader {
         drop();
         const head = () => (this.held.length
             ? Math.round(this.held[0].timestamp / 1000) : -1);
-        if (head() === p) {
+        const got = () => {
+            this.failures = 0;
             this.topUp();
             return this.held[0];
-        }
+        };
+        if (head() === p) return got();
 
         // Backwards, or already decoded past it: start again from its
         // keyframe. A gap wider than a GOP jumps straight there too, rather
@@ -510,14 +547,14 @@ export class Mp4FrameReader {
         if (p <= this.lastOut || key > this.next) this.restart(key);
 
         for (;;) {
-            if (this.error) return null;
+            if (this.error) {
+                if (!this.recover(p)) return null;
+                continue;
+            }
             drop();
             // Pictures come out in presentation order, so one past `p` means
             // `p` itself was never produced. Better a neighbour than nothing.
-            if (head() >= p) {
-                this.topUp();
-                return this.held[0];
-            }
+            if (head() >= p) return got();
 
             if (this.next < n && this.decoder.decodeQueueSize < MAX_IN_FLIGHT) {
                 const data = this.take(this.next);

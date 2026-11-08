@@ -366,7 +366,9 @@ export class PropModel {
             this.screenKey = key;
             this.buildScreen(def, fit, aspect);
         }
-        const tex = this.video.texture;
+        // The decoded frame while exporting: a sync mid-export (any animated
+        // param) must not put the paused element back.
+        const tex = this.video.shown;
         const m = this.screenMat;
         if (m.map !== (tex || null)) { m.map = tex || null; m.needsUpdate = true; }
         m.color.setScalar(tex ? op.brightness : 0.02);

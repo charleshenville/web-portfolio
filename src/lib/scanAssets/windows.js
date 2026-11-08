@@ -25,7 +25,9 @@ import { sortPixels } from '../pixelSort';
 import { createSortPool } from '../pixelSortPool';
 
 /** Camera layers. 1 is the models' reflection capture. */
-export const LAYER = { FRONT: 0, BEHIND: 2, OVERLAY: 3, WIN_CUT: 4, WIN_FX: 5 };
+export const LAYER = {
+    FRONT: 0, BEHIND: 2, OVERLAY: 3, WIN_CUT: 4, WIN_FX: 5, WIN_SCREEN: 6,
+};
 
 export const WINDOW_DEFAULTS = {
     corners: [[-0.5, 0.5, 0], [0.5, 0.5, 0], [0.5, -0.5, 0], [-0.5, -0.5, 0]],
@@ -153,9 +155,12 @@ uniform sampler2D tMatte;
 uniform float matteMode; // 0 none, 1 inside, -1 outside
 uniform vec2 matteRes;
 uniform vec2 matteCrop; // the footage's crop: (1, 1) when it fills the frame
+uniform sampler2D tScanDepth; // the scan's depth from this camera
+uniform float scanOcclude; // 1: hidden wherever the scan is in front
 float edgeMask(vec2 uv) {
     float e = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
     float m = feather > 0.0 ? smoothstep(0.0, feather, e) : 1.0;
+    if (scanOcclude > 0.5 && gl_FragCoord.z > texture2D(tScanDepth, gl_FragCoord.xy / matteRes).r + 1e-5) return 0.0;
     if (matteMode != 0.0) {
         vec2 mu = (gl_FragCoord.xy / matteRes - 0.5) * matteCrop + 0.5;
         float k = smoothstep(0.03, 0.97, texture2D(tMatte, mu).r);
@@ -169,6 +174,8 @@ const matteUniforms = () => ({
     matteMode: { value: 0 },
     matteRes: { value: new THREE.Vector2(1, 1) },
     matteCrop: { value: new THREE.Vector2(1, 1) },
+    tScanDepth: { value: null },
+    scanOcclude: { value: 0 },
 });
 
 const COLOUR = /* glsl */`
@@ -206,6 +213,72 @@ function cutMaterial() {
         depthWrite: false,
         side: THREE.DoubleSide,
     });
+}
+
+/**
+ * A video shown across a window, under the window's own mask (its feather and
+ * its matte), solid inside it: it replaces whatever the window would show.
+ * The geometry carries `uv` across the window (for the mask) and `picUv` into
+ * the picture (outside 0..1 is the black around a contained picture).
+ */
+export function screenMaterial() {
+    return new THREE.ShaderMaterial({
+        uniforms: {
+            tVideo: { value: null },
+            brightness: { value: 1 },
+            saturation: { value: 1 },
+            cutoff: { value: 0.002 },
+            feather: { value: 0.02 },
+            ...matteUniforms(),
+        },
+        vertexShader: /* glsl */`
+            attribute vec2 picUv;
+            varying vec2 vUv;
+            varying vec2 vPic;
+            void main() {
+                vUv = uv;
+                vPic = picUv;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }`,
+        fragmentShader: /* glsl */`
+            uniform sampler2D tVideo;
+            uniform float brightness;
+            uniform float saturation;
+            uniform float cutoff;
+            varying vec2 vUv;
+            varying vec2 vPic;
+            ${EDGE}
+            void main() {
+                bool inside = vPic.x >= 0.0 && vPic.x <= 1.0 && vPic.y >= 0.0 && vPic.y <= 1.0;
+                vec3 c = inside ? texture2D(tVideo, vPic).rgb * brightness : vec3(0.0);
+                c = max(mix(vec3(dot(c, vec3(0.2126, 0.7152, 0.0722))), c, saturation), 0.0);
+                float a = edgeMask(vUv);
+                if (a < cutoff) discard;
+                gl_FragColor = vec4(c, a);
+                #include <encodings_fragment>
+            }`,
+        transparent: true,
+        // Part of the window's composite (drawn over the shot, not into the
+        // scene's depth); `screenDepthMaterial` stands in for it in the scene.
+        depthTest: false,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+    });
+}
+
+/**
+ * The same screen as a depth-only shape in the scene, where the screen is
+ * solid: it hides the 3D behind the screen, while 3D in front of it still
+ * draws. Shares `screen`'s uniforms, so mask and matte follow it.
+ */
+export function screenDepthMaterial(screen) {
+    const m = screenMaterial();
+    m.uniforms = { ...screen.uniforms, cutoff: { value: 0.5 } };
+    m.transparent = false;
+    m.colorWrite = false;
+    m.depthTest = true;
+    m.depthWrite = true;
+    return m;
 }
 
 function fxMaterial() {
@@ -280,6 +353,8 @@ export class WindowModel {
         this.frame = new THREE.Group();
         this.object.add(this.frame);
         this.size = [1, 1];
+        // Other materials drawn under this window's mask (its screen's).
+        this.maskedMats = [];
         this.sizeKey = '';
         this.sync(item);
     }
@@ -362,6 +437,13 @@ export class WindowModel {
 
     get hasFx() { return this.op.hueOn || this.op.sortOn; }
 
+    /** Forget the last sort (and any on its way), so it cannot show again stale. */
+    dropSort() {
+        if (!this.sort.rect && !this.sort.pending) return;
+        this.sort.rect = null;
+        this.sort.gen = (this.sort.gen || 0) + 1;
+    }
+
     /**
      * Hold the cut and effects to a matte this frame: `tex` the matte's
      * texture (null when it has none, or its matte is not loaded), `size`
@@ -369,12 +451,24 @@ export class WindowModel {
      */
     setMatte(tex, size, crop = null) {
         const mode = tex && this.op.matte ? (this.op.matteMode === 'outside' ? -1 : 1) : 0;
-        [this.cutMat, this.fxMat].forEach((m) => {
+        [this.cutMat, this.fxMat, ...this.maskedMats].forEach((m) => {
             const u = m.uniforms;
             u.matteMode.value = mode;
             u.tMatte.value = tex;
             u.matteRes.value.copy(size);
             if (crop) u.matteCrop.value.copy(crop); else u.matteCrop.value.set(1, 1);
+        });
+    }
+
+    /**
+     * Hide the window (its cut, effects and screen) wherever the scan stands
+     * in front of it: `tex` the scan's depth from the camera, or null.
+     */
+    setScanDepth(tex) {
+        const on = !!tex && !!this.op.hideBehindScan;
+        [this.cutMat, this.fxMat, ...this.maskedMats].forEach((m) => {
+            m.uniforms.tScanDepth.value = tex;
+            m.uniforms.scanOcclude.value = on ? 1 : 0;
         });
     }
 
@@ -553,8 +647,9 @@ export class WindowCompositor {
         r.readRenderTargetPixels(this.sortRT, 0, 0, w, h, buf);
         r.setRenderTarget(prev);
         const settings = win.sortSettings();
+        const gen = win.sort.gen || 0;
         const land = (bytes) => {
-            if (win.disposed) return;
+            if (win.disposed || (win.sort.gen || 0) !== gen) return;
             const data = new Uint8Array(bytes);
             let tex = win.sort.tex;
             if (!tex || tex.image.width !== w || tex.image.height !== h) {
