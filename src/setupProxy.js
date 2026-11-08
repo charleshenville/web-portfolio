@@ -1,7 +1,7 @@
 // Dev-server middleware (create-react-app loads this file by itself when
 // `npm start` runs; it is not part of the build).
 //
-// The Scan Compositor's asset library - which placed assets are screens and
+// The Compositor's asset library - which placed assets are screens and
 // where each screen's surface sits - is edited in the tool and has to outlive
 // the browser. This lets the tool write it straight back into the repo, to
 // the JSON the build bundles, so an edit made once is committed like any
@@ -122,8 +122,64 @@ function rotoProxy(req, res) {
     });
 }
 
-module.exports = function scanCompositorLibrary(app) {
+// ---- Compositor projects -----------------------------------------------------
+//
+// The compositor's project files live in the repo, in compositor-projects/,
+// so a project is committed like any other change. Outside src and public on
+// purpose: neither webpack nor the dev server's public watcher reloads the
+// page when one is saved. Like everything here it answers only this machine.
+
+const PROJECTS = path.join(__dirname, '..', 'compositor-projects');
+const PROJECTS_ROUTE = '/__compositor/projects';
+const PROJECT_MAX = 32 * 1024 * 1024; // camera paths add up
+const slug = (name) => String(name || '').trim().replace(/\.json$/i, '').replace(/[^a-zA-Z0-9 _.-]+/g, '-').slice(0, 80);
+
+function projectsRoute(req, res) {
+    if (!isLocal(req)) { res.status(403).end(); return; }
+    res.set('Cache-Control', 'no-store');
+    const name = slug(decodeURIComponent((req.path || '/').slice(1)));
+    if (req.method === 'GET' && !name) {
+        if (!fs.existsSync(PROJECTS)) { res.json([]); return; }
+        const list = fs.readdirSync(PROJECTS).filter((f) => f.endsWith('.json')).map((f) => {
+            const st = fs.statSync(path.join(PROJECTS, f));
+            return { name: f.replace(/\.json$/, ''), updated: st.mtimeMs, size: st.size };
+        }).sort((a, b) => b.updated - a.updated);
+        res.json(list);
+        return;
+    }
+    if (!name) { res.status(400).json({ error: 'no project name' }); return; }
+    const file = path.join(PROJECTS, `${name}.json`);
+    if (req.method === 'GET') {
+        if (!fs.existsSync(file)) { res.status(404).json({ error: 'no such project' }); return; }
+        res.type('application/json').send(fs.readFileSync(file, 'utf8'));
+        return;
+    }
+    if (req.method !== 'PUT' && req.method !== 'POST') { res.status(405).end(); return; }
+    let size = 0;
+    const chunks = [];
+    let failed = false;
+    req.on('data', (c) => {
+        size += c.length;
+        if (size > PROJECT_MAX) { failed = true; res.status(413).end(); req.destroy(); return; }
+        chunks.push(c);
+    });
+    req.on('end', () => {
+        if (failed) return;
+        const text = Buffer.concat(chunks).toString('utf8');
+        let data;
+        try { data = JSON.parse(text); } catch (e) { res.status(400).json({ error: 'not JSON' }); return; }
+        if (!data || data.format !== 'compositor-project') { res.status(400).json({ error: 'not a compositor project' }); return; }
+        fs.mkdirSync(PROJECTS, { recursive: true });
+        const tmp = `${file}.tmp`;
+        fs.writeFileSync(tmp, text.endsWith('\n') ? text : `${text}\n`);
+        fs.renameSync(tmp, file);
+        res.json({ ok: true, name, path: path.relative(path.join(__dirname, '..'), file) });
+    });
+}
+
+module.exports = function compositorDevServer(app) {
     app.use(ROTO_ROUTE, rotoProxy);
+    app.use(PROJECTS_ROUTE, projectsRoute);
 
     app.get(ROUTE, (req, res) => {
         if (!isLocal(req)) { res.status(403).end(); return; }

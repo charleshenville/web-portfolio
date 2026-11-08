@@ -27,6 +27,8 @@ function Nav() {
     const panelRef = useRef(null);
     const buttonRef = useRef(null);
     const isTool = /^\/vfx\/.+/.test(pathname);
+    // The compositor has its own top bar, with the logo in it for the way home.
+    const ownsChrome = pathname === '/vfx/compositor';
 
     // close on navigation
     useEffect(() => {
@@ -80,7 +82,7 @@ function Nav() {
 
             {/* The button lives outside the bar so it can stack above the open drawer,
                 which in turn covers the bar. */}
-            <div className={`${styles.dock} ${isTool ? styles.dockTool : ''}`}>
+            <div className={`${styles.dock} ${isTool ? styles.dockTool : ''}`} style={ownsChrome ? { display: 'none' } : undefined}>
                 <button
                     ref={buttonRef}
                     type="button"

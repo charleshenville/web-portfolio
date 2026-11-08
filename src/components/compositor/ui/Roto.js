@@ -1,8 +1,9 @@
-// The Scan Compositor's Roto mode: cut objects out of the take with SAM 2,
-// correct them, and publish them as mattes.
+// Roto mode: cut objects out of a take with SAM 2, correct them, and publish
+// them as mattes (moved here from the Scan Compositor).
 //
-// The panel lives in the Scene panel; the overlay is drawn over the footage
-// (a portal into the compositor's canvas box) while Roto mode is on. All the
+// The panel lives in the Take's inspector; the overlay is drawn over the
+// footage (a portal into the engine's stage, the box the canvas fills) while
+// Roto mode is on. All the
 // model work happens in backend/vidtrack/roto_server.py, reached through the
 // dev server - see lib/scanAssets/roto.js.
 //
@@ -23,8 +24,30 @@ import { createPortal } from 'react-dom';
 import {
     Eye, EyeOff, Trash2, Plus, Scissors, ChevronLeft, ChevronRight, Square, Undo2, FileDown,
 } from 'lucide-react';
-import { rotoApi, setWritten, mattesFor } from '../lib/scanAssets/roto';
-import styles from './vfx.module.css';
+import { rotoApi, setWritten, mattesFor } from '../../../lib/scanAssets/roto';
+import c from '../compositor.module.css';
+
+// The panel was written against the old tool's classes; these are the
+// compositor's equivalents.
+const styles = {
+    vfx_section: '',
+    vfx_sectionTitle: c.hidden,
+    vfx_hint: c.hint,
+    vfx_select: c.rotoBtn,
+    vfx_segRow: c.wideRow,
+    vfx_segBtn: c.btn,
+    vfx_segBtnOn: c.btnOn,
+    vfx_iconBtn: c.olToggle,
+    vfx_value: c.olTag,
+    vfx_playRow: c.rotoRow,
+    vfx_checkRow: c.rotoCheck,
+    vfx_switch: c.check,
+    vfx_switchOn: c.checkOn,
+    vfx_knob: c.hidden,
+    vfx_row: c.row,
+    vfx_label: c.rowLabel,
+    vfx_slider: c.slider,
+};
 
 const TOOLS = [['click', 'Click / box'], ['brush', 'Brush'], ['erase', 'Eraser']];
 const HIT_PX = 9; // how close (on screen) a press has to be to grab a click
@@ -595,7 +618,7 @@ export default function RotoEditor({
             {active && (
                 <>
                     {error && (
-                        <div className={styles.vfx_hint} style={{ opacity: 0.85, color: '#ff8080', marginBottom: 8 }}>
+                        <div className={styles.vfx_hint} style={{ color: '#ff8080', marginBottom: 8 }}>
                             {error}
                             {' '}
                             Rotoscoping runs SAM 2 on this machine through
@@ -780,7 +803,7 @@ export default function RotoEditor({
                                         <div style={{ height: 3, width: `${pct}%`, background: 'var(--accent)' }} />
                                     </div>
                                     <div className={styles.vfx_playRow}>
-                                        <span className={styles.vfx_hint} style={{ flex: 1, opacity: 0.8 }}>
+                                        <span className={styles.vfx_hint} style={{ flex: 1 }}>
                                             {job.kind === 'write' ? 'Writing mattes' : `Tracking ${objects.find((o) => o.id === job.obj)?.name || ''}`}
                                             {' '}
                                             {job.done}
@@ -795,7 +818,7 @@ export default function RotoEditor({
                                 </div>
                             )}
                             {(note || waiting) && (
-                                <div className={styles.vfx_hint} style={{ opacity: 0.75, marginBottom: 8 }}>
+                                <div className={styles.vfx_hint} style={{ marginBottom: 8 }}>
                                     {waiting ? 'Segmenting...' : note}
                                 </div>
                             )}

@@ -152,11 +152,13 @@ uniform float feather;
 uniform sampler2D tMatte;
 uniform float matteMode; // 0 none, 1 inside, -1 outside
 uniform vec2 matteRes;
+uniform vec2 matteCrop; // the footage's crop: (1, 1) when it fills the frame
 float edgeMask(vec2 uv) {
     float e = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
     float m = feather > 0.0 ? smoothstep(0.0, feather, e) : 1.0;
     if (matteMode != 0.0) {
-        float k = smoothstep(0.03, 0.97, texture2D(tMatte, gl_FragCoord.xy / matteRes).r);
+        vec2 mu = (gl_FragCoord.xy / matteRes - 0.5) * matteCrop + 0.5;
+        float k = smoothstep(0.03, 0.97, texture2D(tMatte, mu).r);
         m *= matteMode > 0.0 ? k : 1.0 - k;
     }
     return m;
@@ -166,6 +168,7 @@ const matteUniforms = () => ({
     tMatte: { value: null },
     matteMode: { value: 0 },
     matteRes: { value: new THREE.Vector2(1, 1) },
+    matteCrop: { value: new THREE.Vector2(1, 1) },
 });
 
 const COLOUR = /* glsl */`
@@ -362,15 +365,16 @@ export class WindowModel {
     /**
      * Hold the cut and effects to a matte this frame: `tex` the matte's
      * texture (null when it has none, or its matte is not loaded), `size`
-     * the drawing buffer.
+     * the drawing buffer, `crop` how the footage is cropped to the frame.
      */
-    setMatte(tex, size) {
+    setMatte(tex, size, crop = null) {
         const mode = tex && this.op.matte ? (this.op.matteMode === 'outside' ? -1 : 1) : 0;
         [this.cutMat, this.fxMat].forEach((m) => {
             const u = m.uniforms;
             u.matteMode.value = mode;
             u.tMatte.value = tex;
             u.matteRes.value.copy(size);
+            if (crop) u.matteCrop.value.copy(crop); else u.matteCrop.value.set(1, 1);
         });
     }
 

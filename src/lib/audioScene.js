@@ -1,8 +1,7 @@
-// Audio-reactive scene engine, shared by the Audio Visualizer and the Scan
-// Compositor. Both place the same kinds of item - point clouds sampled from a
-// PLY or a sphere, and dots flowing along a parametric curve - and drive them
-// from the same FFT, so the behaviour stays identical between the two tools
-// and there is only one copy of the maths to maintain.
+// Audio-reactive scene engine for the Compositor's point clouds (sampled
+// from a PLY or a sphere) and curves (dots flowing along a parametric
+// curve), driven from the spectrum, and the spectrum pulse on a take's own
+// scan points and wireframe.
 //
 // Everything here is renderer-agnostic: nothing touches a camera, a composer
 // or the DOM. A host supplies the scene graph and the animation loop.
@@ -136,8 +135,8 @@ export const sphereColorKey = (op) => SPHERE_COLOR_KEYS.map((k) => op[k]).join('
 
 // Menu layout. `scope` is 'object' (selected item) or 'global' (scene).
 // Object groups carry a `kind`: 'asset', 'curve', or 'both'. A host shows
-// whichever scopes it supports - the Scan Compositor has no fly camera or
-// composer, so it renders the object scope only.
+// whichever scopes it supports. (The Compositor lays its inspector out from
+// its own schema, compositor/model/schema.js.)
 export const PARAM_GROUPS = [
     {
         title: 'Geometry',

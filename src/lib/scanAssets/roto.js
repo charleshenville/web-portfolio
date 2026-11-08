@@ -1,4 +1,4 @@
-// Object mattes for the Scan Compositor: talking to the rotoscoping server
+// Object mattes for the Compositor: talking to the rotoscoping server
 // while making them, and playing the finished ones back in step with the
 // footage while compositing.
 //
@@ -290,15 +290,16 @@ export class HoldoutPass {
         this.scene = new THREE.Scene();
         this.cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
         this.maxMat = new THREE.ShaderMaterial({
-            uniforms: { tMatte: { value: null }, invert: { value: 0 } },
+            uniforms: { tMatte: { value: null }, invert: { value: 0 }, crop: { value: new THREE.Vector2(1, 1) } },
             vertexShader: QUAD_VERT,
             fragmentShader: /* glsl */`
                 uniform sampler2D tMatte;
                 uniform float invert;
+                uniform vec2 crop; // the footage's crop to the frame
                 varying vec2 vUv;
                 void main() {
                     // H.264 keeps a little noise in the flat areas; snap it.
-                    float m = smoothstep(0.03, 0.97, texture2D(tMatte, vUv).r);
+                    float m = smoothstep(0.03, 0.97, texture2D(tMatte, (vUv - 0.5) * crop + 0.5).r);
                     gl_FragColor = vec4(vec3(mix(m, 1.0 - m, invert)), 1.0);
                 }`,
             depthTest: false,
@@ -335,8 +336,12 @@ export class HoldoutPass {
         }
     }
 
-    /** Combine `textures` into the holdout target. */
-    build(textures, size) {
+    /**
+     * Combine `textures` into the holdout target. `crop` is how the footage
+     * is cropped to cover the frame ((1, 1) when it fills it exactly), so a
+     * matte lands on the object whatever shape the output is.
+     */
+    build(textures, size, crop = null) {
         this.ensure(size);
         const r = this.renderer;
         const prev = r.getRenderTarget();
@@ -344,6 +349,7 @@ export class HoldoutPass {
         r.setClearColor(0x000000, 1);
         r.clear(true, false, false);
         this.quad.material = this.maxMat;
+        if (crop) this.maxMat.uniforms.crop.value.copy(crop); else this.maxMat.uniforms.crop.value.set(1, 1);
         textures.forEach((tex) => {
             this.maxMat.uniforms.tMatte.value = tex;
             r.render(this.scene, this.cam);

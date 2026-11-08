@@ -1,4 +1,4 @@
-// The protagonist as a placed object in the Scan Compositor.
+// The protagonist as a placed object in the Compositor.
 //
 // tetra animates him from what a player is doing (walking, aiming, sliding);
 // none of that means anything on a bench, so this drives the same rig from a

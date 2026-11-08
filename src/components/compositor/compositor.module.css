@@ -1,0 +1,1248 @@
+/* ---- Compositor ----
+   The site's tool language (vfx.module.css): ink on black, mono controls,
+   square corners, one accent for state. Laid out like an editor: a bar on
+   top, the viewport with the sidebar beside it (pushing it, never over it),
+   the timeline underneath. */
+
+/* Menus and dialogs portal out to <body>, so they carry the palette too. */
+.root,
+.menu,
+.modal {
+    --fg: var(--ink);
+    --bg: var(--paper);
+    --raised: var(--paper-raised);
+    --line: rgba(236, 235, 230, 0.14);
+    --line-strong: rgba(236, 235, 230, 0.32);
+    --hover: rgba(236, 235, 230, 0.07);
+    /* Solid greys (the ink at 55% and 35% on the paper), not see-through
+       ink: where an icon's strokes cross, translucency shows the overlap. */
+    --dim: #878783;
+    --faint: #5a5a58;
+    --acc: var(--accent);
+    --rec: #ff3b3b;
+    color: var(--fg);
+    font-family: var(--mono);
+    font-size: 11px;
+}
+
+.menu button,
+.modal button {
+    font: inherit;
+    color: inherit;
+}
+
+.root {
+    --fg: var(--ink);
+    --bg: var(--paper);
+    --raised: var(--paper-raised);
+    --line: rgba(236, 235, 230, 0.14);
+    --line-strong: rgba(236, 235, 230, 0.32);
+    --hover: rgba(236, 235, 230, 0.07);
+    /* Solid greys (the ink at 55% and 35% on the paper), not see-through
+       ink: where an icon's strokes cross, translucency shows the overlap. */
+    --dim: #878783;
+    --faint: #5a5a58;
+    --acc: var(--accent);
+    --rec: #ff3b3b;
+    --side-w: 340px;
+    --tl-h: 280px;
+    position: fixed;
+    inset: 0;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) 5px var(--tl-h);
+    grid-template-columns: minmax(0, 1fr) auto;
+    background: #000;
+    color: var(--fg);
+    font-family: var(--mono);
+    font-size: 11px;
+    overflow: hidden;
+    user-select: none;
+}
+
+.root button {
+    font: inherit;
+    color: inherit;
+}
+
+/* ---- Top bar ---- */
+
+.bar {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 6px;
+    min-height: 48px;
+    padding: 6px 10px 6px 14px;
+    box-sizing: border-box;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg);
+    min-width: 0;
+}
+
+.bar > * {
+    flex-shrink: 0;
+}
+
+.bar > .status {
+    flex-shrink: 1;
+}
+
+.home {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: var(--fg);
+    text-decoration: none;
+    margin-right: 6px;
+}
+
+.homeLogo {
+    display: block;
+    width: 38px;
+    /* the extrusion rises above the flat mark */
+    padding-top: 4px;
+}
+
+.dirty {
+    color: var(--accent);
+    font-size: 9px;
+    margin-left: -2px;
+}
+
+.barGroup {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.barSep {
+    width: 1px;
+    height: 22px;
+    background: var(--line);
+    margin: 0 6px;
+}
+
+.title {
+    /* As the site's Menu word. */
+    font-family: var(--grotesk);
+    font-size: 16px;
+    font-weight: 400;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+}
+
+.projName {
+    background: none;
+    border: 1px solid transparent;
+    color: var(--dim);
+    font: inherit;
+    padding: 4px 6px;
+    width: 160px;
+    min-width: 60px;
+}
+
+.projName:hover,
+.projName:focus {
+    border-color: var(--line);
+    color: var(--fg);
+    outline: none;
+}
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 28px;
+    min-width: 28px;
+    padding: 0 8px;
+    background: none;
+    border: 1px solid transparent;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.btn:hover {
+    background: var(--hover);
+}
+
+.btn:disabled {
+    color: var(--faint) !important;
+    cursor: default;
+    background: none;
+}
+
+.btnOn,
+.btnOn:hover {
+    background: var(--accent);
+    color: var(--on-accent) !important;
+}
+
+.btnRec {
+    color: var(--rec) !important;
+}
+
+.btnRecOn {
+    background: var(--rec);
+    color: #fff !important;
+}
+
+.seg {
+    display: inline-flex;
+    border: 1px solid var(--line);
+}
+
+.seg .btn {
+    height: 26px;
+    border: none;
+}
+
+.time {
+    font-variant-numeric: tabular-nums;
+    min-width: 132px;
+    text-align: center;
+    color: var(--dim);
+}
+
+.spacer {
+    flex: 1;
+}
+
+.status {
+    flex: 1 1 0;
+    color: var(--faint);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    max-width: 320px;
+}
+
+.warn {
+    color: #ffb347;
+}
+
+/* ---- Viewport ---- */
+
+.view {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    background: #000;
+    overflow: hidden;
+}
+
+.mount {
+    position: absolute;
+    inset: 0;
+}
+
+.viewBadge {
+    position: absolute;
+    left: 10px;
+    top: 10px;
+    padding: 3px 6px;
+    background: rgba(0, 0, 0, 0.6);
+    color: var(--dim);
+    pointer-events: none;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 10px;
+}
+
+.viewHint {
+    position: absolute;
+    left: 10px;
+    bottom: 10px;
+    color: var(--faint);
+    pointer-events: none;
+    font-size: 10px;
+}
+
+.recBadge {
+    position: absolute;
+    right: 10px;
+    top: 10px;
+    padding: 3px 8px;
+    background: var(--rec);
+    color: #fff;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    pointer-events: none;
+}
+
+/* ---- Sidebar ---- */
+
+.side {
+    grid-row: 2 / 3;
+    grid-column: 2;
+    width: var(--side-w);
+    border-left: 1px solid var(--line);
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.sideClosed {
+    width: 0;
+    border: none;
+    overflow: hidden;
+}
+
+.tabs {
+    display: flex;
+    border-bottom: 1px solid var(--line);
+    flex: none;
+}
+
+.tab {
+    flex: 1;
+    height: 32px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--dim) !important;
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 10px !important;
+}
+
+.tab:hover {
+    color: var(--fg) !important;
+}
+
+.tabOn {
+    color: var(--fg) !important;
+    border-bottom-color: var(--fg);
+}
+
+.outliner {
+    flex: 0 1 46%;
+    min-height: 120px;
+    overflow-y: auto;
+    border-bottom: 1px solid var(--line);
+}
+
+.inspector {
+    flex: 1 1 54%;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.scroll::-webkit-scrollbar,
+.outliner::-webkit-scrollbar,
+.inspector::-webkit-scrollbar,
+.lanes::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+.scroll::-webkit-scrollbar-thumb,
+.outliner::-webkit-scrollbar-thumb,
+.inspector::-webkit-scrollbar-thumb,
+.lanes::-webkit-scrollbar-thumb {
+    background: var(--line-strong);
+}
+
+.olHead {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 26px;
+    padding: 0 6px 0 8px;
+    color: var(--faint);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 10px;
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    z-index: 1;
+}
+
+.olHead .btn {
+    height: 22px;
+    min-width: 22px;
+    padding: 0 4px;
+}
+
+.olRow {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 24px;
+    padding: 0 4px 0 calc(8px + var(--depth, 0) * 14px);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.olRow:hover {
+    background: var(--hover);
+}
+
+.olRowOn {
+    background: rgba(0, 0, 255, 0.38);
+}
+
+.olRowOn:hover {
+    background: rgba(0, 0, 255, 0.46);
+}
+
+.olName {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.olIcon {
+    flex: none;
+    color: var(--dim);
+    display: inline-flex;
+}
+
+.olTag {
+    color: var(--faint);
+    font-size: 10px;
+}
+
+.olToggle {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--faint) !important;
+    padding: 0;
+}
+
+.olToggle:hover {
+    color: var(--fg) !important;
+}
+
+.olToggleOn {
+    color: var(--fg) !important;
+}
+
+.olLinked {
+    color: var(--acc) !important;
+}
+
+.swatch {
+    width: 8px;
+    height: 8px;
+    flex: none;
+}
+
+.empty {
+    padding: 10px 12px;
+    color: var(--faint);
+    line-height: 1.5;
+}
+
+/* ---- Inspector ---- */
+
+.insHead {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line);
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    z-index: 2;
+}
+
+.insName {
+    flex: 1;
+    min-width: 0;
+    background: none;
+    border: 1px solid transparent;
+    font: inherit;
+    font-size: 12px;
+    color: var(--fg);
+    padding: 3px 4px;
+}
+
+.insName:hover,
+.insName:focus {
+    border-color: var(--line);
+    outline: none;
+}
+
+.insKind {
+    color: var(--faint);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 10px;
+}
+
+.group {
+    border-bottom: 1px solid var(--line);
+}
+
+.groupHead {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    height: 28px;
+    padding: 0 10px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--dim) !important;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 10px !important;
+    text-align: left;
+}
+
+.groupHead:hover {
+    color: var(--fg) !important;
+}
+
+.groupBody {
+    padding: 2px 10px 10px;
+}
+
+.hint {
+    color: var(--faint);
+    line-height: 1.5;
+    margin: 0 0 8px;
+}
+
+.row {
+    display: grid;
+    grid-template-columns: 104px minmax(0, 1fr) 58px;
+    align-items: center;
+    gap: 8px;
+    min-height: 24px;
+    position: relative;
+}
+
+.rowLabel {
+    color: var(--dim);
+    /* Long labels take a second line rather than being cut. */
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 0;
+}
+
+.linkDot {
+    width: 6px;
+    height: 6px;
+    flex: none;
+}
+
+.rowLinked .rowLabel {
+    color: var(--fg);
+}
+
+.slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 2px;
+    background: var(--line-strong);
+    outline: none;
+    cursor: pointer;
+    margin: 0;
+}
+
+.slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 9px;
+    height: 9px;
+    background: var(--fg);
+    border: none;
+    border-radius: 0;
+}
+
+.slider::-moz-range-thumb {
+    width: 9px;
+    height: 9px;
+    background: var(--fg);
+    border: none;
+    border-radius: 0;
+}
+
+.sliderWrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    height: 18px;
+}
+
+/* A linked slider shows its link's range as a band, and where the
+   controller has it right now as a tick. */
+.linkBand {
+    position: absolute;
+    height: 4px;
+    top: 7px;
+    opacity: 0.55;
+    pointer-events: none;
+}
+
+.liveTick {
+    position: absolute;
+    top: 3px;
+    width: 2px;
+    height: 12px;
+    pointer-events: none;
+}
+
+.num {
+    width: 100%;
+    box-sizing: border-box;
+    background: none;
+    border: 1px solid var(--line);
+    color: var(--fg);
+    font: inherit;
+    padding: 2px 4px;
+    text-align: right;
+    -moz-appearance: textfield;
+}
+
+.num::-webkit-outer-spin-button,
+.num::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.num:focus {
+    outline: none;
+    border-color: var(--line-strong);
+}
+
+.select {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    color: var(--fg);
+    font: inherit;
+    padding: 3px 4px;
+    grid-column: 2 / 4;
+}
+
+.select:focus {
+    outline: none;
+    border-color: var(--line-strong);
+}
+
+.check {
+    grid-column: 2 / 4;
+    justify-self: start;
+    width: 14px;
+    height: 14px;
+    border: 1px solid var(--line-strong);
+    background: none;
+    cursor: pointer;
+    padding: 0;
+}
+
+.checkOn {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+.color {
+    grid-column: 2 / 4;
+    width: 100%;
+    height: 20px;
+    padding: 0;
+    border: 1px solid var(--line);
+    background: none;
+    cursor: pointer;
+}
+
+.wide {
+    width: 100%;
+    margin-top: 4px;
+    border: 1px solid var(--line);
+    justify-content: center;
+}
+
+.wideRow {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+}
+
+.wideRow .btn {
+    /* At least as wide as its label; rows wrap rather than squeeze. */
+    flex: 1 1 auto;
+    min-width: max-content;
+    border: 1px solid var(--line);
+}
+
+/* ---- Link menu ---- */
+
+.menu {
+    position: fixed;
+    z-index: 200;
+    min-width: 200px;
+    max-width: 260px;
+    background: var(--raised);
+    border: 1px solid var(--line-strong);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+    padding: 4px 0;
+}
+
+.menuTitle {
+    padding: 6px 10px 4px;
+    color: var(--faint);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 10px;
+}
+
+.menuItem {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 5px 10px;
+    background: none;
+    border: none;
+    text-align: left;
+    cursor: pointer;
+}
+
+.menuItem:hover {
+    background: var(--hover);
+}
+
+.menuItemOn,
+.menuItemOn:hover {
+    background: var(--accent);
+    color: var(--on-accent);
+}
+
+.menuSep {
+    height: 1px;
+    background: var(--line);
+    margin: 4px 0;
+}
+
+.menuGrid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 2px;
+    padding: 2px 6px 6px;
+}
+
+.menuGrid .menuItem {
+    justify-content: center;
+    padding: 5px 4px;
+    border: 1px solid var(--line);
+}
+
+.menuRange {
+    display: grid;
+    grid-template-columns: 34px 1fr;
+    gap: 6px;
+    align-items: center;
+    padding: 3px 10px;
+}
+
+.mapCurve {
+    flex: none;
+}
+
+/* ---- Timeline ---- */
+
+.split {
+    grid-column: 1 / -1;
+    cursor: row-resize;
+    background: var(--line);
+}
+
+.split:hover {
+    background: var(--line-strong);
+}
+
+.timeline {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-rows: 30px minmax(0, 1fr);
+    background: var(--bg);
+    min-height: 0;
+}
+
+.tlBar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 8px;
+    border-bottom: 1px solid var(--line);
+}
+
+.tlBar .btn {
+    height: 24px;
+}
+
+.lanes {
+    position: relative;
+    overflow: auto;
+    min-height: 0;
+}
+
+.lanesInner {
+    position: relative;
+}
+
+.ruler {
+    position: sticky;
+    top: 0;
+    z-index: 4;
+    height: 22px;
+    display: flex;
+    background: var(--bg);
+    border-bottom: 1px solid var(--line);
+}
+
+.rulerPad {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    width: var(--head-w);
+    flex: none;
+    background: var(--bg);
+    border-right: 1px solid var(--line);
+}
+
+.rulerTrack {
+    position: relative;
+    flex: none;
+    cursor: col-resize;
+}
+
+.tick {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-left: 1px solid var(--line);
+    padding-left: 3px;
+    color: var(--faint);
+    font-size: 9px;
+    line-height: 22px;
+    pointer-events: none;
+}
+
+.lane {
+    display: flex;
+    border-bottom: 1px solid var(--line);
+    height: 40px;
+}
+
+.laneTall {
+    height: 56px;
+}
+
+.laneHead {
+    position: sticky;
+    left: 0;
+    z-index: 3;
+    width: var(--head-w);
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0 4px 0 8px;
+    background: var(--bg);
+    border-right: 1px solid var(--line);
+    cursor: pointer;
+    min-width: 0;
+}
+
+.laneHeadOn {
+    background: rgba(0, 0, 255, 0.28);
+}
+
+.laneName {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.laneBody {
+    position: relative;
+    flex: none;
+}
+
+.laneBodyKeys {
+    cursor: crosshair;
+}
+
+.clip {
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    overflow: hidden;
+    cursor: grab;
+    display: flex;
+    align-items: flex-start;
+    padding: 2px 6px;
+    box-sizing: border-box;
+    white-space: nowrap;
+    font-size: 10px;
+}
+
+.clipTake {
+    background: #24306b;
+}
+
+.clipVideo {
+    background: #2c4a3a;
+}
+
+.clipStage {
+    background: #4a2c4a;
+}
+
+.clipAudio {
+    background: #3d3420;
+}
+
+.clipMissing {
+    background: repeating-linear-gradient(45deg, #4a1f1f, #4a1f1f 6px, #2a1414 6px, #2a1414 12px);
+}
+
+.clipOn {
+    border-color: var(--fg);
+    box-shadow: inset 0 0 0 1px var(--fg);
+}
+
+.clipLabel {
+    position: relative;
+    z-index: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+}
+
+.clipWave {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.55;
+}
+
+.clipLoopMark {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-left: 1px dashed rgba(255, 255, 255, 0.35);
+    pointer-events: none;
+}
+
+.trim {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 7px;
+    cursor: ew-resize;
+    z-index: 2;
+}
+
+.trim:hover {
+    background: rgba(255, 255, 255, 0.25);
+}
+
+.trimL {
+    left: 0;
+}
+
+.trimR {
+    right: 0;
+}
+
+.playhead {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: #ff4d4d;
+    z-index: 5;
+    pointer-events: none;
+}
+
+.playheadKnob {
+    position: absolute;
+    top: 0;
+    left: -5px;
+    width: 11px;
+    height: 10px;
+    background: #ff4d4d;
+    clip-path: polygon(0 0, 100% 0, 50% 100%);
+}
+
+.seg2 {
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    box-sizing: border-box;
+    border-left: 2px solid rgba(0, 0, 0, 0.6);
+    padding: 2px 5px;
+    font-size: 10px;
+    overflow: hidden;
+    white-space: nowrap;
+    color: #000;
+    cursor: pointer;
+}
+
+/* A selected Switch: every segment outlined, as a selected clip is. */
+.seg2On {
+    box-shadow: inset 0 0 0 1px var(--fg);
+}
+
+/* The lane of whatever track or controller is selected. */
+.laneBodyOn {
+    background: rgba(0, 0, 255, 0.12);
+}
+
+.cutHandle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 6px;
+    margin-left: -3px;
+    cursor: ew-resize;
+    z-index: 2;
+}
+
+.key {
+    position: absolute;
+    width: 9px;
+    height: 9px;
+    margin: -5px 0 0 -5px;
+    transform: rotate(45deg);
+    background: var(--fg);
+    cursor: grab;
+    z-index: 2;
+}
+
+.keyOn {
+    background: var(--acc);
+    outline: 1px solid var(--fg);
+}
+
+.trace {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.hitMark {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    pointer-events: none;
+}
+
+.dropHint {
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    border: 1px dashed var(--fg);
+    pointer-events: none;
+    z-index: 3;
+}
+
+/* ---- Overlays ---- */
+
+.modal {
+    position: fixed;
+    inset: 0;
+    z-index: 150;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.dialog {
+    width: min(460px, calc(100vw - 32px));
+    max-height: 70vh;
+    overflow-y: auto;
+    background: var(--raised);
+    border: 1px solid var(--line-strong);
+    padding: 14px;
+}
+
+.dialogTitle {
+    font-family: var(--grotesk);
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0 0 10px;
+}
+
+.listItem {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 8px;
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+    cursor: pointer;
+}
+
+.listItem:hover {
+    background: var(--hover);
+}
+
+.progress {
+    height: 3px;
+    background: var(--line);
+    margin: 10px 0;
+}
+
+.progressBar {
+    height: 100%;
+    background: var(--accent);
+}
+
+/* Narrower windows: labels give way to icons, then the bar takes a second
+   row rather than cutting anything off. */
+@media (max-width: 1280px) {
+    .btnLabel {
+        display: none;
+    }
+
+    .status {
+        max-width: 200px;
+    }
+}
+
+@media (max-width: 980px) {
+    .projName {
+        width: 110px;
+    }
+
+    .time {
+        min-width: 0;
+    }
+
+    .status {
+        order: 10;
+        flex-basis: 100%;
+        max-width: none;
+    }
+}
+
+@media (max-width: 820px) {
+    .root {
+        --side-w: 280px;
+    }
+}
+
+/* ---- Roto panel (ported) ---- */
+
+.hidden {
+    display: none !important;
+}
+
+.rotoBtn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    min-height: 28px;
+    box-sizing: border-box;
+    background: none;
+    border: 1px solid var(--line);
+    color: var(--fg);
+    font: inherit;
+    padding: 4px 8px;
+    cursor: pointer;
+    margin-bottom: 6px;
+}
+
+input.rotoBtn {
+    cursor: text;
+    justify-content: flex-start;
+}
+
+.rotoBtn:hover {
+    background: var(--hover);
+}
+
+.rotoBtn:disabled {
+    color: var(--faint);
+    cursor: default;
+}
+
+.rotoRow {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.rotoCheck {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 24px;
+    color: var(--dim);
+    cursor: pointer;
+}
+
+.rotoCheck .check {
+    pointer-events: none;
+}
+
+.seg5 {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 2px;
+    margin: 4px 0;
+}
+
+.seg5 .btn {
+    border: 1px solid var(--line);
+    min-width: 0;
+    padding: 0 2px;
+}
+
+/* A setting that silently cancels another, called out where you'd look. */
+.warnBox {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    margin-bottom: 8px;
+    border: 1px solid #ffb347;
+}
+
+.warnBox .hint {
+    flex: 1;
+    color: #ffb347;
+    opacity: 1;
+}
+
+.warnBox .btn {
+    border: 1px solid #ffb347;
+    flex: none;
+}

@@ -19,10 +19,7 @@ const PREVIEWS = {
     'pixel-sorter': { kind: 'video', clip: 'pixel-sorter' },
     ascii: { kind: 'engine' },
     procedural: { kind: 'video', clip: 'procedural' },
-    visualizer: {
-        kind: 'noise',
-        signature: { fractal: 'turbulence', scale: 18, density: 0.05, driftY: 0.3 },
-    },
+    compositor: { kind: 'video', clip: 'compositor' },
 };
 
 const FALLBACK = {

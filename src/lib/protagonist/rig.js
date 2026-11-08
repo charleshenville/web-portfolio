@@ -4,7 +4,7 @@ import { noiseTile } from './textures.js';
 
 // Ported from tetra (frontend/src/enemies/rig.js); keep the two in step. The
 // one addition is `bake` also keeping each part's feature edges and triangles
-// (`edges`, `surface`), which the Scan Compositor's wireframe and point-cloud
+// (`edges`, `surface`), which the Compositor's wireframe and point-cloud
 // views of the protagonist are drawn from.
 //
 // Robots are built from simple shapes (boxes, prisms, low-poly balls), each

@@ -1,4 +1,4 @@
-// The Scan Compositor's asset library: the GLBs that can be placed in a take
+// The Compositor's asset library: the GLBs that can be placed in a take
 // (props, screens and rigs), how big each arrives, and - for screens - where
 // on the model the screen surface is.
 //

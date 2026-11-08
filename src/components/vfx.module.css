@@ -209,7 +209,7 @@
     cursor: pointer;
 }
 
-/* Numeric override field (slider + typed value, same as the AudioVisualizer) */
+/* Numeric override field (slider + typed value) */
 .vfx_num {
     width: 100%;
     box-sizing: border-box;
@@ -560,90 +560,3 @@
     pointer-events: none;
 }
 
-/* ---- Scan compositor stage ----
-   The canvas is locked to the footage's aspect ratio and letterboxed inside
-   the stage, so image space and render space stay in step and the tracked
-   overlay cannot drift against the frame. */
-.vfx_scanWrap {
-    position: relative;
-    width: 100%;
-    height: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.vfx_scanCanvas {
-    position: relative;
-    background: #000;
-    line-height: 0;
-}
-
-.vfx_scanStatus {
-    position: absolute;
-    left: 0;
-    bottom: -18px;
-    font-size: 9px;
-    letter-spacing: 0.5px;
-    opacity: 0.45;
-    white-space: nowrap;
-}
-
-.vfx_presetGrid {
-    display: grid;
-    grid-template-columns: repeat(9, 1fr);
-    gap: 4px;
-    margin-bottom: 9px;
-}
-
-.vfx_cutList {
-    margin-top: 9px;
-    border: 1px solid var(--line);
-    max-height: 132px;
-    overflow-y: auto;
-}
-
-.vfx_cutRow {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 6px;
-    padding: 4px 5px;
-    border-bottom: 1px solid var(--line);
-}
-
-.vfx_cutRow:last-child {
-    border-bottom: none;
-}
-
-.vfx_cutJump {
-    flex: 1;
-    background: transparent;
-    border: none;
-    color: var(--fg);
-    font-family: inherit;
-    font-size: 10px;
-    text-align: left;
-    cursor: pointer;
-    padding: 2px 0;
-}
-
-.vfx_cutJump:hover {
-    color: var(--accent);
-}
-
-/* Tools that carry two control columns (the Scan Compositor's layer stack and
-   its audio-reactive scene) position each panel and toggle from the right in
-   JS, since which column an element belongs in depends on what else is open.
-   The transition is what makes a panel opening or closing push the others
-   aside rather than teleport them. */
-.vfx_slide {
-    transition: right 0.32s cubic-bezier(0.4, 0, 0.2, 1),
-        opacity 0.4s ease, background 0.2s ease;
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .vfx_slide {
-        transition: opacity 0.4s ease, background 0.2s ease;
-    }
-}

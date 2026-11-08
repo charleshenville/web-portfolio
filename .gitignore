@@ -36,3 +36,9 @@ yarn-error.log*
 
 # SAM 2 weights for the roto stage (fetched by roto_server.py / pipeline.py)
 /backend/vidtrack/checkpoints
+
+# Compositor work in progress: project saves (written by the dev server) and
+# roto sessions (clicks and paint, backend/vidtrack/roto_server.py). Media a
+# project uses is linked, never copied into the repo.
+/compositor-projects
+/backend/vidtrack/roto/

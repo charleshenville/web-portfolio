@@ -1,6 +1,5 @@
-// Dream-like haze: a faint chromatic split and a cool-warm colour shift,
-// shared by the audio visualizer and the scan compositor so the two read as
-// one look.
+// Dream-like haze: a faint chromatic split and a cool-warm colour shift.
+// The Compositor's Haze effect.
 const DreamHazeShader = {
     uniforms: {
         tDiffuse: { value: null },

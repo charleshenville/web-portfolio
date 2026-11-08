@@ -67,7 +67,7 @@ function App() {
                     <Route path="/vfx/:slug" element={<VfxTool />} />
                 </Route>
                 {/* old links */}
-                <Route path="/visualizer" element={<Navigate to="/vfx/visualizer" replace />} />
+                <Route path="/visualizer" element={<Navigate to="/vfx/compositor" replace />} />
                 <Route path="/asciitool" element={<Navigate to="/vfx/ascii" replace />} />
             </Routes>
         </>

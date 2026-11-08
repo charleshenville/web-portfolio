@@ -22,19 +22,9 @@ export const VFX_TOOLS = [
         blurb: 'Lit 3D models (glTF / SVG) rasterised to live ascii.',
     },
     {
-        slug: 'visualizer',
-        label: 'Audio Visualizer',
-        blurb: 'Audio-reactive point clouds, curves and post effects.',
-    },
-    {
-        slug: 'scan-compositor',
-        label: 'Scan Compositor',
-        blurb: 'Camera-tracked scans over their own footage, cut between views.',
-    },
-    {
-        slug: 'track-editor',
-        label: 'Track Editor',
-        blurb: 'Cut between parallel renders by hand or by the soundtrack.',
+        slug: 'compositor',
+        label: 'Compositor',
+        blurb: 'Tracked takes, scenes and video on a timeline, every parameter driven by the music.',
     },
 ];
 

@@ -10,13 +10,15 @@ const TOOLS = {
     'pixel-sorter': lazy(() => import('../PixelSorter')),
     ascii: lazy(() => import('../AsciiTool')),
     procedural: lazy(() => import('../ProceduralAscii')),
-    visualizer: lazy(() => import('../AudioVisualizer')),
-    'scan-compositor': lazy(() => import('../ScanCompositor')),
-    'track-editor': lazy(() => import('../TrackEditor')),
+    compositor: lazy(() => import('../compositor')),
 };
+
+// Tools the compositor replaced: their old links land on it.
+const MERGED = ['visualizer', 'scan-compositor', 'track-editor'];
 
 function VfxTool() {
     const { slug } = useParams();
+    if (MERGED.includes(slug)) return <Navigate to="/vfx/compositor" replace />;
     const Tool = TOOLS[slug];
     const tool = VFX_TOOLS.find((t) => t.slug === slug);
     if (!Tool || !tool) return <Navigate to="/vfx" replace />;
