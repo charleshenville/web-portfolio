@@ -26,6 +26,11 @@ export const VFX_TOOLS = [
         label: 'Compositor',
         blurb: 'Tracked takes, scenes and video on a timeline, every parameter driven by the music.',
     },
+    {
+        slug: 'quad-trees',
+        label: 'Quad Trees',
+        blurb: 'Images, video, procedural art and 3D scenes subdivided where they vary, as squares, circles or ascii.',
+    },
 ];
 
 export const NAV = [

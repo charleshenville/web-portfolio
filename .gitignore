@@ -42,3 +42,6 @@ yarn-error.log*
 # project uses is linked, never copied into the repo.
 /compositor-projects
 /backend/vidtrack/roto/
+
+# Quad Trees presets (written by the dev server from the Quad Trees tool)
+/quadtree-presets

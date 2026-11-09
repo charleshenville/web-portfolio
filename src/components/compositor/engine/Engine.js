@@ -38,6 +38,7 @@ import { TakeRig, poseAt, applyIntrinsics } from './takeRig';
 import { makeAdapter } from './adapters';
 import { VideoPool } from './media';
 import { GradeShader, GRADE_KEYS } from './passes';
+import QuadTreeFx from '../../quadtree/engine/threeFx';
 
 const D2R = Math.PI / 180;
 const OVERLAY_ONLY = 1 << LAYER.OVERLAY;
@@ -84,6 +85,9 @@ export default class Engine {
         this.flySpeed = 1.5;
         this.recording = null;
         this.status = '';
+        // Quad tree effects and windows, each with its own runner, by id.
+        this.qtFx = new Map();
+        this.qtActive = [];
     }
 
     on(kind, fn) {
@@ -292,6 +296,8 @@ export default class Engine {
         this.composer?.dispose();
         this.glowPasses?.forEach((g) => { g.bloom.dispose(); g.point.dispose(); });
         this.postPasses?.forEach(({ pass }) => pass.dispose?.());
+        this.qtFx?.forEach((fx) => fx.dispose());
+        this.qtFx?.clear();
         this.renderer?.dispose();
         this.stage?.remove();
     }
@@ -438,7 +444,7 @@ export default class Engine {
             return { id: e.id, point, bloom };
         });
         c.addPass(this.gamma);
-        this.postPasses = effects.filter((e) => e.type !== 'glow').map((e) => {
+        this.postPasses = effects.filter((e) => e.type !== 'glow' && e.type !== 'quadtree').map((e) => {
             const pass = new ShaderPass(e.type === 'grade' ? GradeShader : DreamHazeShader);
             c.addPass(pass);
             return { id: e.id, type: e.type, pass };
@@ -489,6 +495,14 @@ export default class Engine {
             }
             any = any || pass.enabled;
         });
+        // Quad trees run in compose (some on one track's picture only); here
+        // they are resolved, and their runners kept or let go.
+        this.qtActive = fx ? effects.filter((o) => o.type === 'quadtree').map((obj) => ({ obj, p: resolveObject(obj, frame) }))
+            .filter(({ p }) => p.visible !== false && (p.qt_mix ?? 1) > 0) : [];
+        any = any || this.qtActive.length > 0;
+        const keepQt = new Set(effects.filter((o) => o.type === 'quadtree').map((o) => o.id));
+        this.scenes.forEach((sc) => sc.adapters.forEach((a, id) => { if (a.model?.op?.qt_on) keepQt.add(`win:${id}`); }));
+        this.qtFx.forEach((q, id) => { if (!keepQt.has(id)) { q.dispose(); this.qtFx.delete(id); } });
         const cur = this.composer.renderTarget1;
         const sizeKey = `${size.x}x${size.y}`;
         if (cur.width !== size.x || cur.height !== size.y || this.composerSized !== sizeKey) {
@@ -1041,7 +1055,7 @@ export default class Engine {
                 const tex = opts.exportFrame ? opts.exportFrame(ov.media.id) : this.pool.follow(ov.clip, ov.media, t, { playing: !!opts.playing });
                 if (!tex) return;
                 const tr = resolveTrack(ov.track, frame);
-                layers.push({ tex, opacity: tr.opacity ?? 1, media: ov.media });
+                layers.push({ tex, opacity: tr.opacity ?? 1, media: ov.media, trackId: ov.track.id });
             });
         }
         if (!exporting) {
@@ -1086,6 +1100,7 @@ export default class Engine {
 
         this.compose({
             cam, behindCount, footage: this.bgQuad.visible, matteFootage: matteOnly && !!footageTex, holdTex, layers, S, frame, sortNow: exporting, objects,
+            baseTrack: base?.track?.id || null,
         });
         this.lastTime = t;
         this.dirty = false;
@@ -1291,8 +1306,45 @@ export default class Engine {
         return this.footRT.texture;
     }
 
+    /** The runner for a quad tree effect or window, made on first use. */
+    qtRunner(id) {
+        let q = this.qtFx.get(id);
+        if (!q) { q = new QuadTreeFx(this.renderer); this.qtFx.set(id, q); }
+        return q;
+    }
+
+    /**
+     * Run the quad tree effects `list` ({ obj, p }) in order on `rt` and draw
+     * the result back into it. The tree is laid out in output pixels.
+     */
+    applyQuadTrees(list, rt, t) {
+        if (!list.length) return;
+        const out = this.project.output || {};
+        let src = rt;
+        list.forEach(({ obj, p }) => {
+            src = this.qtRunner(obj.id).run({
+                src, params: { ...p, qt_mix: p.qt_mix ?? 1 }, outW: out.width || 1440, outH: out.height || 1080, time: t,
+            });
+        });
+        this.renderer.setRenderTarget(rt);
+        this.windows.blit(src.texture);
+    }
+
+    /** A window's quad tree, on the composite under its box, for its effect pass. */
+    windowQuadTree(win, cam, t) {
+        const rect = this.windows.screenRect(win, cam);
+        if (!rect) { win.qt = null; return; }
+        const out = this.project.output || {};
+        const k = (out.width || 1440) / Math.max(1, this.windows.size.x);
+        const id = win.item?.id || win.object.userData.itemId;
+        const res = this.qtRunner(`win:${id}`).run({
+            src: this.windows.compRT, rect, params: win.op, outW: rect.w * k, outH: rect.h * k, time: t,
+        });
+        win.qt = { tex: res.texture, rect };
+    }
+
     compose({
-        cam, behindCount, footage, matteFootage, holdTex, layers, S, frame, sortNow, objects,
+        cam, behindCount, footage, matteFootage, holdTex, layers, S, frame, sortNow, objects, baseTrack,
     }) {
         const r = this.renderer;
         const takeObj = objects.find((o) => o.type === 'take');
@@ -1372,6 +1424,7 @@ export default class Engine {
             }
             if (fxWins.length) {
                 fxWins.filter((w) => w.op.sortOn).forEach((w) => comp.sortWindow(w, cam, !!sortNow));
+                fxWins.forEach((w) => { if (w.op.qt_on) this.windowQuadTree(w, cam, frame.t); else w.qt = null; });
                 clearTo(target);
                 comp.blit(comp.compRT.texture);
                 wins.forEach((w) => { w.fxMesh.visible = fxWins.includes(w); comp.prepareFx(w); });
@@ -1402,7 +1455,50 @@ export default class Engine {
             this.holdout.apply(over);
         }
 
+        // Quad trees on the base track's picture (a take or stage), before
+        // the plain video layers go over it.
+        const qtOn = (target) => this.qtActive.filter(({ p }) => (p.qt_target || 'program') === target);
+        if (out && baseTrack) this.applyQuadTrees(qtOn(baseTrack), out, frame.t);
+
         // Plain video layers over the composite, before the effects.
+        const bufSize = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+        const layerScale = (L, q) => {
+            const img = L.tex.image;
+            const w = img?.videoWidth || img?.displayWidth || L.media.width || 16;
+            const h = img?.videoHeight || img?.displayHeight || L.media.height || 9;
+            const src = w / h;
+            const a = bufSize.x / Math.max(1, bufSize.y);
+            q.scale.set(a > src ? 1 : src / a, a > src ? a / src : 1, 1);
+        };
+        // A layer with a quad tree on its track: the layer alone, framed as
+        // it would be drawn, through the quad tree, then drawn as that.
+        layers.forEach((L) => {
+            const list = out ? qtOn(L.trackId) : [];
+            L.qt = null;
+            if (!list.length) return;
+            if (!this.qtLayerRT) {
+                this.qtLayerRT = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false });
+                this.qtLayerQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ depthTest: false, depthWrite: false }));
+                this.qtLayerScene = new THREE.Scene();
+                this.qtLayerScene.add(this.qtLayerQuad);
+            }
+            if (this.qtLayerRT.width !== bufSize.x || this.qtLayerRT.height !== bufSize.y) this.qtLayerRT.setSize(bufSize.x, bufSize.y);
+            const m = this.qtLayerQuad.material;
+            if (m.map !== L.tex) { m.map = L.tex; m.needsUpdate = true; }
+            layerScale(L, this.qtLayerQuad);
+            r.setRenderTarget(this.qtLayerRT);
+            r.setClearColor(0x000000, 1);
+            r.clear();
+            r.render(this.qtLayerScene, this.bgCamera);
+            const o = this.project.output || {};
+            let src = this.qtLayerRT;
+            list.forEach(({ obj, p }) => {
+                src = this.qtRunner(obj.id).run({
+                    src, params: p, outW: o.width || 1440, outH: o.height || 1080, time: frame.t,
+                });
+            });
+            L.qt = src.texture;
+        });
         if (layers.length) {
             r.setRenderTarget(out);
             while (this.layerQuads.length < layers.length) {
@@ -1414,19 +1510,18 @@ export default class Engine {
                 const L = layers[i];
                 q.visible = !!L;
                 if (!L) return;
-                if (q.material.map !== L.tex) { q.material.map = L.tex; q.material.needsUpdate = true; }
+                const map = L.qt || L.tex;
+                if (q.material.map !== map) { q.material.map = map; q.material.needsUpdate = true; }
                 q.material.opacity = L.opacity;
                 q.renderOrder = i;
-                const img = L.tex.image;
-                const w = img?.videoWidth || img?.displayWidth || L.media.width || 16;
-                const h = img?.videoHeight || img?.displayHeight || L.media.height || 9;
-                const src = w / h;
-                const aspect = this.renderer.getDrawingBufferSize(new THREE.Vector2());
-                const a = aspect.x / Math.max(1, aspect.y);
-                q.scale.set(a > src ? 1 : src / a, a > src ? a / src : 1, 1);
+                if (L.qt) q.scale.set(1, 1, 1);
+                else layerScale(L, q);
             });
             r.render(this.layerScene, this.bgCamera);
         }
+
+        // Quad trees over the whole program, before the other effects.
+        if (out) this.applyQuadTrees(qtOn('program'), out, frame.t);
 
         if (fx) {
             r.setRenderTarget(null);

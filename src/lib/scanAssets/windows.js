@@ -290,6 +290,9 @@ function fxMaterial() {
             sortRect: { value: new THREE.Vector4(0, 0, 1, 1) },
             useSort: { value: 0 },
             sortMix: { value: 1 },
+            tQt: { value: null },
+            qtRect: { value: new THREE.Vector4(0, 0, 1, 1) },
+            useQt: { value: 0 },
             hueOn: { value: 0 },
             hue: { value: 0 },
             sat: { value: 1 },
@@ -304,6 +307,9 @@ function fxMaterial() {
             uniform vec4 sortRect;
             uniform float useSort;
             uniform float sortMix;
+            uniform sampler2D tQt;
+            uniform vec4 qtRect;
+            uniform float useQt;
             uniform float hueOn;
             uniform float hue;
             uniform float sat;
@@ -325,6 +331,11 @@ function fxMaterial() {
                     if (su.x >= 0.0 && su.y >= 0.0 && su.x <= 1.0 && su.y <= 1.0) {
                         c = mix(c, texture2D(tSort, su).rgb, sortMix);
                     }
+                }
+                // A quad tree over the window's bounds (linear, mixed already).
+                if (useQt > 0.5) {
+                    vec2 qu = (gl_FragCoord.xy - qtRect.xy) / qtRect.zw;
+                    if (qu.x >= 0.0 && qu.y >= 0.0 && qu.x <= 1.0 && qu.y <= 1.0) c = texture2D(tQt, qu).rgb;
                 }
                 if (hueOn > 0.5) c = toLinear(clamp(hueRotate(toSrgb(c), hue), 0.0, 1.0));
                 gl_FragColor = vec4(c, edgeMask(vUv));
@@ -435,7 +446,7 @@ export class WindowModel {
         this.frame.visible = w > 1e-4 && h > 1e-4;
     }
 
-    get hasFx() { return this.op.hueOn || this.op.sortOn; }
+    get hasFx() { return this.op.hueOn || this.op.sortOn || !!this.op.qt_on; }
 
     /** Forget the last sort (and any on its way), so it cannot show again stale. */
     dropSort() {
@@ -693,6 +704,13 @@ export class WindowCompositor {
         if (u.useSort.value) {
             u.tSort.value = win.sort.tex;
             u.sortRect.value.set(rect.x, rect.y, rect.w, rect.h);
+        }
+        // The quad tree the compositor drew for this window this frame.
+        const qt = win.qt;
+        u.useQt.value = win.op.qt_on && qt?.tex && qt.rect ? 1 : 0;
+        if (u.useQt.value) {
+            u.tQt.value = qt.tex;
+            u.qtRect.value.set(qt.rect.x, qt.rect.y, qt.rect.w, qt.rect.h);
         }
     }
 

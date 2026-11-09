@@ -11,6 +11,7 @@ const TOOLS = {
     ascii: lazy(() => import('../AsciiTool')),
     procedural: lazy(() => import('../ProceduralAscii')),
     compositor: lazy(() => import('../compositor')),
+    'quad-trees': lazy(() => import('../quadtree')),
 };
 
 // Tools the compositor replaced: their old links land on it.

@@ -7,7 +7,7 @@ import { createPortal } from 'react-dom';
 import {
     Eye, EyeOff, Move3d, Box, Camera, Sun, Sparkles, Activity, Plus, Trash2, Copy,
     ChevronDown, ChevronRight, Spline, PersonStanding, Square, Monitor, AlertTriangle, Clapperboard,
-    Circle, Layers, ArrowUp, ArrowDown, Shapes, Frame, Type,
+    Circle, Layers, ArrowUp, ArrowDown, Shapes, Frame, Type, LayoutGrid,
 } from 'lucide-react';
 import { Film, Music } from './icons';
 import { OBJECT_TYPES, ADDABLE, paramDefs } from '../model/schema';
@@ -34,6 +34,7 @@ const ICONS = {
     glow: Sparkles,
     haze: Sparkles,
     grade: Sparkles,
+    quadtree: LayoutGrid,
 };
 
 const MEDIA_ICONS = { take: Clapperboard, video: Film, audio: Music, stage: Box };
@@ -222,7 +223,7 @@ function Outliner() {
                     />
                 )}
             >
-                {effects.length === 0 && <div className={styles.empty}>Glow, haze and grade go here, applied in order.</div>}
+                {effects.length === 0 && <div className={styles.empty}>Glow, haze, grade and quad trees go here, applied in order.</div>}
                 {effects.map((o) => <ObjectRow key={o.id} obj={o} />)}
             </Section>
 

@@ -28,6 +28,8 @@ import {
     LOOK_FIELDS, LOOK_DEFAULTS, LOOK_PARTS, isNeutralLook, normaliseLook,
 } from '../../../lib/scanAssets/takeLooks';
 import { PUBLIC_VIDEOS } from '../../../lib/scanAssets/screenVideo';
+import { listPresets, loadPreset, readPresetFile } from '../../quadtree/presets';
+import { presetToParams } from '../../quadtree/fxParams';
 import { ParamRow, NumberBox } from './Params';
 import { useComp, useTick } from './context';
 import { ICONS } from './Sidebar';
@@ -191,6 +193,73 @@ function WindowMatte({ obj }) {
                     </select>
                 </Field>
             )}
+        </>
+    );
+}
+
+/**
+ * A quad tree's source and look: for the effect, which picture it runs on
+ * (the whole program, or one video track while it shows); for both it and a
+ * window, a Quad Trees preset to load. A preset's own seed is never used: the
+ * picture here is the seed.
+ */
+function QuadTreePanel({ obj }) {
+    const comp = useComp();
+    const fileRef = useRef(null);
+    const [presets, setPresets] = useState(null);
+    const [msg, setMsg] = useState('');
+    React.useEffect(() => { listPresets().then(setPresets); }, []);
+    const apply = (pr, name) => {
+        comp.updateObject(obj.id, (o) => ({
+            ...o,
+            params: { ...o.params, ...presetToParams(pr.settings), ...(o.type === 'window' ? { qt_on: true } : {}) },
+        }), true);
+        setMsg(`Loaded ${name}. Links on its parameters are kept.`);
+    };
+    const tracks = comp.project.tracks.filter((t) => t.kind === 'video');
+    const target = obj.params.qt_target || 'program';
+    return (
+        <>
+            {obj.type === 'quadtree' && (
+                <Field label="Apply to">
+                    <select className={styles.select} value={target} onChange={(e) => comp.setParam(obj.id, 'qt_target', e.target.value, true)}>
+                        <option value="program">Whole program</option>
+                        {tracks.map((t) => <option key={t.id} value={t.id}>{`Track ${t.name}`}</option>)}
+                        {target !== 'program' && !tracks.some((t) => t.id === target) && <option value={target}>Missing track</option>}
+                    </select>
+                </Field>
+            )}
+            <Field label="Preset">
+                {presets ? (
+                    <select
+                        className={styles.select}
+                        value=""
+                        onChange={async (e) => {
+                            const name = e.target.value;
+                            if (!name) return;
+                            try { apply(await loadPreset(name), name); } catch (err) { setMsg(err.message); }
+                        }}
+                    >
+                        <option value="">{presets.length ? 'Load…' : 'None saved yet'}</option>
+                        {presets.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
+                    </select>
+                ) : (
+                    <button type="button" className={styles.btn} onClick={() => fileRef.current.click()}>Open preset…</button>
+                )}
+            </Field>
+            <input
+                ref={fileRef}
+                type="file"
+                accept=".json,application/json"
+                style={{ display: 'none' }}
+                onChange={async (e) => {
+                    const f = e.target.files?.[0];
+                    e.target.value = '';
+                    if (!f) return;
+                    try { const pr = await readPresetFile(f); apply(pr, pr.name); } catch (err) { setMsg(err.message); }
+                }}
+            />
+            {msg && <p className={styles.hint}>{msg}</p>}
         </>
     );
 }
@@ -458,6 +527,7 @@ const CUSTOM = {
     library: LibraryPanel,
     windowCorners: WindowCorners,
     pulseShape: PulseShape,
+    quadTree: QuadTreePanel,
 };
 
 // ---- Objects ---------------------------------------------------------------------

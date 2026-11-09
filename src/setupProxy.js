@@ -177,6 +177,64 @@ function projectsRoute(req, res) {
     });
 }
 
+// ---- Quad Trees presets -------------------------------------------------------
+//
+// Looks saved from the Quad Trees tool, into quadtree-presets/ (gitignored,
+// like compositor-projects/). The compositor's Quad Tree effect and windows
+// load them from here too. Only settings are saved, never a seed's file.
+
+const PRESETS = path.join(__dirname, '..', 'quadtree-presets');
+const PRESETS_ROUTE = '/__quadtree/presets';
+const PRESET_MAX = 256 * 1024;
+
+function presetsRoute(req, res) {
+    if (!isLocal(req)) { res.status(403).end(); return; }
+    res.set('Cache-Control', 'no-store');
+    const name = slug(decodeURIComponent((req.path || '/').slice(1)));
+    if (req.method === 'GET' && !name) {
+        if (!fs.existsSync(PRESETS)) { res.json([]); return; }
+        const list = fs.readdirSync(PRESETS).filter((f) => f.endsWith('.json')).map((f) => {
+            const st = fs.statSync(path.join(PRESETS, f));
+            return { name: f.replace(/\.json$/, ''), updated: st.mtimeMs };
+        }).sort((a, b) => a.name.localeCompare(b.name));
+        res.json(list);
+        return;
+    }
+    if (!name) { res.status(400).json({ error: 'no preset name' }); return; }
+    const file = path.join(PRESETS, `${name}.json`);
+    if (req.method === 'GET') {
+        if (!fs.existsSync(file)) { res.status(404).json({ error: 'no such preset' }); return; }
+        res.type('application/json').send(fs.readFileSync(file, 'utf8'));
+        return;
+    }
+    if (req.method === 'DELETE') {
+        if (fs.existsSync(file)) fs.unlinkSync(file);
+        res.json({ ok: true, name });
+        return;
+    }
+    if (req.method !== 'PUT' && req.method !== 'POST') { res.status(405).end(); return; }
+    const chunks = [];
+    let size = 0;
+    let failed = false;
+    req.on('data', (c) => {
+        size += c.length;
+        if (size > PRESET_MAX) { failed = true; res.status(413).end(); req.destroy(); return; }
+        chunks.push(c);
+    });
+    req.on('end', () => {
+        if (failed) return;
+        const text = Buffer.concat(chunks).toString('utf8');
+        let data;
+        try { data = JSON.parse(text); } catch (e) { res.status(400).json({ error: 'not JSON' }); return; }
+        if (!data || data.format !== 'quadtree-preset') { res.status(400).json({ error: 'not a quad tree preset' }); return; }
+        fs.mkdirSync(PRESETS, { recursive: true });
+        const tmp = `${file}.tmp`;
+        fs.writeFileSync(tmp, text.endsWith('\n') ? text : `${text}\n`);
+        fs.renameSync(tmp, file);
+        res.json({ ok: true, name, path: path.relative(path.join(__dirname, '..'), file) });
+    });
+}
+
 // ---- Scan colour corrections ----------------------------------------------------
 //
 // Per take, saved into src/data/takeLooks.json (in src so saving never
@@ -214,6 +272,7 @@ module.exports = function compositorDevServer(app) {
     app.use(LOOKS_ROUTE, looksRoute);
     app.use(ROTO_ROUTE, rotoProxy);
     app.use(PROJECTS_ROUTE, projectsRoute);
+    app.use(PRESETS_ROUTE, presetsRoute);
 
     app.get(ROUTE, (req, res) => {
         if (!isLocal(req)) { res.status(403).end(); return; }

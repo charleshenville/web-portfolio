@@ -23,6 +23,7 @@ import { SACKBOY_DEFAULTS } from '../../../lib/scanAssets/sackboy';
 import { PROP_DEFAULTS } from '../../../lib/scanAssets/props';
 import { FONTS } from '../engine/textObject';
 import { WINDOW_DEFAULTS } from '../../../lib/scanAssets/windows';
+import { QT_GROUPS, QT_DEFAULTS } from '../../quadtree/fxParams';
 
 // The colour grade's parameters (the track editor's, which this replaces).
 const GRADE_PARAMS = [
@@ -539,6 +540,8 @@ export const OBJECT_TYPES = {
             sortMod: { ...WINDOW_DEFAULTS.sortMod, source: 'off' },
             screenOn: false, video: null, videoOffset: 0, videoRate: 1, brightness: 1.4, videoSaturation: 1, fit: 'cover', rotate: 0, flipX: false,
             hideBehindScan: false,
+            ...QT_DEFAULTS,
+            qt_on: false,
         },
         groups: [
             { title: 'Corners', custom: 'windowCorners' },
@@ -581,6 +584,24 @@ export const OBJECT_TYPES = {
                     num('sortMix', 'Mix', 0, 1, 0.01, 1, { when: (p) => p.sortOn }),
                 ],
             },
+            // A quad tree over the window: the Quad Trees tool's look, drawn
+            // on what is under the window and held to its shape.
+            {
+                title: 'Quad tree',
+                collapsed: true,
+                custom: 'quadTree',
+                hint: 'Load a Quad Trees preset, or set it up here. The picture under the window is the seed.',
+                params: [
+                    bool('qt_on', 'On', false),
+                    num('qt_mix', 'Mix', 0, 1, 0.01, 1, { when: (p) => p.qt_on }),
+                ],
+            },
+            ...QT_GROUPS.map((g) => ({
+                ...g,
+                title: `Quad tree · ${g.title}`,
+                collapsed: true,
+                when: (p) => !!p.qt_on && (!g.when || g.when(p)),
+            })),
             {
                 title: 'Size over time',
                 collapsed: true,
@@ -698,6 +719,21 @@ export const OBJECT_TYPES = {
         groups: [{ title: 'Haze', params: [VISIBLE, num('amount', 'Amount', 0, 2, 0.01, 0.7)] }],
     },
 
+    quadtree: {
+        label: 'Quad Tree',
+        category: 'effect',
+        defaults: { visible: true, qt_target: 'program', ...QT_DEFAULTS },
+        groups: [
+            {
+                title: 'Quad tree',
+                custom: 'quadTree',
+                hint: 'The Quad Trees tool as an effect: over the whole program, or over one video track (a take or a video) while it shows. The picture is the seed; a preset brings its look.',
+                params: [VISIBLE, num('qt_mix', 'Mix', 0, 1, 0.01, 1)],
+            },
+            ...QT_GROUPS,
+        ],
+    },
+
     grade: {
         label: 'Grade',
         category: 'effect',
@@ -713,7 +749,7 @@ export const OBJECT_TYPES = {
 export const ADDABLE = {
     placed: ['cloud', 'curve', 'protagonist', 'sackboy', 'prop', 'window', 'text'],
     camera: ['camera'],
-    effect: ['glow', 'haze', 'grade'],
+    effect: ['glow', 'haze', 'grade', 'quadtree'],
 };
 
 // Parameters of the timeline's tracks, linkable like any object's: cutting
