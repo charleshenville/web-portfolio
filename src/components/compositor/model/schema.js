@@ -254,6 +254,7 @@ export const OBJECT_TYPES = {
         unique: true,
         defaults: {
             visible: false, depthLayer: 'front', level: 'medium', color: '#e8c56a', opacity: 0.5, thickness: 0.0015, react: 0,
+            glow: 0, glowSpread: 6,
         },
         groups: [{
             title: 'Wireframe',
@@ -265,6 +266,13 @@ export const OBJECT_TYPES = {
                 num('opacity', 'Opacity', 0, 1, 0.01, 0.5),
                 num('react', 'Spectrum pulse', 0, 3, 0.01, 0),
                 LAYER,
+            ],
+        }, {
+            title: 'Glow',
+            hint: 'The lines give off light of their own: a hotter core and a soft halo round each line. Only the wireframe glows.',
+            params: [
+                num('glow', 'Glow', 0, 4, 0.01, 0),
+                num('glowSpread', 'Glow spread', 1, 30, 0.1, 6, { when: (p) => p.glow > 0 }),
             ],
         }],
     },

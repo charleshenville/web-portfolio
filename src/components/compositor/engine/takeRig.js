@@ -15,7 +15,9 @@ import {
 } from '../../../lib/audioScene';
 import { LAYER } from '../../../lib/scanAssets/windows';
 import { takeBase } from './media';
-import { makeLookUniforms, setLookUniforms, hookLook } from '../../../lib/scanAssets/takeLooks';
+import {
+    makeLookUniforms, setLookUniforms, hookLook, normaliseLook,
+} from '../../../lib/scanAssets/takeLooks';
 
 export const ENV_LAYER = 1;
 const D2R = Math.PI / 180;
@@ -78,6 +80,30 @@ export function applyIntrinsics(cam, intr, aspect = null) {
     cam.fov = THREE.MathUtils.radToDeg(2 * Math.atan(height / (2 * fy)));
 }
 
+/**
+ * The wireframe's halo: the same lines drawn wider and added on top, each
+ * fading from its centre line to nothing at its edge, so the wire looks lit
+ * from within rather than bloomed afterwards. Round caps are left off: where
+ * many edges meet at a vertex they would pile up into bright dots.
+ */
+function wireHaloMaterial(color) {
+    const m = new LineMaterial({
+        color: new THREE.Color(color), transparent: true, depthWrite: false, linewidth: 1, blending: THREE.AdditiveBlending,
+    });
+    m.onBeforeCompile = (shader) => {
+        shader.fragmentShader = shader.fragmentShader.replace(
+            'gl_FragColor = vec4( diffuseColor.rgb, alpha );',
+            `if ( abs( vUv.y ) > 1.0 ) discard;
+            float gd = clamp( abs( vUv.x ), 0.0, 1.0 );
+            // Bright near the line with a long soft tail, nothing at the edge.
+            float glow = ( exp( -5.0 * gd ) - exp( -5.0 ) ) / ( 1.0 - exp( -5.0 ) );
+            gl_FragColor = vec4( diffuseColor.rgb, alpha * glow );`,
+        );
+    };
+    m.customProgramCacheKey = () => 'wireHalo';
+    return m;
+}
+
 export class TakeRig {
     constructor(take, root, onChange) {
         this.take = take;
@@ -94,9 +120,10 @@ export class TakeRig {
         this.textured = null;
         this.status = 'loading';
         this.disposed = false;
-        // The take's colour correction, shared by its textured mesh and its
-        // scan-coloured points (lib/scanAssets/takeLooks).
-        this.look = makeLookUniforms();
+        // The take's colour corrections, one for its textured mesh and one for
+        // its scan-coloured points (lib/scanAssets/takeLooks).
+        this.meshLook = makeLookUniforms();
+        this.pointLook = makeLookUniforms();
         // Points and wireframe swell and slide together, in their own frame.
         this.overlay = new THREE.Group();
         root.add(this.overlay);
@@ -121,7 +148,7 @@ export class TakeRig {
             geo.applyMatrix4(src.matrixWorld);
             geo.computeVertexNormals();
             this.textured = src.material;
-            hookLook(this.textured, this.look, 'map_fragment');
+            hookLook(this.textured, this.meshLook, 'map_fragment');
             this.mesh = new THREE.Mesh(geo, src.material);
             this.mesh.frustumCulled = false;
             this.root.add(this.mesh);
@@ -140,7 +167,7 @@ export class TakeRig {
                 dirs: null, dists: null, freqIndex: null, key: null, dirty: false,
             };
             const cloudMat = new THREE.PointsMaterial({ transparent: true });
-            hookLook(cloudMat, this.look, 'color_fragment');
+            hookLook(cloudMat, this.pointLook, 'color_fragment');
             this.cloud = new THREE.Points(cloudGeo, cloudMat);
             this.cloud.frustumCulled = false;
             this.overlay.add(this.cloud);
@@ -158,8 +185,12 @@ export class TakeRig {
         this.onChange?.();
     }
 
-    /** Push a correction (or null for none) onto the scan's materials. */
-    applyLook(look) { setLookUniforms(this.look, look); }
+    /** Push a take's look (or null for none) onto the mesh and the points. */
+    applyLook(look) {
+        const n = normaliseLook(look);
+        setLookUniforms(this.meshLook, n.mesh);
+        setLookUniforms(this.pointLook, n.points);
+    }
 
     get sphere() { return this.cloud?.geometry?.boundingSphere || null; }
     get duration() { return this.track ? this.track.frame_count / this.track.fps : 0; }
@@ -218,6 +249,12 @@ export class TakeRig {
             const mat = new LineMaterial({ color: new THREE.Color(color), transparent: true, depthWrite: false, linewidth: 1 });
             this.wire = new LineSegments2(lineGeo, mat);
             this.wire.frustumCulled = false;
+            // Its glow shares the lines (so it pulses with them) and is drawn
+            // with the wire, on whatever layer the wire is on.
+            this.wireHalo = new LineSegments2(lineGeo, wireHaloMaterial(color));
+            this.wireHalo.frustumCulled = false;
+            this.wireHalo.visible = false;
+            this.wire.add(this.wireHalo);
             this.wireEdges = topo.edges;
             this.wireBuffer = lineGeo.attributes.instanceStart.data;
             this.wireState = { base: topo.positions, dirs: null, dists: null, freqIndex: null, key: null, dirty: false, moved: null };
@@ -235,6 +272,8 @@ export class TakeRig {
         this.wire.removeFromParent();
         this.wire.geometry.dispose();
         this.wire.material.dispose();
+        this.wireHalo?.material.dispose();
+        this.wireHalo = null;
         this.wire = null;
         this.wireLevel = null;
     }
@@ -285,10 +324,22 @@ export class TakeRig {
             this.wire.visible = !!W && W.visible;
             if (W) {
                 const m = this.wire.material;
-                m.color.set(W.color);
+                const glow = Math.max(0, W.glow || 0);
+                // An emissive line runs hot: its core brightens towards white
+                // as the glow goes up.
+                m.color.set(W.color).multiplyScalar(1 + glow * 0.5);
                 m.opacity = Math.max(0, Math.min(1, W.opacity));
                 m.resolution.set(drawSize.x, drawSize.y);
                 m.linewidth = Math.max(0.5, W.thickness * drawSize.y);
+                const halo = this.wireHalo;
+                if (halo) {
+                    halo.visible = glow > 0.001 && W.opacity > 0.002;
+                    const hm = halo.material;
+                    hm.color.set(W.color).multiplyScalar(glow * 0.4);
+                    hm.opacity = Math.max(0, Math.min(1, 0.25 + W.opacity));
+                    hm.resolution.set(drawSize.x, drawSize.y);
+                    hm.linewidth = m.linewidth * Math.max(1, W.glowSpread || 6);
+                }
             }
         }
 
@@ -345,7 +396,7 @@ export class TakeRig {
     /** Put the scan's layers in front of the footage or behind it. Returns how many are behind. */
     assignLayers(behind) {
         let n = 0;
-        [[this.mesh, behind.mesh], [this.cloud, behind.points], [this.wire, behind.wire]].forEach(([o, back]) => {
+        [[this.mesh, behind.mesh], [this.cloud, behind.points], [this.wire, behind.wire], [this.wireHalo, behind.wire]].forEach(([o, back]) => {
             if (!o) return;
             o.layers.set(back ? LAYER.BEHIND : LAYER.FRONT);
             if (back && o.visible) n++;

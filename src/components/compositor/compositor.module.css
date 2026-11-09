@@ -520,6 +520,32 @@
     margin: 0 0 8px;
 }
 
+.logicRow {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) auto;
+    gap: 4px;
+    align-items: center;
+}
+
+.logicRow > .select {
+    grid-column: auto;
+}
+
+.logicOp {
+    padding: 3px 0 3px 6px;
+    color: var(--faint);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+}
+
+.subTitle {
+    margin: 10px 0 4px;
+    color: var(--faint);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 10px;
+}
+
 .row {
     display: grid;
     grid-template-columns: 104px minmax(0, 1fr) 58px;

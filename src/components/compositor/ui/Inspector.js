@@ -10,7 +10,9 @@ import {
 import {
     OBJECT_TYPES, paramDefs, TRACK_PARAMS, AUDIO_TRACK_PARAMS,
 } from '../model/schema';
-import { CONTROLLER_TYPES, CONTROLLER_COLORS, controllerValue, switchAt } from '../model/controllers';
+import {
+    CONTROLLER_TYPES, CONTROLLER_COLORS, controllerValue, switchAt, isSwitch, dependsOn,
+} from '../model/controllers';
 import { LOOP_MODES, clipEnd } from '../model/timeline';
 import { linksTo } from '../model/project';
 import { assignStates, kickCutTimes, gridCutTimes, mergeCuts } from '../model/cuts';
@@ -22,7 +24,9 @@ import { mattesFor } from '../../../lib/scanAssets/roto';
 import { CATEGORIES, DEFAULT_SCREEN } from '../../../lib/scanAssets/library';
 import { fitCornersToMesh } from '../../../lib/scanAssets/props';
 import RotoEditor from './Roto';
-import { LOOK_FIELDS, LOOK_DEFAULTS, isNeutralLook } from '../../../lib/scanAssets/takeLooks';
+import {
+    LOOK_FIELDS, LOOK_DEFAULTS, LOOK_PARTS, isNeutralLook, normaliseLook,
+} from '../../../lib/scanAssets/takeLooks';
 import { PUBLIC_VIDEOS } from '../../../lib/scanAssets/screenVideo';
 import { ParamRow, NumberBox } from './Params';
 import { useComp, useTick } from './context';
@@ -355,7 +359,8 @@ function ScanLook({ obj }) {
     const scene = comp.project.scenes.find((s) => s.id === obj.sceneId);
     const take = scene?.take;
     if (!take) return null;
-    const look = { ...LOOK_DEFAULTS, ...(comp.looks[take] || {}) };
+    const look = normaliseLook(comp.looks[take]);
+    const same = Object.keys(LOOK_DEFAULTS).every((k) => look.mesh[k] === look.points[k]);
     const note = {
         saving: 'Saving\u2026',
         repo: 'Saved to src/data/takeLooks.json.',
@@ -363,18 +368,27 @@ function ScanLook({ obj }) {
     }[comp.looksSaved];
     return (
         <>
-            {LOOK_FIELDS.map(([key, label, min, max, step]) => (
-                <ParamRow
-                    key={key}
-                    def={{ key, label, type: 'number', min, max, step, def: LOOK_DEFAULTS[key], link: false }}
-                    value={look[key]}
-                    onChange={(v) => comp.setLook(take, { [key]: v })}
-                    onCommit={comp.saveLooksNow}
-                />
+            {LOOK_PARTS.map(([part, title]) => (
+                <div key={part}>
+                    <p className={styles.subTitle}>{title}</p>
+                    {LOOK_FIELDS.map(([key, label, min, max, step]) => (
+                        <ParamRow
+                            key={key}
+                            def={{ key, label, type: 'number', min, max, step, def: LOOK_DEFAULTS[key], link: false }}
+                            value={look[part][key]}
+                            onChange={(v) => comp.setLook(take, { [part]: { [key]: v } })}
+                            onCommit={comp.saveLooksNow}
+                        />
+                    ))}
+                    <div className={styles.wideRow}>
+                        <button type="button" className={styles.btn} disabled={isNeutralLook(look[part])} onClick={() => comp.setLook(take, { [part]: null }, true)}>Reset</button>
+                        {part === 'points' && (
+                            <button type="button" className={styles.btn} disabled={same} onClick={() => comp.setLook(take, { points: { ...look.mesh } }, true)}>Match the mesh</button>
+                        )}
+                    </div>
+                </div>
             ))}
-            <div className={styles.wideRow}>
-                <button type="button" className={styles.btn} disabled={isNeutralLook(look)} onClick={() => comp.setLook(take, null, true)}>Reset</button>
-            </div>
+            <p className={styles.hint} style={{ marginTop: 6 }}>The points&apos; correction shows when their colour is the scan&apos;s.</p>
             {note && <p className={styles.hint} style={{ marginTop: 6 }}>{note}</p>}
         </>
     );
@@ -664,6 +678,77 @@ function KeyTools({ ctrl }) {
     );
 }
 
+const OP_WORD = { and: 'AND', or: 'OR', xor: 'XOR' };
+
+/** A Logic's inputs: each a Switch (or another Logic) in a state, optionally NOT-ed. */
+function LogicTools({ ctrl }) {
+    const comp = useComp();
+    const all = comp.project.controllers;
+    const lookup = (id) => all.find((c) => c.id === id);
+    // Not itself, nor anything that already reads it: that would be a loop.
+    const choices = all.filter((c) => isSwitch(c) && !dependsOn(c, ctrl.id, lookup));
+    const inputs = ctrl.inputs || [];
+    const setInputs = (fn) => comp.updateController(ctrl.id, (c) => ({ ...c, inputs: fn(c.inputs || []) }), true);
+    const setInput = (i, patch) => setInputs((list) => list.map((x, j) => (j === i ? { ...x, ...patch } : x)));
+    const onState = (c) => Math.min(1, (c?.states?.length || 1) - 1);
+    const add = () => {
+        const c = choices.find((o) => !inputs.some((x) => x.controller === o.id)) || choices[0];
+        if (c) setInputs((list) => [...list, { controller: c.id, state: onState(c), not: false }]);
+    };
+    const word = OP_WORD[ctrl.params.op] || 'AND';
+    return (
+        <Group title="Inputs">
+            <p className={styles.hint}>
+                On when its inputs, combined as above, are true. Each is a Switch (or another Logic) being in a state;
+                NOT flips it. Link anything to this as you would a Switch.
+            </p>
+            {inputs.map((inp, i) => {
+                const c = lookup(inp.controller);
+                return (
+                    // eslint-disable-next-line react/no-array-index-key
+                    <React.Fragment key={i}>
+                        {i > 0 && <div className={styles.logicOp}>{word}</div>}
+                        <div className={styles.logicRow}>
+                            <button
+                                type="button"
+                                className={`${styles.btn} ${inp.not ? styles.btnOn : ''}`}
+                                aria-pressed={!!inp.not}
+                                title="NOT: true when it is not in this state"
+                                onClick={() => setInput(i, { not: !inp.not })}
+                            >
+                                NOT
+                            </button>
+                            <select
+                                className={styles.select}
+                                value={inp.controller}
+                                onChange={(e) => { const n = lookup(e.target.value); setInput(i, { controller: n.id, state: onState(n) }); }}
+                            >
+                                {!c && <option value={inp.controller}>(missing)</option>}
+                                {c && !choices.includes(c) && <option value={c.id}>{c.name}</option>}
+                                {choices.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                            </select>
+                            <select
+                                className={styles.select}
+                                value={inp.state ?? onState(c)}
+                                onChange={(e) => setInput(i, { state: parseInt(e.target.value, 10) })}
+                                title="The state it has to be in"
+                            >
+                                {(c?.states || []).map((s, k) => <option key={s + k} value={k}>is {s}</option>)}
+                            </select>
+                            <button type="button" className={styles.olToggle} title="Remove input" onClick={() => setInputs((list) => list.filter((_, j) => j !== i))}><Trash2 size={12} /></button>
+                        </div>
+                    </React.Fragment>
+                );
+            })}
+            <div className={styles.wideRow}>
+                <button type="button" className={styles.btn} disabled={!choices.length} onClick={add}>Add input</button>
+            </div>
+            {!choices.length && <p className={styles.hint}>Make a Switch first: a Logic combines Switches.</p>}
+            {choices.length > 0 && inputs.length < 2 && <p className={styles.hint}>Give it two or more inputs to combine.</p>}
+        </Group>
+    );
+}
+
 function ControllerInspector({ ctrl }) {
     const comp = useComp();
     const type = CONTROLLER_TYPES[ctrl.type];
@@ -708,6 +793,7 @@ function ControllerInspector({ ctrl }) {
                 </Group>
             )}
             {ctrl.type === 'switch' && <SwitchTools ctrl={ctrl} />}
+            {ctrl.type === 'logic' && <LogicTools ctrl={ctrl} />}
             {ctrl.type === 'keys' && <KeyTools ctrl={ctrl} />}
             <Group title={`Linked (${uses.length})`}>
                 {!uses.length && <p className={styles.hint}>Nothing follows this yet. Right-click any control and pick it under Link to controller.</p>}
@@ -743,7 +829,7 @@ function CameraPick({
     clip, media, cams, set,
 }) {
     const comp = useComp();
-    const switches = comp.project.controllers.filter((c) => c.type === 'switch');
+    const switches = comp.project.controllers.filter(isSwitch);
     const sw = clip.cameraSwitch;
     const ctrl = sw && switches.find((c) => c.id === sw.controller);
     const fixed = clip.camera || (media.kind === 'take' ? 'solve' : (cams[0]?.id || ''));

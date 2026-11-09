@@ -13,6 +13,10 @@
 //   keys     keyframes drawn in the controller's timeline lane
 //   switch   named states, cut between in the timeline lane (by hand or by
 //            the auto-cut tools); linking to one picks the state it is on in
+//   logic    a switch worked out from others: On when its inputs (each a
+//            switch or another logic in a chosen state, optionally NOT-ed)
+//            combine to true under AND, OR or XOR. Anything that can follow
+//            a switch can follow one.
 
 import { kickEnvelope, kickHits, kickLevelAt } from '../../../lib/protagonist/kicks';
 import { modulate, MOD_DEFAULTS } from '../../../lib/scanAssets/modulate';
@@ -78,7 +82,20 @@ export const CONTROLLER_TYPES = {
         lane: true,
         params: [],
     },
+    logic: {
+        label: 'Logic',
+        lane: true,
+        params: [
+            {
+                key: 'op', label: 'Combine', type: 'select', def: 'and',
+                options: [['and', 'AND (all are)'], ['or', 'OR (any is)'], ['xor', 'XOR (an odd number are)']],
+            },
+        ],
+    },
 };
+
+/** Whether a controller has states to be on in: a Switch, or a Logic worked out from Switches. */
+export const isSwitch = (c) => c?.type === 'switch' || c?.type === 'logic';
 
 export const defaultsFor = (type) => Object.fromEntries(
     (CONTROLLER_TYPES[type]?.params || []).map((p) => [p.key, p.def]),
@@ -97,6 +114,7 @@ export function makeController(id, type, over = {}) {
     };
     if (type === 'keys') base.keys = [];
     if (type === 'switch') base.cuts = [{ id: `${id}_c0`, t: 0, s: 0 }];
+    if (type === 'logic') base.inputs = [];
     return { ...base, ...over, params: { ...base.params, ...(over.params || {}) } };
 }
 
@@ -187,8 +205,39 @@ export function keysAt(keys, t, interp = 'linear') {
     return a.v + (b.v - a.v) * f;
 }
 
-/** The state a switch is in at `t` (an index into its states). */
-export function switchAt(ctrl, t) {
+/**
+ * Whether a Logic controller is on at `t`. `lookup(id)` finds the controllers
+ * it reads; `seen` stops a loop of Logics reading each other (a Logic already
+ * being worked out counts as off).
+ */
+export function logicAt(ctrl, t, lookup, seen = new Set()) {
+    if (!lookup || seen.has(ctrl.id)) return false;
+    seen.add(ctrl.id);
+    let count = 0;
+    let on = 0;
+    (ctrl.inputs || []).forEach((inp) => {
+        const c = lookup(inp.controller);
+        if (!isSwitch(c)) return;
+        // eslint-disable-next-line no-use-before-define
+        let v = switchAt(c, t, lookup, seen) === (Number.isInteger(inp.state) ? inp.state : 1);
+        if (inp.not) v = !v;
+        count++;
+        if (v) on++;
+    });
+    seen.delete(ctrl.id);
+    if (!count) return false;
+    const op = ctrl.params?.op || 'and';
+    if (op === 'or') return on > 0;
+    if (op === 'xor') return on % 2 === 1;
+    return on === count;
+}
+
+/**
+ * The state a switch is in at `t` (an index into its states). A Logic is in
+ * state 1 (On) or 0 (Off), and needs `lookup(id)` to read its inputs.
+ */
+export function switchAt(ctrl, t, lookup = null, seen = undefined) {
+    if (ctrl.type === 'logic') return logicAt(ctrl, t, lookup, seen) ? 1 : 0;
     const cuts = ctrl.cuts || [];
     let s = cuts.length ? cuts[0].s : 0;
     for (let i = 0; i < cuts.length; i++) {
@@ -202,7 +251,7 @@ export function switchAt(ctrl, t) {
  * project's mixed soundtrack (an AudioBuffer starting at timeline 0), or
  * null with no audio, in which case the audio controllers sit at 0.
  */
-export function controllerValue(ctrl, t, ctx) {
+export function controllerValue(ctrl, t, ctx, lookup = null) {
     if (!ctrl) return 0;
     const p = ctrl.params || {};
     switch (ctrl.type) {
@@ -235,8 +284,39 @@ export function controllerValue(ctrl, t, ctx) {
             const n = Math.max(1, (ctrl.states?.length || 1) - 1);
             return switchAt(ctrl, t) / n;
         }
+        case 'logic': return logicAt(ctrl, t, lookup) ? 1 : 0;
         default: return 0;
     }
+}
+
+/**
+ * A Logic's state as cuts, `[{ t, s }]` from 0: it can only change where one
+ * of the switches it reads (however deep) cuts, so those are the only times
+ * it needs working out at.
+ */
+export function logicCuts(ctrl, lookup) {
+    const times = new Set([0]);
+    const walk = (c, seen) => {
+        if (!c || seen.has(c.id)) return;
+        seen.add(c.id);
+        if (c.type === 'switch') (c.cuts || []).forEach((k) => times.add(Math.max(0, k.t)));
+        if (c.type === 'logic') (c.inputs || []).forEach((inp) => walk(lookup(inp.controller), seen));
+    };
+    walk(ctrl, new Set());
+    const out = [];
+    Array.from(times).sort((a, b) => a - b).forEach((t) => {
+        const s = logicAt(ctrl, t, lookup) ? 1 : 0;
+        if (!out.length || out[out.length - 1].s !== s) out.push({ id: `${ctrl.id}_${t}`, t, s });
+    });
+    return out;
+}
+
+/** Whether `ctrl` reads `id`, directly or through other Logics (so it cannot be one of id's inputs). */
+export function dependsOn(ctrl, id, lookup, seen = new Set()) {
+    if (!ctrl || seen.has(ctrl.id)) return false;
+    if (ctrl.id === id) return true;
+    seen.add(ctrl.id);
+    return ctrl.type === 'logic' && (ctrl.inputs || []).some((inp) => dependsOn(lookup(inp.controller), id, lookup, seen));
 }
 
 /** Kick hits for the auto-cut tools and the lane display. */

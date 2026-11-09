@@ -198,8 +198,10 @@ function looksRoute(req, res) {
         if (size >= MAX_BYTES) { res.status(413).end(); return; }
         let data;
         try { data = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (e) { res.status(400).json({ error: 'not JSON' }); return; }
+        const part = (x) => x && typeof x === 'object' && LOOK_KEYS.every((k) => x[k] === undefined || Number.isFinite(x[k]));
+        // Each take: { mesh, points } corrections (or an older single one).
         const ok = data && typeof data === 'object' && !Array.isArray(data)
-            && Object.values(data).every((l) => l && typeof l === 'object' && LOOK_KEYS.every((k) => l[k] === undefined || Number.isFinite(l[k])));
+            && Object.values(data).every((l) => part(l) && (l.mesh === undefined || part(l.mesh)) && (l.points === undefined || part(l.points)));
         if (!ok) { res.status(400).json({ error: 'not a set of take looks' }); return; }
         const tmp = `${LOOKS}.tmp`;
         fs.writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`);

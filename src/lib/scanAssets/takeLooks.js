@@ -1,8 +1,9 @@
 // Colour correction for a take's scan texture: the photogrammetry texture
 // usually comes out darker and flatter than the footage, so each take keeps a
-// correction that brings its textured mesh (and its scan-coloured points) in
-// line. A property of the take, like the asset library is of the assets, so
-// it is saved apart from projects:
+// correction that brings it in line - one for the textured mesh and one for
+// the scan-coloured points, set apart: { mesh, points, updatedAt }. (An older
+// single correction is read as the same for both.) A property of the take,
+// like the asset library is of the assets, so it is saved apart from projects:
 //   1. Under `npm start`, into src/data/takeLooks.json through the dev
 //      server (src/setupProxy.js), so it is in the repo and ships.
 //   2. Always, into this browser's storage, as a fallback.
@@ -29,7 +30,32 @@ export const LOOK_FIELDS = [
     ['temperature', 'Temperature', -1, 1, 0.01],
 ];
 
+/** The parts of the scan each with its own correction. */
+export const LOOK_PARTS = [['mesh', 'Mesh texture'], ['points', 'Points (scan colour)']];
+
+/** One part's correction is a no-op. */
 export const isNeutralLook = (l) => !l || Object.entries(LOOK_DEFAULTS).every(([k, v]) => Math.abs((l[k] ?? v) - v) < 1e-6);
+
+/** A take's stored look as { mesh, points, updatedAt }, whichever shape it was saved in. */
+export function normaliseLook(l) {
+    const flat = l && !l.mesh && !l.points ? l : null;
+    const part = (x) => {
+        const out = { ...LOOK_DEFAULTS };
+        Object.keys(LOOK_DEFAULTS).forEach((k) => { if (Number.isFinite(x?.[k])) out[k] = x[k]; });
+        return out;
+    };
+    return {
+        mesh: part(flat || l?.mesh),
+        points: part(flat || l?.points),
+        updatedAt: l?.updatedAt || 0,
+    };
+}
+
+/** Neither part of a take's look changes anything. */
+export const isNeutralTakeLook = (l) => {
+    const n = normaliseLook(l);
+    return LOOK_PARTS.every(([part]) => isNeutralLook(n[part]));
+};
 
 function readLocal() {
     try {
@@ -55,8 +81,8 @@ const tidy = (looks) => {
     const keep = {};
     Object.keys(looks).sort().forEach((take) => {
         const l = looks[take];
-        if (isNeutralLook(l)) return;
-        keep[take] = { ...LOOK_DEFAULTS, ...l };
+        if (isNeutralTakeLook(l)) return;
+        keep[take] = normaliseLook(l);
     });
     return keep;
 };

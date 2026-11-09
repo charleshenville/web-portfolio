@@ -11,7 +11,9 @@ import {
 } from 'lucide-react';
 import { Film, Music } from './icons';
 import { clipEnd, fits, sourceSpan } from '../model/timeline';
-import { CONTROLLER_TYPES, controllerTrace, kickTimes } from '../model/controllers';
+import {
+    CONTROLLER_TYPES, controllerTrace, kickTimes, logicCuts,
+} from '../model/controllers';
 import { useComp, useTick } from './context';
 import styles from '../compositor.module.css';
 
@@ -412,6 +414,29 @@ export default function Timeline() {
                             />
                         )}
                     </React.Fragment>
+                );
+            });
+        } else if (ctrl.type === 'logic') {
+            // Worked out from its inputs, so shown but not edited here.
+            const lookup = (id) => project.controllers.find((c) => c.id === id);
+            const cuts = logicCuts(ctrl, lookup);
+            body = cuts.map((c, i) => {
+                const end = i + 1 < cuts.length ? cuts[i + 1].t : width / pps;
+                return (
+                    <div
+                        key={c.id}
+                        className={`${styles.seg2} ${on ? styles.seg2On : ''}`}
+                        style={{ left: c.t * pps, width: Math.max(1, (end - c.t) * pps), background: stateColor(c.s, 2), cursor: 'default' }}
+                        title={`${ctrl.states[c.s]} · from its inputs`}
+                        onPointerDown={(e) => {
+                            if (e.button !== 0) return;
+                            e.stopPropagation();
+                            comp.select({ kind: 'controller', id: ctrl.id });
+                            scrub(e);
+                        }}
+                    >
+                        {ctrl.states[c.s]}
+                    </div>
                 );
             });
         } else if (ctrl.type === 'keys') {

@@ -5,7 +5,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { MAPS, applyMap, newLink } from '../model/maps';
-import { CONTROLLER_TYPES } from '../model/controllers';
+import { CONTROLLER_TYPES, isSwitch } from '../model/controllers';
 import { linkValue } from '../model/resolve';
 import { useComp, useTick } from './context';
 import styles from '../compositor.module.css';
@@ -82,7 +82,7 @@ export function LinkMenu({ at, def, value, link, onLink, onReset, onClose }) {
 
     const pick = (c) => {
         const next = newLink(def, value, c.id);
-        if (c.type === 'switch') {
+        if (isSwitch(c)) {
             next.state = Math.min(1, (c.states?.length || 1) - 1);
             if (def.type === 'number') { next.from = def.min ?? 0; next.to = value; }
         }
@@ -107,7 +107,7 @@ export function LinkMenu({ at, def, value, link, onLink, onReset, onClose }) {
                     ))}
                     <div className={styles.menuTitle}>New controller</div>
                     <div className={styles.menuGrid}>
-                        {['keys', 'switch', 'lfo', 'kick', 'band'].map((type) => (
+                        {['keys', 'switch', 'logic', 'lfo', 'kick', 'band'].map((type) => (
                             <button
                                 key={type}
                                 type="button"
@@ -123,7 +123,7 @@ export function LinkMenu({ at, def, value, link, onLink, onReset, onClose }) {
             {link && ctrl && (
                 <>
                     <div className={styles.menuSep} />
-                    {ctrl.type === 'switch' ? (
+                    {isSwitch(ctrl) ? (
                         <>
                             <div className={styles.menuTitle}>On when the switch is</div>
                             <div className={styles.menuGrid}>
@@ -153,11 +153,11 @@ export function LinkMenu({ at, def, value, link, onLink, onReset, onClose }) {
                     {def.type === 'number' && (
                         <>
                             <div className={styles.menuRange}>
-                                <span className={styles.olTag}>{ctrl.type === 'switch' ? 'Off' : 'From'}</span>
+                                <span className={styles.olTag}>{isSwitch(ctrl) ? 'Off' : 'From'}</span>
                                 <NumberBox value={link.from} step={def.step || 0.01} onCommit={(v) => onLink({ ...link, from: v })} />
                             </div>
                             <div className={styles.menuRange}>
-                                <span className={styles.olTag}>{ctrl.type === 'switch' ? 'On' : 'To'}</span>
+                                <span className={styles.olTag}>{isSwitch(ctrl) ? 'On' : 'To'}</span>
                                 <NumberBox value={link.to} step={def.step || 0.01} onCommit={(v) => onLink({ ...link, to: v })} />
                             </div>
                         </>
@@ -271,8 +271,8 @@ export function ParamRow({ def, value, link, onChange, onLink, onCommit }) {
     } else {
         const span = Math.max(1e-9, def.max - def.min);
         const pct = (v) => `${Math.max(0, Math.min(1, (v - def.min) / span)) * 100}%`;
-        const lo = linked && ctrl.type !== 'switch' ? Math.min(link.from, link.to) : null;
-        const hi = linked && ctrl.type !== 'switch' ? Math.max(link.from, link.to) : null;
+        const lo = linked && !isSwitch(ctrl) ? Math.min(link.from, link.to) : null;
+        const hi = linked && !isSwitch(ctrl) ? Math.max(link.from, link.to) : null;
         control = (
             <>
                 <span className={styles.sliderWrap}>

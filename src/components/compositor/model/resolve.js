@@ -2,7 +2,7 @@
 // applied. Pure, so the preview, the inspector's live readout and an export
 // all agree on what a linked parameter is at any time.
 
-import { controllerValue, switchAt } from './controllers';
+import { controllerValue, switchAt, isSwitch } from './controllers';
 import { applyMap, mixColor } from './maps';
 import { paramDefs, trackDefs } from './schema';
 
@@ -19,7 +19,7 @@ export function makeFrame(project, t, analysis) {
         controller: (id) => byId.get(id),
         value(id) {
             if (cache.has(id)) return cache.get(id);
-            const v = controllerValue(byId.get(id), t, analysis);
+            const v = controllerValue(byId.get(id), t, analysis, (x) => byId.get(x));
             cache.set(id, v);
             return v;
         },
@@ -29,8 +29,8 @@ export function makeFrame(project, t, analysis) {
 export function linkValue(def, link, frame) {
     const c = frame.controller(link.controller);
     if (!c) return undefined;
-    if (c.type === 'switch' && Number.isInteger(link.state)) {
-        let on = switchAt(c, frame.t) === link.state;
+    if (isSwitch(c) && Number.isInteger(link.state)) {
+        let on = switchAt(c, frame.t, frame.controller) === link.state;
         if (link.map === 'inverted') on = !on;
         if (def.type === 'bool') return on;
         if (def.type === 'color') return on ? link.to : link.from;

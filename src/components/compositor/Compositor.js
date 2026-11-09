@@ -38,7 +38,9 @@ import {
     loadLibrary, saveLibrary, downloadLibrary, patchAsset, DEFAULT_SCREEN,
 } from '../../lib/scanAssets/library';
 import { MUSIC_ASSETS } from '../../lib/audioScene';
-import { loadLooks, saveLooks } from '../../lib/scanAssets/takeLooks';
+import {
+    loadLooks, saveLooks, normaliseLook, LOOK_DEFAULTS,
+} from '../../lib/scanAssets/takeLooks';
 import { listUploads, storeUpload, PUBLIC_VIDEOS } from '../../lib/scanAssets/screenVideo';
 import { makeModelItem } from '../../lib/protagonist/poser';
 import { makeSackboyItem } from '../../lib/scanAssets/sackboy';
@@ -240,10 +242,23 @@ export default function Compositor() {
         if (engineRef.current) engineRef.current.dirty = true;
         if (save) saveLibraryNow();
     }, [saveLibraryNow]);
-    /** Change a take's scan correction; `save` false while a slider is dragged. */
+    /**
+     * Change a take's scan correction. `patch` is per part - `{ mesh: {...} }`,
+     * `{ points: {...} }`, a part set to null to reset it - or null to reset
+     * the take. `save` false while a slider is dragged.
+     */
     const setLook = useCallback((take, patch, save = false) => {
-        const next = { ...looksRef.current, [take]: patch ? { ...(looksRef.current[take] || {}), ...patch, updatedAt: Date.now() } : undefined };
-        if (!patch) delete next[take];
+        const next = { ...looksRef.current };
+        if (patch) {
+            const cur = normaliseLook(looksRef.current[take]);
+            const look = { ...cur, updatedAt: Date.now() };
+            Object.entries(patch).forEach(([part, v]) => {
+                look[part] = v ? { ...cur[part], ...v } : { ...LOOK_DEFAULTS };
+            });
+            next[take] = look;
+        } else {
+            delete next[take];
+        }
         looksRef.current = next;
         setLooks(next);
         if (engineRef.current) engineRef.current.dirty = true;
@@ -406,7 +421,10 @@ export default function Compositor() {
     const removeController = useCallback((id) => {
         apply((p) => ({
             ...p,
-            controllers: p.controllers.filter((c) => c.id !== id),
+            controllers: p.controllers.filter((c) => c.id !== id).map((c) => (
+                c.type === 'logic' && (c.inputs || []).some((x) => x.controller === id)
+                    ? { ...c, inputs: c.inputs.filter((x) => x.controller !== id) } : c
+            )),
             objects: p.objects.map((o) => {
                 if (!Object.values(o.links || {}).some((l) => l.controller === id)) return o;
                 return { ...o, links: Object.fromEntries(Object.entries(o.links).filter(([, l]) => l.controller !== id)) };

@@ -31,7 +31,7 @@ import { WindowCompositor, LAYER, cornersFacing } from '../../../lib/scanAssets/
 import { MatteSet, HoldoutPass, mattesFor } from '../../../lib/scanAssets/roto';
 import { DEFAULT_SCREEN } from '../../../lib/scanAssets/library';
 import { makeFrame, resolveObject, resolveTrack } from '../model/resolve';
-import { switchAt as switchStateAt } from '../model/controllers';
+import { switchAt as switchStateAt, isSwitch } from '../model/controllers';
 import { OBJECT_TYPES } from '../model/schema';
 import { programAt, clipSourceTime } from '../model/timeline';
 import { TakeRig, poseAt, applyIntrinsics } from './takeRig';
@@ -927,8 +927,8 @@ export default class Engine {
             // the Switch's state now picks.
             let camId = base?.clip.camera;
             const sw = base?.clip.cameraSwitch;
-            const swCtrl = sw && P.controllers.find((c) => c.id === sw.controller && c.type === 'switch');
-            if (swCtrl) camId = sw.map?.[switchStateAt(swCtrl, t)] ?? camId;
+            const swCtrl = sw && P.controllers.find((c) => c.id === sw.controller && isSwitch(c));
+            if (swCtrl) camId = sw.map?.[switchStateAt(swCtrl, t, frame.controller)] ?? camId;
             const camObj = camId && camId !== 'solve'
                 ? objects.find((o) => o.id === camId && o.type === 'camera')
                 : (base?.media.kind === 'stage' ? objects.find((o) => o.type === 'camera') : null);
