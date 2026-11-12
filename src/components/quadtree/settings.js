@@ -13,7 +13,7 @@ export const DEFAULTS = {
     seedZoom: 1,
 
     gradType: 'waves',       // 'linear' | 'radial' | 'conic' | 'corners' | 'waves'
-    gradStops: ['#1b1f6b', '#e8553d', '#ffcf5a', '#2ec4b6'],
+    gradStops: ['#0c0c0c', '#0000ff', '#6b8cff', '#ecebe6'],
     gradAngle: 30,
     gradSpin: 0,             // turns per loop
     gradCycles: 1,           // colour cycles per loop
@@ -26,10 +26,10 @@ export const DEFAULTS = {
     shapeSpeed: 2,           // bounces per loop
     shapeSpin: 0,
     shapeRate: 1,            // speed multiplier on the motion
-    shapePalette: 'rainbow', // 'rainbow' | 'stops'
+    shapePalette: 'stops',   // 'rainbow' | 'stops'
     shapeSat: 0.85,
-    shapeStops: ['#ff5f6d', '#ffc371', '#47e5bc', '#5b8cff'],
-    shapeBg: '#0a0a12',
+    shapeStops: ['#0000ff', '#6b8cff', '#ecebe6', '#2a3dd6'],
+    shapeBg: '#0c0c0c',
     shapeSoft: 0,
     shapeBlend: 'over',      // 'over' | 'add' | 'screen'
     shapeBlur: 0.04,         // of the frame height
@@ -44,7 +44,7 @@ export const DEFAULTS = {
         evolve: 0.3,
         levels: 48,
         colorMode: 'gradient',
-        stops: ['#0b0820', '#5a1e7a', '#e8553d', '#ffd36b'],
+        stops: ['#0c0c0c', '#0000ff', '#6b8cff', '#ecebe6'],
     },
     procRes: 160,            // noise columns
 
@@ -92,17 +92,22 @@ export const DEFAULTS = {
     fill: true,
     outline: 1,
     outlineMode: 'solid',    // 'solid' | 'cell' | 'shade'
-    outlineColor: '#15161a',
+    outlineColor: '#0c0c0c',
     quadOpacity: 1,
     ramp: ' .:-=+*#%@',
     rampInvert: false,
+    glyphFont: 'mono',       // fonts.js
+    glyphFontCustom: '',     // any installed font, by name, with 'custom'
+    glyphWeight: 400,
+    glyphItalic: false,
+    rampBy: 'brightness',    // ascii glyph from 'brightness' | 'size' (bigger cells, denser glyphs) | 'depth' (one character per level)
     glyphBg: 0,
 
     // ---- Colour
     colorSource: 'seed',     // 'seed' | 'gradient' | 'depth'
-    stops: ['#0b0b0b', '#f2f0e6'],
+    stops: ['#0c0c0c', '#0000ff', '#ecebe6'],
     levels: 0,
-    background: '#0c0c0e',
+    background: '#0c0c0c',
     underlay: 0,
 
     // ---- Post
@@ -123,8 +128,8 @@ export const PRESETS = [
         name: 'Mosaic',
         set: {
             metric: 'color', threshold: 0.06, maxDepth: 7, minDepth: 1, rootCols: 4,
-            shape: 'square', radius: 0, gap: 0, size: 1, halftone: 0, fill: true, outline: 1, outlineMode: 'solid', outlineColor: '#15161a',
-            colorSource: 'seed', levels: 0, background: '#0c0c0e', underlay: 0, glow: 0, glowNormalize: true, vignette: 0, grain: 0, aberration: 0,
+            shape: 'square', radius: 0, gap: 0, size: 1, halftone: 0, fill: true, outline: 1, outlineMode: 'solid', outlineColor: '#0c0c0c',
+            colorSource: 'seed', levels: 0, background: '#0c0c0c', underlay: 0, glow: 0, glowNormalize: true, vignette: 0, grain: 0, aberration: 0,
         },
     },
     {

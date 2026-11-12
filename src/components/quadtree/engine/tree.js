@@ -11,7 +11,10 @@
 // scale. Each leaf is written to a flat Float32Array the renderer uploads as
 // instance data, and the SVG export reads as is:
 //
-//   x, y, size, r, g, b, luma, hash, kind      (kind: 0, reserved)
+//   x, y, size, r, g, b, luma, hash, depth
+//
+// depth is how many times the cell's root was split to reach it, which an
+// ascii ramp can follow instead of brightness.
 
 import { hexToRgb } from '../../../lib/procedural';
 
@@ -214,7 +217,7 @@ export function buildTree(an, s, outW, outH, phase, scratch = {}) {
         return q;
     };
 
-    const emit = (x, y, size, depth, kind) => {
+    const emit = (x, y, size, depth) => {
         if (count >= MAX_QUADS) { capped = true; return; }
         // Clip to the frame for the statistics; skip what is wholly outside.
         const cx0 = Math.max(0, x);
@@ -252,7 +255,7 @@ export function buildTree(an, s, outW, outH, phase, scratch = {}) {
         data[o + 5] = b;
         data[o + 6] = luma;
         data[o + 7] = hash2(Math.round(x * 8), Math.round(y * 8), Math.round(size * 8) + 31 * (s.styleSeed | 0));
-        data[o + 8] = kind;
+        data[o + 8] = depth;
         count++;
     };
 
@@ -299,7 +302,7 @@ export function buildTree(an, s, outW, outH, phase, scratch = {}) {
             stack.push(x + half, y, half, d + 1);
             stack.push(x, y, half, d + 1);
         } else {
-            emit(x, y, size, d, 0);
+            emit(x, y, size, d);
             if (count >= MAX_QUADS) break;
         }
     }

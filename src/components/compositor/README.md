@@ -8,6 +8,12 @@ model/      plain data and pure functions, no three.js, no React
   controllers.js  kick / band / LFO / keyframes / switch, evaluated at a time
   maps.js         link maps (normal, inverted, ease…) and new-link defaults
   resolve.js      an object's parameters at a time, links applied
+  expr.js         the maths language: x(t) = cos θ t, P_2.x, {{ω_1}} in text
+  spline.js       interpolating splines of degree 1-5, C^(k-1) at every point
+  globals.js      variables (project.variables) and splines, valued at a frame
+  curvePresets.js ready-made equations (the Curve's shapes among them)
+  splineLabels.js a spline's points as child objects (marker + LaTeX label), kept in step with its points
+  stageCopy.js    copying clips; a 3D stage's clip copies its whole stage as a new one
   timeline.js     clips, source time (hold / loop / ping-pong), the program at t
   project.js      the project document, scenes, file format
   cuts.js         auto-cut: filling a Switch from kicks or a tempo grid
@@ -16,10 +22,14 @@ engine/     three.js and media, no React
   Engine.js       renderer, scenes, cameras, modes, gizmo, compositing passes
   takeRig.js      a take's scan (mesh / points / wireframe) and its solve
   adapters.js     placed objects wrapping lib/ (protagonist, sackboy, props…)
+  curveObject.js  Equations and Splines: ribbon lines, instanced or wire points
+  textObject.js   text in the scene or over the frame, plain or LaTeX
+  latex.js        MathJax, loaded on first use (mathjax.js), drawn as paths
   media.js        media links, audio mix + analysis, <video> pool
   transport.js    the clock (the audio hardware's while sound plays)
   exporter.js     offline frame-exact MP4 export (WebCodecs)
-ui/         React: Sidebar (outliner) + Inspector, Timeline, Params (link menu)
+ui/         React: Sidebar (outliner) + Inspector, Timeline, Params (link menu),
+            Maths (expression fields, spline points, variables)
 ```
 
 Rules of the road:

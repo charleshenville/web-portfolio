@@ -24,13 +24,21 @@ import {
     mixProject, analyse, importFile, probe, mediaUrl, decodeUrl,
 } from './engine/media';
 import {
-    createProject, ensureTakeScene, addStageScene, takeMedia, makeObject, newId, pruneScenes,
+    createProject, ensureTakeScene, addStageScene, takeMedia, makeObject, newId, pruneScenes, removeScenes as dropScenes,
 } from './model/project';
-import { makeController } from './model/controllers';
+import { makeController, isCut } from './model/controllers';
+import { makeVariable, splineSymbol } from './model/globals';
+import { VARIABLE_LETTERS, SPLINE_LETTERS } from './model/expr';
+import { CURVE_FORMULAS } from './model/curvePresets';
+import { ALL_POINTS } from './model/spline';
+import {
+    syncSplineLabels, editSplinePoints, removePoint, resetLabel, isPointOf,
+} from './model/splineLabels';
+import { copyClip as clipPayload, pasteClip as pasteClipInto, CLIP_COPY_FORMAT } from './model/stageCopy';
 import {
     projectDuration, firstFit, clipEnd, is3D, clipSourceTime,
 } from './model/timeline';
-import { OBJECT_TYPES } from './model/schema';
+import { OBJECT_TYPES, defaultParams } from './model/schema';
 import {
     listProjects, openProject, saveProject, downloadProject, readProjectFile,
 } from './model/storage';
@@ -47,10 +55,12 @@ import { makeSackboyItem } from '../../lib/scanAssets/sackboy';
 import { Ctx, makeTicker } from './ui/context';
 import Sidebar from './ui/Sidebar';
 import Timeline from './ui/Timeline';
+import FrameTextOverlay from './ui/FrameTextOverlay';
 import ExportDialog from './ui/ExportDialog';
 import styles from './compositor.module.css';
 
 const MANIFEST_URL = `${process.env.PUBLIC_URL}/mv/manifest.json`;
+
 const HISTORY = 120;
 const MODES = [
     ['preview', 'Preview', Eye, 'As rendered: the program camera, with effects'],
@@ -125,8 +135,10 @@ export default function Compositor() {
      */
     const apply = useCallback((fn, commit = false, coalesce = null) => {
         const prev = projRef.current;
-        const next = fn(prev);
+        let next = fn(prev);
         if (!next || next === prev) return prev;
+        // Children go with their parents; spline labels keep up with their points.
+        if (next.objects !== prev.objects) next = syncSplineLabels(next);
         const h = history.current;
         const now = performance.now();
         const folding = coalesce && h.coalesce === coalesce && now - h.at < 4000;
@@ -166,7 +178,9 @@ export default function Compositor() {
     const savedRef = useRef(projRef.current);
     const isDirty = () => projRef.current !== savedRef.current;
 
-    const replaceProject = useCallback((p) => {
+    const replaceProject = useCallback((p0) => {
+        // Spline points as objects, for files from before they were.
+        const p = syncSplineLabels(p0);
         history.current = { past: [], future: [], coalesce: null, at: 0 };
         projRef.current = p;
         savedRef.current = p;
@@ -201,6 +215,21 @@ export default function Compositor() {
         const offCorners = engine.on('corners', (ev) => {
             if (ev.kind === 'screen') {
                 editAssetRef.current(ev.entryId, (a) => ({ ...a, screen: { ...DEFAULT_SCREEN, ...a.screen, corners: ev.corners } }), ev.done);
+                return;
+            }
+            if (ev.kind === 'spline') {
+                // A dragged point becomes numbers; the rest keep what they were written as.
+                const str = (v) => String(Math.round(v * 1e4) / 1e4);
+                apply((p) => ({
+                    ...p,
+                    objects: p.objects.map((o) => {
+                        if (o.id !== ev.objectId) return o;
+                        const pts = (o.params.points || []).map((pt, i) => (
+                            ev.handle >= ev.corners.length || i === ev.handle ? ev.corners[i].map(str) : pt
+                        ));
+                        return { ...o, params: { ...o.params, points: pts } };
+                    }),
+                }), ev.done, `corners:${ev.objectId}`);
                 return;
             }
             const key = ev.kind === 'window' ? 'corners' : ev.key;
@@ -279,13 +308,27 @@ export default function Compositor() {
     // ---- Corner editing: a selected window always; a screen or the pulse shape when asked.
     const selectedObj = selection?.kind === 'object' ? project.objects.find((o) => o.id === selection.id) : null;
     const cornerEdit = selectedObj && selectedObj.gizmo !== false
-        && (selectedObj.type === 'window' || selectedObj.type === 'text' || cornerOn === selectedObj.id)
+        && (selectedObj.type === 'window' || selectedObj.type === 'text' || selectedObj.type === 'splinePoint' || cornerOn === selectedObj.id)
         ? { objectId: selectedObj.id, handle: cornerHandle } : null;
     const cornerKey = cornerEdit ? `${cornerEdit.objectId}:${cornerEdit.handle}` : '';
     useEffect(() => {
         engineRef.current?.setCornerEdit(cornerKey ? { objectId: cornerKey.split(':')[0], handle: Number(cornerKey.split(':')[1]) } : null);
     }, [cornerKey]);
-    useEffect(() => { setCornerHandle(4); }, [selection]);
+    // A newly selected thing's handles start on all of them at once.
+    const selectedIsSpline = selectedObj?.type === 'spline';
+    // (Or on one point, when a spline's point asked to be moved.)
+    const pendingHandle = useRef(null);
+    useEffect(() => {
+        setCornerHandle(pendingHandle.current ?? (selectedIsSpline ? ALL_POINTS : 4));
+        pendingHandle.current = null;
+    }, [selection, selectedIsSpline]);
+    /** Spline `id` selected, its point `i` picked to drag in the viewport. */
+    const pickSplinePoint = useCallback((id, i) => {
+        pendingHandle.current = i;
+        setSelection({ kind: 'object', id });
+        setCornerOn(id);
+        setCornerHandle(i);
+    }, []);
 
     // ---- Roto -------------------------------------------------------------------
 
@@ -394,6 +437,25 @@ export default function Compositor() {
         ...p, objects: p.objects.map((o) => (o.id === id ? fn(o) : o)),
     }), done, coalesce), [apply]);
 
+    /** Spline `id`'s points changed by `fn`; `remap(i)` says where point i went (-1: removed), for its labels. */
+    const editPoints = useCallback((id, fn, remap = null, done = true, coalesce = null) => apply(
+        (p) => editSplinePoints(p, id, fn, remap), done, coalesce,
+    ), [apply]);
+
+    /** Spline `id`'s labels shown or hidden; `reset` puts each back where and as it was first made. */
+    const setSplineLabels = useCallback((id, on, reset = false) => apply((p) => {
+        const sp = p.objects.find((o) => o.id === id);
+        if (!sp) return p;
+        return {
+            ...p,
+            objects: p.objects.map((o) => {
+                if (o.id === id) return { ...o, params: { ...o.params, labels: on } };
+                if (reset && isPointOf(o, id)) return resetLabel(o, sp);
+                return o;
+            }),
+        };
+    }, true), [apply]);
+
     const setParam = useCallback((id, key, v, done = false) => updateObject(
         id, (o) => ({ ...o, params: { ...o.params, [key]: v } }), done, `p:${id}:${key}`,
     ), [updateObject]);
@@ -430,9 +492,42 @@ export default function Compositor() {
                 return { ...o, links: Object.fromEntries(Object.entries(o.links).filter(([, l]) => l.controller !== id)) };
             }),
             tracks: p.tracks.map((t) => ({ ...t, links: Object.fromEntries(Object.entries(t.links || {}).filter(([, l]) => l.controller !== id)) })),
+            variables: (p.variables || []).map((v) => ({ ...v, links: Object.fromEntries(Object.entries(v.links || {}).filter(([, l]) => l.controller !== id)) })),
         }), true);
         setSelection(null);
     }, [apply]);
+
+    // ---- Variables: the names equations, splines and text read ---------------------
+
+    const updateVariable = useCallback((id, fn, done = false, coalesce = null) => apply((p) => ({
+        ...p, variables: (p.variables || []).map((v) => (v.id === id ? fn(v) : v)),
+    }), done, coalesce), [apply]);
+
+    /**
+     * A new variable: `symbol` and `sub` if given (an equation asking for
+     * one it uses), or the first greek letter no variable has yet.
+     */
+    const addVariable = useCallback((symbol, sub = '', select = true, over = {}) => {
+        const vars = projRef.current.variables || [];
+        const taken = new Set(vars.map((v) => `${v.symbol}_${v.sub || ''}`));
+        let sym = symbol;
+        if (!sym) sym = (VARIABLE_LETTERS.find(([c]) => !taken.has(`${c}_`)) || VARIABLE_LETTERS[7])[0];
+        const v = makeVariable(sym, sub, over);
+        apply((p) => ({ ...p, variables: [...(p.variables || []), v] }), true);
+        if (select) setSelection({ kind: 'variable', id: v.id });
+        return v;
+    }, [apply]);
+
+    const removeVariable = useCallback((id) => {
+        apply((p) => ({ ...p, variables: (p.variables || []).filter((v) => v.id !== id) }), true);
+        setSelection(null);
+    }, [apply]);
+
+    const setVariableLink = useCallback((id, link) => updateVariable(id, (v) => {
+        const links = { ...(v.links || {}) };
+        if (link) links.value = link; else delete links.value;
+        return { ...v, links };
+    }, false, `vl:${id}`), [updateVariable]);
 
     const newCutId = useCallback(() => newId('cut'), []);
 
@@ -482,6 +577,8 @@ export default function Compositor() {
             const r = scanRadius(sceneId);
             if (type === 'cloud') params = { ...at, radius: r * 1.4, pointSize: Math.max(0.0015, r * 0.004), maxPoints: 40000, samples: 20000 };
             if (type === 'curve') params = { ...at, curveScale: r * 1.2, dotSize: Math.max(0.01, r * 0.02) };
+            // Written in their own units (a unit circle, a spline across -1..1), scaled to the scene.
+            if (type === 'equation' || type === 'spline') params = { ...at, scale: Math.round(r * 0.6 * 1000) / 1000 || 1 };
             if (type === 'protagonist') {
                 const it = makeModelItem('x', at, 'stand');
                 params = { ...it.op };
@@ -518,6 +615,12 @@ export default function Compositor() {
                 if (corners) params = { corners };
             }
         }
+        if (type === 'spline') {
+            // A symbol of its own: the next capital no spline has.
+            const used = new Set(projRef.current.objects.filter((o) => o.type === 'spline').map(splineSymbol));
+            const free = SPLINE_LETTERS.find(([c]) => !used.has(c));
+            if (free) params = { ...params, symbol: free[0] };
+        }
         const obj = makeObject(type, sceneId, { params, extra });
         const same = projRef.current.objects.filter((o) => o.type === type && o.sceneId === sceneId).length;
         if (same) obj.name = `${obj.name} ${same + 1}`;
@@ -527,6 +630,14 @@ export default function Compositor() {
     }, [apply]);
 
     const removeObject = useCallback((id) => {
+        // A spline's point: deleting it deletes the point.
+        const o0 = projRef.current.objects.find((o) => o.id === id);
+        if (o0?.type === 'splinePoint') {
+            const next = apply((p) => removePoint(p, id), true);
+            if (next.objects.some((o) => o.id === id)) setStatus('A spline keeps at least one point');
+            else setSelection(null);
+            return;
+        }
         apply((p) => ({
             ...p,
             objects: p.objects.filter((o) => o.id !== id),
@@ -535,10 +646,66 @@ export default function Compositor() {
         setSelection(null);
     }, [apply]);
 
+    /**
+     * An Equation drawn the way a Curve is: its shape's formula times its
+     * size, as points, flowing, jittered and pulsed the same, beside it.
+     * The Curve stays.
+     */
+    const curveToEquation = useCallback((id) => {
+        const src = projRef.current.objects.find((o) => o.id === id && o.type === 'curve');
+        if (!src) return null;
+        const p = src.params;
+        const f = CURVE_FORMULAS[p.funcId] || CURVE_FORMULAS.helix;
+        const S = p.curveScale ?? 8;
+        const k = (e) => (S === 1 ? e : `${S}*(${e})`);
+        const obj = makeObject('equation', src.sceneId, {
+            name: `${src.name} (equation)`,
+            params: {
+                fx: k(f.x),
+                fy: k(f.y),
+                fz: k(f.z),
+                rangeFrom: f.from,
+                rangeTo: f.to,
+                mode: 'points',
+                pointShape: 'tetra',
+                dotCount: p.dotCount,
+                // A Curve's tetrahedra are 1.2 times its dot size across.
+                dotSize: Math.round((p.dotSize ?? 0.045) * 1.2 * 1e4) / 1e4,
+                jitter: Math.round((p.jitter ?? 0) * S * 1e4) / 1e4,
+                flowSpeed: p.flowSpeed,
+                reactivity: p.reactivity,
+                colorStart: p.startColor,
+                colorEnd: p.endColor,
+                opacity: p.opacity ?? 1,
+                depthLayer: p.depthLayer,
+                visible: p.visible,
+                ...Object.fromEntries(['posX', 'posY', 'posZ', 'rotX', 'rotY', 'rotZ', 'scale'].map((key) => [key, p[key]])),
+            },
+        });
+        obj.links = JSON.parse(JSON.stringify(Object.fromEntries(Object.entries(src.links || {}).filter(([key]) => (
+            ['opacity', 'visible', 'posX', 'posY', 'posZ', 'rotX', 'rotY', 'rotZ', 'scale', 'jitter', 'flowSpeed', 'reactivity'].includes(key)
+        )))));
+        apply((pr) => {
+            const i = pr.objects.findIndex((o) => o.id === id);
+            const objects = [...pr.objects];
+            objects.splice(i + 1, 0, obj);
+            return { ...pr, objects };
+        }, true);
+        setSelection({ kind: 'object', id: obj.id });
+        return obj;
+    }, [apply]);
+
+    /** Text over the frame moved a little down and right, for a copy of it. */
+    const nudgeFrame = (p) => ({
+        frameX: Math.round(((p.frameX ?? 0.5) + 0.03) * 1e4) / 1e4,
+        frameY: Math.round(((p.frameY ?? 0.85) + 0.03) * 1e4) / 1e4,
+    });
+
     const duplicateObject = useCallback((id) => {
         const src = projRef.current.objects.find((o) => o.id === id);
-        if (!src) return;
+        if (!src || OBJECT_TYPES[src.type]?.child) return;
         const copy = { ...JSON.parse(JSON.stringify(src)), id: newId(src.type), name: `${src.name} copy` };
+        if (copy.type === 'text' && copy.params.space === 'frame') Object.assign(copy.params, nudgeFrame(copy.params));
         apply((p) => {
             const i = p.objects.findIndex((o) => o.id === id);
             const objects = [...p.objects];
@@ -547,6 +714,182 @@ export default function Compositor() {
         }, true);
         setSelection({ kind: 'object', id: copy.id });
     }, [apply]);
+
+    const removeClip = useCallback((id) => {
+        apply((p) => ({ ...p, clips: p.clips.filter((c) => c.id !== id) }), true);
+        setSelection(null);
+    }, [apply]);
+
+    // ---- Copy and paste ------------------------------------------------------------
+    //
+    // Scene objects (and effects) go on the system clipboard as JSON, so they
+    // paste into another take's scene, another project or another tab; a copy
+    // is kept here too for browsers that only fire clipboard events in text
+    // fields. Pasted into the scene it came from, it lands in place; into
+    // another, it moves to the middle of that scene's scan.
+
+    const CLIP_FORMAT = 'compositor-objects';
+    const clipboard = useRef(null);
+    const pasted = useRef(false);
+
+    const copyable = (id) => {
+        const o = projRef.current.objects.find((x) => x.id === id);
+        return o && !OBJECT_TYPES[o.type]?.unique ? o : null;
+    };
+
+    const copyObject = useCallback((id) => {
+        const o = copyable(id);
+        if (!o) return null;
+        const payload = { format: CLIP_FORMAT, version: 1, objects: [JSON.parse(JSON.stringify(o))] };
+        clipboard.current = payload;
+        setStatus(`Copied ${o.name}`);
+        return payload;
+    }, []);
+
+    /**
+     * A clip on the clipboard. A 3D stage's clip brings its stage along: the
+     * paste is a new stage, its scene holding new objects made like the old.
+     */
+    const copyClip = useCallback((id) => {
+        const payload = clipPayload(projRef.current, id);
+        if (!payload) return null;
+        clipboard.current = payload;
+        setStatus(payload.stage ? `Copied ${payload.media.name} and everything in it` : `Copied the ${payload.media.name} clip`);
+        return payload;
+    }, []);
+
+    /** The clipboard's clip at the playhead (or `at`). */
+    const pasteClip = useCallback((payload, at = transportRef.current.now()) => {
+        const r = pasteClipInto(projRef.current, payload, at);
+        if (!r) {
+            setStatus(payload?.stage ? 'Nothing to paste' : 'That clip\'s media is not in this project');
+            return false;
+        }
+        apply(() => r.project, true);
+        setSelection({ kind: 'clip', id: r.clip.id });
+        setStatus(r.scene ? `Pasted a new stage, ${r.scene.name}` : 'Pasted the clip');
+        return true;
+    }, [apply]);
+
+    /** A copy of a clip just after it (for a stage, with a stage of its own). */
+    const duplicateClip = useCallback((id) => {
+        const c = projRef.current.clips.find((x) => x.id === id);
+        const payload = clipPayload(projRef.current, id);
+        if (c && payload) pasteClip(payload, clipEnd(c));
+    }, [pasteClip]);
+
+    const pasteObjects = useCallback((payload) => {
+        if (payload?.format === CLIP_COPY_FORMAT) return pasteClip(payload);
+        if (!payload || payload.format !== CLIP_FORMAT || !Array.isArray(payload.objects)) return false;
+        const p0 = projRef.current;
+        const sel = selectionRef.current;
+        const selObj = sel?.kind === 'object' ? p0.objects.find((o) => o.id === sel.id) : null;
+        // Into the selected object's scene, else the one on screen.
+        const target = selObj?.sceneId || engineRef.current?.activeSceneId || null;
+        const ctrlIds = new Set(p0.controllers.map((c) => c.id));
+        const made = [];
+        payload.objects.forEach((orig) => {
+            // A spline's point pastes as its label: a Text of its own.
+            const loose = orig.type === 'splinePoint';
+            const src = loose ? {
+                ...orig,
+                type: 'text',
+                name: `${orig.name} label`,
+                parentId: undefined,
+                pointLabel: undefined,
+                params: { ...Object.fromEntries(Object.keys(defaultParams('text')).map((k) => [k, orig.params[k] ?? defaultParams('text')[k]])), space: 'scene' },
+            } : orig;
+            if (!OBJECT_TYPES[src.type] || OBJECT_TYPES[src.type].unique) return;
+            const isEffect = !src.sceneId;
+            if (!isEffect && !target) return;
+            const sceneId = isEffect ? null : target;
+            const params = { ...src.params };
+            if (!isEffect && (src.sceneId !== sceneId || loose)) {
+                const at = scanCentre(sceneId, ['protagonist', 'sackboy', 'prop'].includes(src.type));
+                if ('posX' in params) Object.assign(params, at);
+                if (Array.isArray(params.corners) && params.corners.length) {
+                    const c = params.corners;
+                    const mid = [0, 1, 2].map((k) => c.reduce((a, v) => a + v[k], 0) / c.length);
+                    const to = [at.posX, at.posY, at.posZ];
+                    params.corners = c.map((v) => v.map((x, k) => Math.round((x - mid[k] + to[k]) * 1e4) / 1e4));
+                }
+                // Mattes belong to a take.
+                if (src.type === 'window') params.matte = '';
+            }
+            // Over the frame, a copy in the same scene steps aside so it shows.
+            if (src.type === 'text' && params.space === 'frame' && src.sceneId === sceneId) Object.assign(params, nudgeFrame(params));
+            // Links to controllers this project lacks are dropped.
+            const links = Object.fromEntries(Object.entries(src.links || {}).filter(([, l]) => ctrlIds.has(l.controller)));
+            // A child keeps its parent only beside it, in the same scene.
+            const keepParent = src.parentId && p0.objects.some((o) => o.id === src.parentId && o.sceneId === sceneId);
+            const same = p0.objects.filter((o) => o.type === src.type && o.sceneId === sceneId).length + made.filter((o) => o.type === src.type).length;
+            made.push({
+                ...src,
+                id: newId(src.type),
+                sceneId,
+                name: same ? `${src.name.replace(/ copy( \d+)?$/, '')} copy` : src.name,
+                params,
+                links,
+                parentId: keepParent ? src.parentId : undefined,
+                pointLabel: keepParent ? src.pointLabel : undefined,
+            });
+        });
+        if (!made.length) {
+            setStatus(target ? 'Nothing to paste' : 'Paste into a scene: show a take or select something in it');
+            return false;
+        }
+        apply((p) => ({ ...p, objects: [...p.objects, ...made] }), true);
+        setSelection({ kind: 'object', id: made[made.length - 1].id });
+        const sc = p0.scenes.find((x) => x.id === made[0].sceneId);
+        setStatus(`Pasted ${made.map((o) => o.name).join(', ')}${sc ? ` into ${sc.name}` : ''}`);
+        return true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [apply, pasteClip]);
+
+    /** What is selected, on the clipboard: an object or a clip. */
+    const copySelection = useCallback((sel) => {
+        if (sel?.kind === 'object') return copyObject(sel.id);
+        if (sel?.kind === 'clip') return copyClip(sel.id);
+        return null;
+    }, [copyObject, copyClip]);
+
+    const removeSelection = useCallback((sel) => {
+        if (sel?.kind === 'object') removeObject(sel.id);
+        else if (sel?.kind === 'clip') removeClip(sel.id);
+    }, [removeObject, removeClip]);
+
+    // The browser's own copy / paste events carry the system clipboard.
+    useEffect(() => {
+        const inField = (t) => t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+        const onCopy = (e, cut) => {
+            if (inField(e.target) || (window.getSelection?.()?.toString() || '').length) return;
+            const sel = selectionRef.current;
+            const payload = copySelection(sel);
+            if (!payload) return;
+            e.clipboardData?.setData('text/plain', JSON.stringify(payload));
+            e.preventDefault();
+            if (cut) removeSelection(sel);
+        };
+        const onCut = (e) => onCopy(e, true);
+        const onPaste = (e) => {
+            if (inField(e.target)) return;
+            let payload = null;
+            try { payload = JSON.parse(e.clipboardData?.getData('text/plain') || 'null'); } catch (err) { payload = null; }
+            if (payload?.format !== CLIP_FORMAT && payload?.format !== CLIP_COPY_FORMAT) payload = clipboard.current;
+            if (!payload) return;
+            pasted.current = true;
+            e.preventDefault();
+            pasteObjects(payload);
+        };
+        window.addEventListener('copy', onCopy);
+        window.addEventListener('cut', onCut);
+        window.addEventListener('paste', onPaste);
+        return () => {
+            window.removeEventListener('copy', onCopy);
+            window.removeEventListener('cut', onCut);
+            window.removeEventListener('paste', onPaste);
+        };
+    }, [copySelection, pasteObjects, removeSelection]);
 
     const moveEffect = useCallback((id, dir) => apply((p) => {
         const fx = p.objects.filter((o) => !o.sceneId);
@@ -562,11 +905,6 @@ export default function Compositor() {
     const updateClip = useCallback((id, fn, done = false, coalesce = null) => apply((p) => ({
         ...p, clips: p.clips.map((c) => (c.id === id ? fn(c) : c)),
     }), done, coalesce), [apply]);
-
-    const removeClip = useCallback((id) => {
-        apply((p) => ({ ...p, clips: p.clips.filter((c) => c.id !== id) }), true);
-        setSelection(null);
-    }, [apply]);
 
     const splitClip = useCallback((id) => {
         const t = transportRef.current.now();
@@ -618,6 +956,20 @@ export default function Compositor() {
             ...p, media: p.media.filter((x) => x.id !== id), clips: p.clips.filter((c) => c.mediaId !== id),
         }), true);
         setSelection(null);
+    }, [apply]);
+
+    /** Scenes `ids` deleted, with their media and everything in them. */
+    const removeScenes = useCallback((ids) => {
+        const p0 = projRef.current;
+        const n = p0.scenes.length;
+        const next = apply((p) => dropScenes(p, ids), true);
+        const gone = n - next.scenes.length;
+        if (!gone) return;
+        // A selection inside them goes too.
+        const sel = selectionRef.current;
+        const alive = (kind, id) => (next[kind] || []).some((x) => x.id === id);
+        if (sel && ((sel.kind === 'object' && !alive('objects', sel.id)) || (sel.kind === 'media' && !alive('media', sel.id)) || (sel.kind === 'clip' && !alive('clips', sel.id)))) setSelection(null);
+        setStatus(`Deleted ${gone === 1 ? p0.scenes.find((sc) => ids.includes(sc.id))?.name || 'a scene' : `${gone} scenes`}`);
     }, [apply]);
 
     /** Put a media item on the timeline: a given track and time, or the playhead on the first track that suits. */
@@ -922,6 +1274,28 @@ export default function Compositor() {
             const sel = selectionRef.current;
             if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
             if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); save(); return; }
+            // Copy / cut / paste. The clipboard events above do the work where
+            // the browser fires them; these keep it working where it doesn't.
+            const k = e.key.toLowerCase();
+            if (mod && (k === 'c' || k === 'x') && (sel?.kind === 'object' || sel?.kind === 'clip') && !(window.getSelection?.()?.toString() || '').length) {
+                const payload = copySelection(sel);
+                if (payload) {
+                    navigator.clipboard?.writeText(JSON.stringify(payload)).catch(() => {});
+                    // Let the copy / cut event run; remove on cut only if it never comes.
+                    if (k === 'x') {
+                        const { id } = sel;
+                        const list = sel.kind === 'clip' ? 'clips' : 'objects';
+                        setTimeout(() => { if (projRef.current[list].some((o) => o.id === id)) removeSelection(sel); }, 60);
+                    }
+                }
+                return;
+            }
+            if (mod && k === 'd' && sel?.kind === 'clip') { e.preventDefault(); duplicateClip(sel.id); return; }
+            if (mod && k === 'v') {
+                pasted.current = false;
+                setTimeout(() => { if (!pasted.current && clipboard.current) pasteObjects(clipboard.current); }, 60);
+                return;
+            }
             if (mod) return;
             if (e.code === 'Space') { e.preventDefault(); togglePlay(); return; }
             if (e.key === 'Tab') {
@@ -937,6 +1311,7 @@ export default function Compositor() {
             }
             if ((e.key === 'Delete' || e.key === 'Backspace') && sel) {
                 if (sel.kind === 'clip') removeClip(sel.id);
+                else if (sel.kind === 'variable') removeVariable(sel.id);
                 else if (sel.kind === 'object' && !OBJECT_TYPES[projRef.current.objects.find((o) => o.id === sel.id)?.type]?.unique) removeObject(sel.id);
                 return;
             }
@@ -946,7 +1321,7 @@ export default function Compositor() {
             // makes one cut, not one per key repeat.
             const cutKey = e.code === 'KeyS' || e.code === 'KeyC';
             const switchSel = sel?.kind === 'controller'
-                && projRef.current.controllers.find((x) => x.id === sel.id)?.type === 'switch';
+                && isCut(projRef.current.controllers.find((x) => x.id === sel.id));
             if (cutKey && (switchSel || (e.code === 'KeyS' && sel?.kind === 'clip'))) {
                 e.preventDefault();
                 if (e.repeat) return;
@@ -955,7 +1330,7 @@ export default function Compositor() {
             }
             if (sel?.kind === 'controller') {
                 const c = projRef.current.controllers.find((x) => x.id === sel.id);
-                if (c?.type === 'switch') {
+                if (isCut(c)) {
                     const n = parseInt(e.key, 10);
                     if (n >= 1 && n <= c.states.length) { cutSwitch(c.id, n - 1); return; }
                 }
@@ -969,7 +1344,7 @@ export default function Compositor() {
         // Capture phase, ahead of the engine's fly keys.
         window.addEventListener('keydown', onKey, true);
         return () => window.removeEventListener('keydown', onKey, true);
-    }, [undo, redo, save, togglePlay, seek, removeClip, removeObject, cutSwitch, addKey, splitClip, mode]);
+    }, [undo, redo, save, togglePlay, seek, removeClip, removeObject, removeVariable, cutSwitch, addKey, splitClip, mode, copySelection, removeSelection, duplicateClip, pasteObjects]);
 
     // ---- Timeline splitter ----------------------------------------------------------------------
 
@@ -1010,6 +1385,7 @@ export default function Compositor() {
         seekTakeFrame,
         cornerOn,
         setCornerOn,
+        pickSplinePoint,
         cornerHandle,
         setCornerHandle,
         uploads,
@@ -1030,6 +1406,11 @@ export default function Compositor() {
         addObject,
         removeObject,
         duplicateObject,
+        curveToEquation,
+        addVariable,
+        updateVariable,
+        removeVariable,
+        setVariableLink,
         moveEffect,
         addController,
         updateController,
@@ -1041,12 +1422,17 @@ export default function Compositor() {
         updateClip,
         removeClip,
         splitClip,
+        duplicateClip,
+        editPoints,
+        setSplineLabels,
+        copyClip,
         updateTrack,
         setTrackLink,
         addTrack,
         removeTrack,
         updateMedia,
         removeMedia,
+        removeScenes,
         relocateMedia,
         placeMedia,
         addMedia,
@@ -1133,6 +1519,10 @@ export default function Compositor() {
                     <div ref={mountRef} className={styles.mount} />
                     <span className={styles.viewBadge}>{mode}</span>
                     {recordingId && <span className={styles.recBadge}>● REC PATH</span>}
+                    {selectedObj?.type === 'text' && selectedObj.params.space === 'frame' && selectedObj.gizmo !== false && !roto.on
+                        && engineRef.current?.activeSceneId === selectedObj.sceneId && (
+                        <FrameTextOverlay obj={selectedObj} mount={engineRef.current?.stage} />
+                    )}
                     {!hasBase && <span className={styles.viewHint}>Add a take or a 3D stage from Media to start.</span>}
                     {hasBase && mode !== 'preview' && <span className={styles.viewHint}>Drag to orbit · WASD / Q E to fly · F to frame · click to select · G R Y gizmo</span>}
                 </div>

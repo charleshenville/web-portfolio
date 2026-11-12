@@ -16,6 +16,7 @@ export function makeFrame(project, t, analysis) {
     return {
         t,
         analysis,
+        project,
         controller: (id) => byId.get(id),
         value(id) {
             if (cache.has(id)) return cache.get(id);

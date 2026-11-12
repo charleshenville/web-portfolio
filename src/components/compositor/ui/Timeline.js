@@ -12,7 +12,7 @@ import {
 import { Film, Music } from './icons';
 import { clipEnd, fits, sourceSpan } from '../model/timeline';
 import {
-    CONTROLLER_TYPES, controllerTrace, kickTimes, logicCuts,
+    CONTROLLER_TYPES, controllerTrace, kickTimes, logicCuts, isCut,
 } from '../model/controllers';
 import { useComp, useTick } from './context';
 import styles from '../compositor.module.css';
@@ -299,7 +299,7 @@ export default function Timeline() {
     };
 
     const selectedSwitch = comp.selection?.kind === 'controller'
-        ? project.controllers.find((c) => c.id === comp.selection.id && c.type === 'switch') : null;
+        ? project.controllers.find((c) => c.id === comp.selection.id && isCut(c)) : null;
 
     const step = niceStep(pps);
     const ticks = [];
@@ -379,7 +379,7 @@ export default function Timeline() {
         const on = comp.selection?.kind === 'controller' && comp.selection.id === ctrl.id;
         const type = CONTROLLER_TYPES[ctrl.type];
         let body;
-        if (ctrl.type === 'switch') {
+        if (isCut(ctrl)) {
             const cuts = ctrl.cuts || [];
             body = cuts.map((c, i) => {
                 const end = i + 1 < cuts.length ? cuts[i + 1].t : width / pps;

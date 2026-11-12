@@ -7,6 +7,7 @@
 // Plain data: no React, no three, no WebGL.
 
 import { DEFAULTS } from './settings';
+import { GLYPH_FONTS, GLYPH_WEIGHTS } from './fonts';
 
 const P = 'qt_';
 const num = (key, label, min, max, step, extra = {}) => ({
@@ -75,7 +76,15 @@ export const QT_GROUPS = [
             select('outlineMode', 'Outline from', [['solid', 'Colour'], ['cell', 'Cell'], ['shade', 'Shade']], { when: (p) => notAscii(p) && q('outline')(p) > 0 }),
             color('outlineColor', 'Outline', { when: (p) => notAscii(p) && q('outline')(p) > 0 && q('outlineMode')(p) === 'solid' }),
             { key: `${P}ramp`, skey: 'ramp', label: 'Characters', type: 'string', def: DEFAULTS.ramp, link: false, when: (p) => !notAscii(p) },
+            select('rampBy', 'Ramp by', [['brightness', 'Brightness'], ['size', 'Cell size'], ['depth', 'Cell depth']], { when: (p) => !notAscii(p) }),
             bool('rampInvert', 'Invert ramp', { when: (p) => !notAscii(p) }),
+            select('glyphFont', 'Font', GLYPH_FONTS.map(([id, label]) => [id, label]), { when: (p) => !notAscii(p) }),
+            {
+                key: `${P}glyphFontCustom`, skey: 'glyphFontCustom', label: 'Font name', type: 'string', def: DEFAULTS.glyphFontCustom, link: false,
+                when: (p) => !notAscii(p) && q('glyphFont')(p) === 'custom',
+            },
+            select('glyphWeight', 'Weight', GLYPH_WEIGHTS.map((w) => [w, String(w)]), { when: (p) => !notAscii(p) }),
+            bool('glyphItalic', 'Italic', { when: (p) => !notAscii(p), link: false }),
             num('glyphBg', 'Cell fill', 0, 1, 0.01, { when: (p) => !notAscii(p) }),
             num('quadOpacity', 'Opacity', 0, 1, 0.01),
         ],

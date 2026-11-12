@@ -383,20 +383,75 @@ uniform float u_grid;
 uniform float u_glyphBg;
 uniform float u_size;
 uniform int u_rampInvert;
+uniform float u_cellPx;   // atlas texels per glyph cell
+uniform int u_rampBy;     // 0 brightness, 1 cell size, 2 cell depth
+uniform float u_maxDepth;
+uniform vec2 u_sdf;       // distance field radius, cutoff
 float sdBox(vec2 p, vec2 b, float r) {
     vec2 q = abs(p) - b + r;
     return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
 }
+// The distance field read with a cubic B-spline (four bilinear taps), so a
+// glyph's curves stay smooth when it is drawn many times the atlas size.
+vec4 cubicW(float v) {
+    vec4 n = vec4(1.0, 2.0, 3.0, 4.0) - v;
+    vec4 s = n * n * n;
+    float x = s.x;
+    float y = s.y - 4.0 * s.x;
+    float z = s.z - 4.0 * s.y + 6.0 * s.x;
+    return vec4(x, y, z, 6.0 - x - y - z) / 6.0;
+}
+float sdfCubic(vec2 uv) {
+    vec2 size = vec2(textureSize(u_atlas, 0));
+    vec2 p = uv * size - 0.5;
+    vec2 f = fract(p);
+    p -= f;
+    vec4 xc = cubicW(f.x);
+    vec4 yc = cubicW(f.y);
+    vec4 c = p.xxyy + vec2(-0.5, 1.5).xyxy;
+    vec4 s = vec4(xc.xz + xc.yw, yc.xz + yc.yw);
+    vec4 off = (c + vec4(xc.yw, yc.yw) / s) / size.xxyy;
+    float s0 = textureLod(u_atlas, off.xz, 0.0).r;
+    float s1 = textureLod(u_atlas, off.yz, 0.0).r;
+    float s2 = textureLod(u_atlas, off.xw, 0.0).r;
+    float s3 = textureLod(u_atlas, off.yw, 0.0).r;
+    float sx = s.x / (s.x + s.y);
+    float sy = s.z / (s.z + s.w);
+    return mix(mix(s3, s2, sx), mix(s1, s0, sx), sy);
+}
 void main() {
     vec3 col = v_col.rgb;
     if (u_shape == 3) {
-        float l = clamp(v_col.a, 0.0, 1.0);
-        if (u_rampInvert == 1) l = 1.0 - l;
-        float g = floor(l * (u_glyphs - 1.0) + 0.5);
+        float g;
+        if (u_rampBy == 2) {
+            // One character per level: split once, the first; twice, the second.
+            g = clamp(v_kind - 1.0, 0.0, u_glyphs - 1.0);
+            if (u_rampInvert == 1) g = u_glyphs - 1.0 - g;
+        } else {
+            // By size, bigger cells take the dense end of the ramp.
+            float l = u_rampBy == 1 ? 1.0 - min(v_kind, u_maxDepth) / max(u_maxDepth, 1.0) : v_col.a;
+            l = clamp(l, 0.0, 1.0);
+            if (u_rampInvert == 1) l = 1.0 - l;
+            g = floor(l * (u_glyphs - 1.0) + 0.5);
+        }
         vec2 cell = vec2(mod(g, u_grid), floor(g / u_grid));
         vec2 q = v_p / max(v_cellHalf * u_size, 1e-3) * 0.5 + 0.5;
         float m = 0.0;
-        if (q.x >= 0.0 && q.x <= 1.0 && q.y >= 0.0 && q.y <= 1.0) m = texture(u_atlas, (cell + q) / u_grid).a;
+        if (q.x >= 0.0 && q.x <= 1.0 && q.y >= 0.0 && q.y <= 1.0) {
+            vec2 auv = (cell + q) / u_grid;
+            float cov = texture(u_atlas, auv).a;
+            // Screen pixels per atlas texel. Smaller than the atlas: its
+            // mipmapped coverage. Larger: the edge from the distance field,
+            // resolved per screen pixel, so it stays sharp at any size.
+            float scale = (2.0 * v_cellHalf * u_size) / u_cellPx;
+            if (scale > 0.9) {
+                float field = scale > 2.0 ? sdfCubic(auv) : textureLod(u_atlas, auv, 0.0).r;
+                float d = (1.0 - u_sdf.y - field) * u_sdf.x * scale;
+                m = mix(cov, clamp(0.5 - d, 0.0, 1.0), smoothstep(0.9, 1.4, scale));
+            } else {
+                m = cov;
+            }
+        }
         float bgA = u_glyphBg;
         vec3 rgb = col * m + col * 0.35 * bgA * (1.0 - m);
         float a = max(m, bgA);

@@ -671,6 +671,23 @@ export function applySceneOpacity(records, value) {
  * @param {number} dt seconds since the previous frame
  * @param {boolean} playing whether audio is actually running
  */
+// The scatter in the audio reaction: random per point, but the same for the
+// same frame. With a frame seed set (setReactSeed: the timeline's frame), a
+// paused frame redraws exactly as it was, and an export comes out the same
+// every time; without one it is fresh each draw.
+let reactSeed = null;
+
+/** Seed the scatter for the frame being drawn (an integer), or null for fresh randomness. */
+export function setReactSeed(seed) { reactSeed = seed; }
+
+function scatterRandom(i) {
+    if (reactSeed === null) return Math.random();
+    let h = (Math.imul(i, 374761393) + Math.imul(reactSeed, 668265263)) | 0;
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    h ^= h >>> 16;
+    return (h >>> 0) / 4294967296;
+}
+
 export function applyAudioReactivity(records, frequencyData, dt, playing) {
     const live = playing && !!frequencyData;
     const bass = live ? bassLevel(frequencyData) : 0;
@@ -767,7 +784,7 @@ export function applyAudioReactivity(records, frequencyData, dt, playing) {
             const { dirs, dists, freqIndex: fi, count: n } = rec;
             for (let i = 0; i < n; i++) {
                 const freq = frequencyData[fi[i]] / 255;
-                const randomFactor = 0.5 + (Math.random() - 0.5) * scatter;
+                const randomFactor = 0.5 + (scatterRandom(i) - 0.5) * scatter;
                 const d = dists[i] * (1 + react * (freq * randomFactor));
                 const m = i * 16;
                 arr[m + 12] = ox + dirs[i * 3] * d;
@@ -1045,7 +1062,7 @@ function ensureRadialState(state, base, op, bins) {
  */
 function displacedVertex(state, i, op, frequencyData, out) {
     const freq = frequencyData[state.freqIndex[i]] / 255;
-    const randomFactor = 0.5 + (Math.random() - 0.5) * (op.scatter || 0);
+    const randomFactor = 0.5 + (scatterRandom(i) - 0.5) * (op.scatter || 0);
     const push = state.dists[i] * op.reactivity * freq * randomFactor;
     const b = state.base;
     out[0] = b[i * 3] + state.dirs[i * 3] * push;

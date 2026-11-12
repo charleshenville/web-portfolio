@@ -8,6 +8,7 @@ import { MAPS, applyMap, newLink } from '../model/maps';
 import { CONTROLLER_TYPES, isSwitch } from '../model/controllers';
 import { linkValue } from '../model/resolve';
 import { useComp, useTick } from './context';
+import ColorPicker, { isPickerEvent } from '../../ui/ColorPicker';
 import styles from '../compositor.module.css';
 
 const fmt = (v, step) => {
@@ -58,6 +59,13 @@ export function LinkMenu({ at, def, value, link, onLink, onReset, onClose }) {
     const [pos, setPos] = useState({ left: at.x, top: at.y });
     const controllers = comp.project.controllers;
     const ctrl = link ? controllers.find((c) => c.id === link.controller) : null;
+    // The controller list folds into a dropdown; open from the start when
+    // nothing is linked yet, since picking one is what the menu is for.
+    const [listOpen, setListOpen] = useState(!link);
+    const [filter, setFilter] = useState('');
+    const shown = filter.trim()
+        ? controllers.filter((c) => `${c.name} ${CONTROLLER_TYPES[c.type]?.label || ''}`.toLowerCase().includes(filter.trim().toLowerCase()))
+        : controllers;
 
     useLayoutEffect(() => {
         const el = ref.current;
@@ -67,10 +75,10 @@ export function LinkMenu({ at, def, value, link, onLink, onReset, onClose }) {
             left: Math.min(at.x, window.innerWidth - r.width - 8),
             top: Math.max(8, Math.min(at.y, window.innerHeight - r.height - 8)),
         });
-    }, [at, link]);
+    }, [at, link, listOpen]);
 
     useEffect(() => {
-        const away = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
+        const away = (e) => { if (ref.current && !ref.current.contains(e.target) && !isPickerEvent(e)) onClose(); };
         const esc = (e) => { if (e.key === 'Escape') onClose(); };
         window.addEventListener('pointerdown', away, true);
         window.addEventListener('keydown', esc);
@@ -86,25 +94,47 @@ export function LinkMenu({ at, def, value, link, onLink, onReset, onClose }) {
             next.state = Math.min(1, (c.states?.length || 1) - 1);
             if (def.type === 'number') { next.from = def.min ?? 0; next.to = value; }
         }
+        setListOpen(false);
+        setFilter('');
         // Keep the shape and range when moving a link to another controller.
         onLink(link ? { ...next, map: link.map, from: link.from ?? next.from, to: link.to ?? next.to } : next);
     };
     const linkable = def.link !== false && def.type !== 'select';
 
     return createPortal(
-        <div ref={ref} className={styles.menu} style={pos} onContextMenu={(e) => e.preventDefault()}>
+        <div ref={ref} className={styles.menu} style={pos} data-menu="" onContextMenu={(e) => e.preventDefault()}>
             <div className={styles.menuTitle}>{def.label}</div>
             {!linkable && <div className={styles.empty}>This one rebuilds geometry when it changes, so it can&apos;t follow a controller.</div>}
             {linkable && (
                 <>
                     <div className={styles.menuTitle}>Link to controller</div>
-                    {controllers.map((c) => (
-                        <button key={c.id} type="button" className={`${styles.menuItem} ${ctrl?.id === c.id ? styles.menuItemOn : ''}`} onClick={() => pick(c)}>
-                            <span className={styles.swatch} style={{ background: c.color }} />
-                            <span className={styles.olName}>{c.name}</span>
-                            <span className={styles.olTag}>{CONTROLLER_TYPES[c.type]?.label}</span>
-                        </button>
-                    ))}
+                    <button type="button" className={`${styles.menuItem} ${styles.menuDrop}`} aria-expanded={listOpen} onClick={() => setListOpen((o) => !o)}>
+                        {ctrl ? <span className={styles.swatch} style={{ background: ctrl.color }} /> : null}
+                        <span className={styles.olName}>{ctrl ? ctrl.name : `Choose (${controllers.length})`}</span>
+                        <span className={styles.olTag}>{listOpen ? '▴' : '▾'}</span>
+                    </button>
+                    {listOpen && (
+                        <div className={styles.menuList}>
+                            {controllers.length > 8 && (
+                                <input
+                                    className={styles.menuFilter}
+                                    placeholder="Filter…"
+                                    value={filter}
+                                    autoFocus
+                                    onChange={(e) => setFilter(e.target.value)}
+                                    onKeyDown={(e) => { if (e.key === 'Enter' && shown[0]) pick(shown[0]); }}
+                                />
+                            )}
+                            {shown.map((c) => (
+                                <button key={c.id} type="button" className={`${styles.menuItem} ${ctrl?.id === c.id ? styles.menuItemOn : ''}`} onClick={() => pick(c)}>
+                                    <span className={styles.swatch} style={{ background: c.color }} />
+                                    <span className={styles.olName}>{c.name}</span>
+                                    <span className={styles.olTag}>{CONTROLLER_TYPES[c.type]?.label}</span>
+                                </button>
+                            ))}
+                            {!shown.length && <div className={styles.empty}>None match.</div>}
+                        </div>
+                    )}
                     <div className={styles.menuTitle}>New controller</div>
                     <div className={styles.menuGrid}>
                         {['keys', 'switch', 'logic', 'lfo', 'kick', 'band'].map((type) => (
@@ -166,11 +196,11 @@ export function LinkMenu({ at, def, value, link, onLink, onReset, onClose }) {
                         <>
                             <div className={styles.menuRange}>
                                 <span className={styles.olTag}>From</span>
-                                <input type="color" className={styles.color} value={link.from} onChange={(e) => onLink({ ...link, from: e.target.value })} />
+                                <ColorPicker value={link.from} onChange={(v) => onLink({ ...link, from: v })} title="From" />
                             </div>
                             <div className={styles.menuRange}>
                                 <span className={styles.olTag}>To</span>
-                                <input type="color" className={styles.color} value={link.to} onChange={(e) => onLink({ ...link, to: e.target.value })} />
+                                <ColorPicker value={link.to} onChange={(v) => onLink({ ...link, to: v })} title="To" />
                             </div>
                         </>
                     )}
@@ -226,11 +256,23 @@ export function ParamRow({ def, value, link, onChange, onLink, onCommit }) {
                 {linked && <span ref={tickRef} className={styles.linkDot} style={{ background: ctrl.color }} />}
             </span>
         );
+    } else if (def.type === 'color' && linked) {
+        // While linked, the controller picks between the link's two colours
+        // and the parameter's own value is unused, so edit those two here
+        // (Off / On for a Switch), with the colour it is right now beside them.
+        const sw = isSwitch(ctrl);
+        control = (
+            <span style={{ gridColumn: '2 / 4', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <ColorPicker compact value={link.from || '#000000'} onChange={(v) => onLink({ ...link, from: v })} onCommit={() => onCommit?.()} title={sw ? 'Off' : 'From'} />
+                <span className={styles.olTag}>→</span>
+                <ColorPicker compact value={link.to || '#ffffff'} onChange={(v) => onLink({ ...link, to: v })} onCommit={() => onCommit?.()} title={sw ? 'On' : 'To'} />
+                <span ref={tickRef} title="Now" className={styles.linkDot} style={{ width: 14, height: 14, flex: 'none', border: `1px solid ${ctrl.color}` }} />
+            </span>
+        );
     } else if (def.type === 'color') {
         control = (
             <span style={{ gridColumn: '2 / 4', display: 'flex', alignItems: 'center', gap: 6 }}>
-                <input type="color" className={styles.color} value={value || '#000000'} onChange={(e) => onChange(e.target.value)} onBlur={() => onCommit?.()} />
-                {linked && <span ref={tickRef} className={styles.linkDot} style={{ width: 14, height: 14, border: `1px solid ${ctrl.color}` }} />}
+                <ColorPicker value={value || '#000000'} onChange={onChange} onCommit={() => onCommit?.()} title={def.label} />
             </span>
         );
     } else if (def.type === 'text') {

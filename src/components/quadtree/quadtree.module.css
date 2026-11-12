@@ -131,7 +131,7 @@
     position: relative;
 }
 
-.stop button {
+.stopRemove {
     position: absolute;
     top: -6px;
     right: -6px;
@@ -147,7 +147,7 @@
     display: none;
 }
 
-.stop:hover button {
+.stop:hover .stopRemove {
     display: block;
 }
 

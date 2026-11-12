@@ -21,9 +21,10 @@ import {
 } from './shaders';
 import { hexToRgb } from '../../../lib/procedural';
 import { STRIDE } from './tree';
+import { makeSdfTools, SDF_RADIUS, SDF_CUTOFF } from './sdf';
+import { glyphFont } from '../fonts';
 
 const MAX_SEED = 2560;
-const FONT = '"SF Mono", ui-monospace, Menlo, Monaco, monospace';
 const GRADIENT_TYPES = {
     linear: 0, radial: 1, conic: 2, corners: 3, waves: 4,
 };
@@ -409,13 +410,33 @@ export default class Renderer {
 
     // ---- Quads ---------------------------------------------------------------------
 
-    glyphAtlas(ramp) {
+    /**
+     * The ramp's glyphs in the chosen font. A web font still loading draws
+     * in a fallback; the atlas is rebuilt once it lands (`onAtlasReady`
+     * lets the owner redraw).
+     */
+    glyphAtlas(ramp, s) {
         const chars = Array.from(ramp || ' ');
-        const key = chars.join('');
+        const probe = glyphFont(s, 100);
+        const key = `${chars.join('')}|${probe}`;
         if (this.atlas && key === this.atlasKey) return this.atlas;
+        if (document.fonts?.load && !document.fonts.check(probe, chars.join(''))) {
+            this.fontsLoading = this.fontsLoading || new Set();
+            if (!this.fontsLoading.has(probe)) {
+                this.fontsLoading.add(probe);
+                document.fonts.load(probe, chars.join('')).then(() => {
+                    this.atlasKey = '';
+                    this.onAtlasReady?.();
+                }).catch(() => {});
+            }
+        }
         const { gl } = this;
         const grid = Math.max(1, Math.ceil(Math.sqrt(chars.length)));
-        const cell = 96;
+        // Each cell holds the glyph twice: its coverage in alpha (mipmapped,
+        // for glyphs drawn smaller than the cell) and its distance field in
+        // red (for anything larger, so edges stay exact however big).
+        // Short ramps (the usual) get finer fields; long ones stay compact.
+        const cell = chars.length <= 16 ? 256 : chars.length <= 36 ? 192 : 160;
         const c = document.createElement('canvas');
         c.width = grid * cell;
         c.height = grid * cell;
@@ -424,19 +445,65 @@ export default class Renderer {
         ctx.fillStyle = '#fff';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.font = `${Math.round(cell * 0.95)}px ${FONT}`;
+        // One size for the whole ramp: 0.95 of the cell, smaller if any of
+        // its glyphs in this font would spill out of the cell, and the
+        // ramp's ink centred, so glyphs line up like characters on a line.
+        let fontPx = Math.round(cell * 0.95);
+        ctx.font = glyphFont(s, fontPx);
+        let up = cell * 0.46;
+        let down = cell * 0.38;
+        const ink = chars.filter((ch) => ch.trim()).map((ch) => ctx.measureText(ch));
+        if (ink.length && Number.isFinite(ink[0].actualBoundingBoxAscent)) {
+            const wide = Math.max(...ink.map((m) => (m.actualBoundingBoxLeft || 0) + (m.actualBoundingBoxRight || 0)));
+            up = Math.max(...ink.map((m) => m.actualBoundingBoxAscent || 0));
+            down = Math.max(...ink.map((m) => m.actualBoundingBoxDescent || 0));
+            const fit = Math.min(1, (cell * 0.92) / Math.max(1, wide), (cell * 0.92) / Math.max(1, up + down));
+            if (fit < 1) {
+                fontPx = Math.max(1, Math.floor(fontPx * fit));
+                ctx.font = glyphFont(s, fontPx);
+                up *= fit;
+                down *= fit;
+            }
+        }
+        const dy = (up - down) / 2;
         chars.forEach((ch, i) => {
             const x = (i % grid) * cell + cell / 2;
-            const y = Math.floor(i / grid) * cell + cell / 2 + cell * 0.04;
+            const y = Math.floor(i / grid) * cell + cell / 2 + dy;
             ctx.fillText(ch, x, y);
         });
+        const W = c.width;
+        const img = ctx.getImageData(0, 0, W, c.height).data;
+        const px = new Uint8Array(img.length);
+        const sdf = makeSdfTools(cell);
+        const cov = new Uint8Array(cell * cell);
+        const dist = new Uint8Array(cell * cell);
+        for (let gy = 0; gy < grid; gy++) {
+            for (let gx = 0; gx < grid; gx++) {
+                for (let y = 0; y < cell; y++) {
+                    for (let x = 0; x < cell; x++) cov[y * cell + x] = img[((gy * cell + y) * W + gx * cell + x) * 4 + 3];
+                }
+                sdf(cov, dist);
+                for (let y = 0; y < cell; y++) {
+                    for (let x = 0; x < cell; x++) {
+                        const o = ((gy * cell + y) * W + gx * cell + x) * 4;
+                        const d = dist[y * cell + x];
+                        px[o] = d;
+                        px[o + 1] = d;
+                        px[o + 2] = d;
+                        px[o + 3] = cov[y * cell + x];
+                    }
+                }
+            }
+        }
         if (!this.atlas) this.atlas = { tex: this.texture(true) };
         gl.bindTexture(gl.TEXTURE_2D, this.atlas.tex);
-        // The atlas is sampled with v down the canvas, so it goes up flipped.
+        // Rows go up top first, and the shader reads v down the canvas.
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, W, c.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
         gl.generateMipmap(gl.TEXTURE_2D);
         this.atlas.grid = grid;
+        this.atlas.cell = cell;
         this.atlas.count = chars.length;
         this.atlasKey = key;
         return this.atlas;
@@ -462,7 +529,7 @@ export default class Renderer {
             const k = S.w / outW;
             const crisp = s.shape === 'square' && s.radius <= 0 && s.gap <= 0 && Math.abs(s.size - 1) < 1e-3 && s.halftone <= 0;
             let atlas = null;
-            if (s.shape === 'ascii') atlas = this.glyphAtlas(s.ramp);
+            if (s.shape === 'ascii') atlas = this.glyphAtlas(s.ramp, s);
             this.setUniforms(pr, {
                 u_res: [S.w, S.h],
                 u_k: k,
@@ -482,6 +549,10 @@ export default class Renderer {
                 u_glyphs: atlas ? atlas.count : 1,
                 u_grid: atlas ? atlas.grid : 1,
                 u_glyphBg: s.glyphBg,
+                u_cellPx: atlas ? atlas.cell : 1,
+                u_rampBy: { int: s.rampBy === 'depth' ? 2 : s.rampBy === 'size' ? 1 : 0 },
+                u_maxDepth: Math.max(0, Math.round(s.maxDepth)),
+                u_sdf: [SDF_RADIUS, SDF_CUTOFF],
                 u_rampInvert: { int: s.rampInvert ? 1 : 0 },
             });
             // Always set the atlas unit: whatever was left there (the scene

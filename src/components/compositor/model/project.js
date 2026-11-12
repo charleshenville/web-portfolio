@@ -10,6 +10,8 @@
 //   objects      everything in a scene (and effects, which have no scene),
 //                each with its parameters and its controller links
 //   controllers  kick / band / LFO / keyframes / switch
+//   variables    named numbers expressions read (θ, ω_1), each with its own
+//                linkable value (model/globals.js)
 //
 // Files that point at media this machine does not have still open; the
 // missing media is flagged and can be relocated.
@@ -63,6 +65,7 @@ export function createProject(name = 'Untitled') {
         scenes: [],
         objects: [],
         controllers: stockControllers(() => newId('ctl')),
+        variables: [],
     };
 }
 
@@ -82,6 +85,7 @@ export function ensureTakeScene(project, takeId, label) {
 export function addStageScene(project, name = 'Stage') {
     const scene = { id: newId('scn'), name, take: null };
     const objects = [
+        makeObject('stage', scene.id, { name: 'Stage' }),
         makeObject('sun', scene.id, { name: 'Sun' }),
         makeObject('camera', scene.id, { name: 'Camera' }),
     ];
@@ -126,6 +130,28 @@ export function pruneScenes(project) {
     };
 }
 
+/** The media a scene lives by: its take's, or its stage's. */
+export function sceneMedia(project, scene) {
+    return project.media.filter((m) => (scene.take ? m.kind === 'take' && m.src?.take === scene.take : m.kind === 'stage' && m.sceneId === scene.id));
+}
+
+/** Scenes no clip on the timeline plays. */
+export function unusedScenes(project) {
+    const used = new Set(project.clips.map((c) => c.mediaId));
+    return project.scenes.filter((sc) => !sceneMedia(project, sc).some((m) => used.has(m.id)));
+}
+
+/** `project` without scenes `ids`: their media, clips and objects go with them. */
+export function removeScenes(project, ids) {
+    const gone = new Set(project.scenes.filter((sc) => ids.includes(sc.id)).flatMap((sc) => sceneMedia(project, sc).map((m) => m.id)));
+    if (!gone.size) return project;
+    return pruneScenes({
+        ...project,
+        media: project.media.filter((m) => !gone.has(m.id)),
+        clips: project.clips.filter((c) => !gone.has(c.mediaId)),
+    });
+}
+
 // ---- Files -------------------------------------------------------------------
 
 const finite = (v, d) => (Number.isFinite(v) ? v : d);
@@ -157,6 +183,13 @@ export function parseProject(text) {
     const controllers = (data.controllers || []).filter((c) => c && CONTROLLER_TYPES[c.type]).map((c) => makeController(c.id, c.type, {
         ...c, params: { ...defaultsFor(c.type), ...(c.params || {}) },
     }));
+    // Stages made before they had settings of their own get them.
+    (data.scenes || []).forEach((sc) => {
+        if (!sc.take && !objects.some((o) => o.sceneId === sc.id && o.type === 'stage')) {
+            const i = objects.findIndex((o) => o.sceneId === sc.id);
+            objects.splice(Math.max(0, i), 0, makeObject('stage', sc.id, { name: 'Stage' }));
+        }
+    });
     return pruneScenes({
         ...base,
         ...data,
@@ -167,6 +200,9 @@ export function parseProject(text) {
         scenes: data.scenes || [],
         objects,
         controllers,
+        variables: (data.variables || []).filter((v) => v && v.symbol).map((v) => ({
+            sub: '', set: 'real', min: -10, max: 10, step: 0.01, ...v, params: { value: 0, ...(v.params || {}) }, links: v.links || {},
+        })),
     });
 }
 
@@ -178,6 +214,9 @@ export function linksTo(project, controllerId) {
     }));
     project.tracks.forEach((t) => Object.entries(t.links || {}).forEach(([key, l]) => {
         if (l.controller === controllerId) out.push({ owner: t, key });
+    }));
+    (project.variables || []).forEach((v) => Object.entries(v.links || {}).forEach(([key, l]) => {
+        if (l.controller === controllerId) out.push({ owner: v, key, variable: true });
     }));
     return out;
 }

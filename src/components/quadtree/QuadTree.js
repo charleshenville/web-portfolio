@@ -6,6 +6,7 @@ import {
     Upload, ChevronRight, Copy, Check, RotateCcw,
 } from 'lucide-react';
 import VfxNumberField from '../VfxNumberField';
+import ColorPicker from '../ui/ColorPicker';
 import vfx from '../vfx.module.css';
 import styles from './quadtree.module.css';
 import Renderer from './engine/Renderer';
@@ -18,6 +19,7 @@ import { canEncodeMp4 } from '../../lib/mp4Writer';
 import {
     listPresets, loadPreset, savePreset, deletePreset, downloadPreset, readPresetFile,
 } from './presets';
+import { GLYPH_FONTS, GLYPH_WEIGHTS } from './fonts';
 import { DEFAULTS as PROC_DEFAULTS } from '../../lib/procedural';
 import {
     DEFAULTS, PRESETS, ASPECTS, RAMPS,
@@ -100,13 +102,7 @@ function ColorRow({ label, value, onChange }) {
     return (
         <div className={vfx.vfx_row}>
             <span className={vfx.vfx_label}>{label}</span>
-            <input
-                type="color"
-                className={vfx.vfx_color}
-                style={{ gridColumn: '2 / 4' }}
-                value={value}
-                onChange={(e) => onChange(e.target.value)}
-            />
+            <ColorPicker value={value} onChange={onChange} title={label} style={{ gridColumn: '2 / 4' }} />
         </div>
     );
 }
@@ -117,14 +113,9 @@ function Stops({ stops, onChange, max = 8 }) {
             {stops.map((c, i) => (
                 // eslint-disable-next-line react/no-array-index-key
                 <div className={styles.stop} key={i}>
-                    <input
-                        type="color"
-                        className={vfx.vfx_color}
-                        value={c}
-                        onChange={(e) => onChange(stops.map((x, j) => (j === i ? e.target.value : x)))}
-                    />
+                    <ColorPicker compact value={c} title={`Colour ${i + 1}`} onChange={(v) => onChange(stops.map((x, j) => (j === i ? v : x)))} />
                     {stops.length > 1 && (
-                        <button type="button" aria-label="Remove colour" onClick={() => onChange(stops.filter((_, j) => j !== i))}>×</button>
+                        <button type="button" className={styles.stopRemove} aria-label="Remove colour" onClick={() => onChange(stops.filter((_, j) => j !== i))}>×</button>
                     )}
                 </div>
             ))}
@@ -320,6 +311,8 @@ function QuadTree() {
             return undefined;
         }
         rendererRef.current = r;
+        // A web font landing redraws the glyphs, even while paused.
+        r.onAtlasReady = () => { dirtyRef.current = true; };
         const an = new Analysis();
         const scratch = {};
         const shapeCache = {};
@@ -1060,7 +1053,33 @@ function QuadTree() {
                                 <input type="text" className={vfx.vfx_text} style={{ marginBottom: 9 }} value={s.ramp} onChange={(e) => set('ramp')(e.target.value || ' ')} spellCheck={false} />
                                 <Slider label="Glyph size" value={s.size} min={0.3} max={1.5} step={0.01} onChange={set('size')} />
                                 <Slider label="Cell fill" value={s.glyphBg} min={0} max={1} step={0.01} onChange={set('glyphBg')} title="A dim block of the cell's colour behind each glyph" />
+                                <Seg value={s.rampBy} onPick={set('rampBy')} options={[['brightness', 'Brightness'], ['size', 'Size'], ['depth', 'Depth']]} />
+                                {s.rampBy === 'depth' && <Hint style={{ marginTop: -2, marginBottom: 9 }}>One character per level: split once, the first; twice, the second; past the end, the last.</Hint>}
                                 <Switch label="Invert ramp" value={s.rampInvert} onChange={set('rampInvert')} />
+                                <div className={vfx.vfx_row} style={{ gridTemplateColumns: '78px 1fr' }}>
+                                    <span className={vfx.vfx_label}>Font</span>
+                                    <select className={vfx.vfx_select} value={s.glyphFont} onChange={(e) => set('glyphFont')(e.target.value)}>
+                                        {GLYPH_FONTS.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+                                    </select>
+                                </div>
+                                {s.glyphFont === 'custom' && (
+                                    <input
+                                        type="text"
+                                        className={vfx.vfx_text}
+                                        style={{ marginBottom: 9 }}
+                                        placeholder="Font name, as installed"
+                                        value={s.glyphFontCustom}
+                                        onChange={(e) => set('glyphFontCustom')(e.target.value)}
+                                        spellCheck={false}
+                                    />
+                                )}
+                                <div className={vfx.vfx_row} style={{ gridTemplateColumns: '78px 1fr' }}>
+                                    <span className={vfx.vfx_label}>Weight</span>
+                                    <select className={vfx.vfx_select} value={s.glyphWeight} onChange={(e) => set('glyphWeight')(Number(e.target.value))}>
+                                        {GLYPH_WEIGHTS.map((w) => <option key={w} value={w}>{w}</option>)}
+                                    </select>
+                                </div>
+                                <Switch label="Italic" value={s.glyphItalic} onChange={set('glyphItalic')} />
                             </>
                         )}
                         <Slider label="Opacity" value={s.quadOpacity} min={0} max={1} step={0.01} onChange={set('quadOpacity')} />

@@ -7,6 +7,7 @@ import { Analysis, buildTree, STRIDE } from './tree';
 import { gradientFrame, shapesFrame } from './seeds';
 import { Mp4Writer, pcmSlice } from '../../../lib/mp4Writer';
 import { nextTask } from '../../../lib/mp4Frames';
+import { glyphFontStack } from '../fonts';
 
 const wrap = (v, n) => ((v % n) + n) % n;
 const even = (v) => Math.max(2, Math.round(v / 2) * 2);
@@ -217,7 +218,8 @@ export function exportSvg({
     const edges = s.shape === 'square' && s.radius <= 0 && s.gap <= 0 && Math.abs(s.size - 1) < 1e-3 && s.halftone <= 0 && s.outline > 0;
     const segs = {};
     const op = s.quadOpacity < 1 ? ` opacity="${f2(s.quadOpacity)}"` : '';
-    out.push(`<g${op}${s.shape === 'ascii' ? ' font-family="\'SF Mono\', ui-monospace, Menlo, monospace" text-anchor="middle" dominant-baseline="central"' : ''}>`);
+    const fontAttrs = ` font-family="${esc(glyphFontStack(s))}" font-weight="${s.glyphWeight || 400}"${s.glyphItalic ? ' font-style="italic"' : ''} text-anchor="middle" dominant-baseline="central"`;
+    out.push(`<g${op}${s.shape === 'ascii' ? fontAttrs : ''}>`);
     for (let i = 0; i < tree.count; i++) {
         const o = i * STRIDE;
         const x = d[o];
@@ -228,8 +230,18 @@ export function exportSvg({
         const cx = x + size / 2;
         const cy = y + size / 2;
         if (s.shape === 'ascii') {
-            const l = Math.max(0, Math.min(1, s.rampInvert ? 1 - luma : luma));
-            const ch = chars[Math.round(l * (chars.length - 1))] || ' ';
+            const n = chars.length;
+            const md = Math.max(1, Math.round(s.maxDepth));
+            let gi;
+            if (s.rampBy === 'depth') {
+                gi = Math.max(0, Math.min(n - 1, d[o + 8] - 1));
+                if (s.rampInvert) gi = n - 1 - gi;
+            } else {
+                const v = s.rampBy === 'size' ? 1 - Math.min(d[o + 8], md) / md : luma;
+                const l = Math.max(0, Math.min(1, s.rampInvert ? 1 - v : v));
+                gi = Math.round(l * (n - 1));
+            }
+            const ch = chars[gi] || ' ';
             if (s.glyphBg > 0) out.push(`<rect x="${f2(x)}" y="${f2(y)}" width="${f2(size)}" height="${f2(size)}" fill="${col}" fill-opacity="${f2(s.glyphBg * 0.35)}"/>`);
             if (ch.trim()) out.push(`<text x="${f2(cx)}" y="${f2(cy)}" font-size="${f2(size * s.size * 0.95)}" fill="${col}">${esc(ch)}</text>`);
             continue;

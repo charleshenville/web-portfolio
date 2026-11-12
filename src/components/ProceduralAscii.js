@@ -4,6 +4,7 @@ import {
     Rewind, FastForward, StepBack, StepForward, Copy, Check,
 } from 'lucide-react';
 import VfxNumberField from './VfxNumberField';
+import ColorPicker from './ui/ColorPicker';
 import styles from './vfx.module.css';
 import { clamp } from '../lib/noise';
 import {
@@ -686,12 +687,11 @@ function ProceduralAscii() {
     const colorRow = (label, value, onChange, trailing) => (
         <div className={styles.vfx_row} key={label}>
             <span className={styles.vfx_label}>{label}</span>
-            <input
-                type="color"
-                className={styles.vfx_color}
+            <ColorPicker
+                title={label}
                 style={{ gridColumn: trailing ? '2 / 3' : '2 / 4' }}
                 value={value}
-                onChange={(e) => onChange(e.target.value)}
+                onChange={onChange}
             />
             {trailing}
         </div>

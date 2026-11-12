@@ -1,0 +1,209 @@
+/* The site's colour picker: a swatch that opens a panel with a hue /
+   saturation wheel and RGB or HSV sliders. Ink on raised paper, square
+   corners, mono numbers, the accent for the chosen mode (index.css tokens). */
+
+.swatch {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+    height: 22px;
+    padding: 2px;
+    box-sizing: border-box;
+    background: transparent;
+    border: 1px solid var(--rule, rgba(236, 235, 230, 0.16));
+    color: var(--ink, #ecebe6);
+    font-family: var(--mono, ui-monospace, monospace);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    text-align: left;
+}
+
+.swatch:hover,
+.swatchOpen {
+    border-color: var(--rule-strong, rgba(236, 235, 230, 0.42));
+}
+
+.chip {
+    flex: 0 0 auto;
+    align-self: stretch;
+    width: 28px;
+    border: 1px solid rgba(0, 0, 0, 0.35);
+}
+
+.chipWide {
+    flex: 1 1 auto;
+    width: auto;
+}
+
+.hexLabel {
+    flex: 0 0 auto;
+    opacity: 0.75;
+    text-transform: uppercase;
+    padding-right: 4px;
+}
+
+.panel {
+    position: fixed;
+    /* Under menus (the link menu is 200), so a menu opened over a picker
+       shows; .panelOver lifts a picker opened from inside a menu. */
+    z-index: 190;
+    width: 216px;
+    padding: 10px;
+    box-sizing: border-box;
+    background: var(--paper-raised, #141414);
+    color: var(--ink, #ecebe6);
+    border: 1px solid var(--rule-strong, rgba(236, 235, 230, 0.42));
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+    font-family: var(--mono, ui-monospace, monospace);
+    font-size: 10px;
+    user-select: none;
+}
+
+.panelOver {
+    z-index: 400;
+}
+
+.wheelWrap {
+    position: relative;
+    width: 196px;
+    height: 196px;
+    margin: 0 auto 10px;
+    touch-action: none;
+    cursor: crosshair;
+}
+
+.wheel {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+}
+
+.cursor {
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    margin: -7px 0 0 -7px;
+    border: 2px solid #fff;
+    border-radius: 50%;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+    pointer-events: none;
+}
+
+.modes {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+.mode {
+    padding: 4px 0;
+    background: transparent;
+    color: inherit;
+    border: 1px solid var(--rule, rgba(236, 235, 230, 0.16));
+    font: inherit;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+}
+
+.mode:hover {
+    background: rgba(236, 235, 230, 0.07);
+}
+
+.modeOn,
+.modeOn:hover {
+    background: var(--accent, #0000ff);
+    border-color: var(--accent, #0000ff);
+    color: var(--on-accent, #fff);
+}
+
+.row {
+    display: grid;
+    grid-template-columns: 12px 1fr 38px;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 7px;
+}
+
+.channel {
+    opacity: 0.7;
+}
+
+.slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 10px;
+    margin: 0;
+    border: 1px solid var(--rule, rgba(236, 235, 230, 0.16));
+    outline: none;
+    cursor: pointer;
+}
+
+.slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 6px;
+    height: 14px;
+    background: var(--ink, #ecebe6);
+    border: 1px solid #000;
+    border-radius: 0;
+    cursor: pointer;
+}
+
+.slider::-moz-range-thumb {
+    width: 6px;
+    height: 14px;
+    background: var(--ink, #ecebe6);
+    border: 1px solid #000;
+    border-radius: 0;
+    cursor: pointer;
+}
+
+.num,
+.hex {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 2px 4px;
+    background: transparent;
+    color: inherit;
+    border: 1px solid var(--rule, rgba(236, 235, 230, 0.16));
+    font: inherit;
+    text-align: right;
+    outline: none;
+    -moz-appearance: textfield;
+}
+
+.num::-webkit-inner-spin-button,
+.num::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.num:focus,
+.hex:focus {
+    border-color: var(--accent, #0000ff);
+}
+
+.foot {
+    display: grid;
+    grid-template-columns: 32px 1fr;
+    gap: 8px;
+    align-items: center;
+    margin-top: 9px;
+}
+
+.preview {
+    height: 20px;
+    border: 1px solid var(--rule, rgba(236, 235, 230, 0.16));
+}
+
+.hex {
+    text-align: left;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}

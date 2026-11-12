@@ -9,6 +9,7 @@
     "@testing-library/user-event": "^13.5.0",
     "gh-pages": "^3.0.0",
     "lucide-react": "^0.439.0",
+    "mathjax-full": "^3.2.2",
     "mp4-muxer": "^5.2.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

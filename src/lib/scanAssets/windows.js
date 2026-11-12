@@ -39,6 +39,9 @@ export const WINDOW_DEFAULTS = {
     // matte id; 'inside' keeps them to the object, 'outside' off it.
     matte: '',
     matteMode: 'inside',
+    // What the cut and effects work on: 'footage', the shot before anything
+    // in front of it is drawn; 'all', the finished frame, 3D and all.
+    fxStage: 'footage',
 
     hueOn: false,
     hueBase: 0, // degrees
@@ -293,6 +296,8 @@ function fxMaterial() {
             tQt: { value: null },
             qtRect: { value: new THREE.Vector4(0, 0, 1, 1) },
             useQt: { value: 0 },
+            qtPlane: { value: 0 },
+            qtOnly: { value: 0 },
             hueOn: { value: 0 },
             hue: { value: 0 },
             sat: { value: 1 },
@@ -310,6 +315,8 @@ function fxMaterial() {
             uniform sampler2D tQt;
             uniform vec4 qtRect;
             uniform float useQt;
+            uniform float qtPlane;
+            uniform float qtOnly;
             uniform float hueOn;
             uniform float hue;
             uniform float sat;
@@ -326,18 +333,23 @@ function fxMaterial() {
             }
             void main() {
                 vec3 c = texture2D(tComp, gl_FragCoord.xy / resolution).rgb;
-                if (useSort > 0.5) {
+                if (useSort > 0.5 && qtOnly < 0.5) {
                     vec2 su = (gl_FragCoord.xy - sortRect.xy) / sortRect.zw;
                     if (su.x >= 0.0 && su.y >= 0.0 && su.x <= 1.0 && su.y <= 1.0) {
                         c = mix(c, texture2D(tSort, su).rgb, sortMix);
                     }
                 }
                 // A quad tree over the window's bounds (linear, mixed already).
+                // On the window plane it is read through the window's own UVs.
                 if (useQt > 0.5) {
-                    vec2 qu = (gl_FragCoord.xy - qtRect.xy) / qtRect.zw;
-                    if (qu.x >= 0.0 && qu.y >= 0.0 && qu.x <= 1.0 && qu.y <= 1.0) c = texture2D(tQt, qu).rgb;
+                    if (qtPlane > 0.5) {
+                        c = texture2D(tQt, vUv).rgb;
+                    } else {
+                        vec2 qu = (gl_FragCoord.xy - qtRect.xy) / qtRect.zw;
+                        if (qu.x >= 0.0 && qu.y >= 0.0 && qu.x <= 1.0 && qu.y <= 1.0) c = texture2D(tQt, qu).rgb;
+                    }
                 }
-                if (hueOn > 0.5) c = toLinear(clamp(hueRotate(toSrgb(c), hue), 0.0, 1.0));
+                if (hueOn > 0.5 && qtOnly < 0.5) c = toLinear(clamp(hueRotate(toSrgb(c), hue), 0.0, 1.0));
                 gl_FragColor = vec4(c, edgeMask(vUv));
                 #include <encodings_fragment>
             }`,
@@ -377,7 +389,11 @@ export class WindowModel {
         const key = JSON.stringify(op.corners);
         if (key !== this.cornerKey) {
             this.cornerKey = key;
-            this.build(op.corners);
+            // Built once; after that the corners move the meshes in place
+            // (applySize lays them out from `drawn`), which a window that
+            // follows something every frame needs.
+            if (!this.cutMesh) this.build(op.corners);
+            else this.drawn = op.corners;
         }
         this.cutMat.uniforms.opacity.value = op.cutOpacity;
         this.cutMat.uniforms.feather.value = op.feather;
@@ -695,8 +711,15 @@ export class WindowCompositor {
     }
 
     /** Point a window's effect pass at the composite and its latest sort. */
-    prepareFx(win) {
+    /**
+     * `stage` 'early' is the hue shift and sort, on the footage before the
+     * things in front; 'late' is the quad tree, on the finished frame (so it
+     * takes in meshes, props, points and text too); 'all' is all of them on
+     * the finished frame, for a window that works on everything.
+     */
+    prepareFx(win, stage = 'early') {
         const u = win.fxMat.uniforms;
+        u.qtOnly.value = stage === 'late' ? 1 : 0;
         u.tComp.value = this.compRT.texture;
         u.resolution.value.copy(this.size);
         const rect = win.sort.rect;
@@ -706,11 +729,12 @@ export class WindowCompositor {
             u.sortRect.value.set(rect.x, rect.y, rect.w, rect.h);
         }
         // The quad tree the compositor drew for this window this frame.
-        const qt = win.qt;
-        u.useQt.value = win.op.qt_on && qt?.tex && qt.rect ? 1 : 0;
+        const qt = stage !== 'early' ? win.qt : null;
+        u.useQt.value = win.op.qt_on && qt?.tex && (qt.rect || qt.plane) ? 1 : 0;
+        u.qtPlane.value = qt?.plane ? 1 : 0;
         if (u.useQt.value) {
             u.tQt.value = qt.tex;
-            u.qtRect.value.set(qt.rect.x, qt.rect.y, qt.rect.w, qt.rect.h);
+            if (qt.rect) u.qtRect.value.set(qt.rect.x, qt.rect.y, qt.rect.w, qt.rect.h);
         }
     }
 

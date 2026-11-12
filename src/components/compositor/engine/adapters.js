@@ -3,7 +3,10 @@
 // protagonist, Sackboy, props and screens, windows) behind one interface:
 //
 //   object            the THREE.Object3D in the scene (picked, gizmo'd)
-//   sync(obj, params) every frame, with the object's resolved parameters
+//   sync(obj, params, f)
+//                     every frame, with the object's resolved parameters
+//                     (f as for update, with `globals`: the variables and
+//                     splines expressions read, model/globals.js)
 //   update(dt, f)     advance animation; f = { music, time, take, freq,
 //                     live, drawSize, renderer, scene, exporting, playing }
 //   dispose()
@@ -26,6 +29,8 @@ import { WindowModel } from '../../../lib/scanAssets/windows';
 import { ENV_LAYER } from './takeRig';
 import PatchScreen from './patchScreen';
 import TextObject from './textObject';
+import CurveAdapter, { Dots, knotAngle } from './curveObject';
+import { isTemplate, fillTemplate } from '../model/expr';
 
 const plyCache = new Map();
 
@@ -291,17 +296,120 @@ class TextAdapter {
         this.model = { op: {} };
     }
 
-    sync(obj, p) {
-        this.text.sync(p);
-        this.model.op = p;
+    sync(obj, p, f) {
+        let q = p;
+        // Dynamic text: {{θ}}, {{2ω_1:3}} worked out now.
+        if (isTemplate(p.text) && f?.globals) {
+            const g = f.globals;
+            q = { ...q, text: fillTemplate(p.text, (src) => g.evaluate(src), g.digitsFor) };
+        }
+        if (p.space === 'frame') {
+            // Over the frame: a box of the frame's proportions, placed each frame in update.
+            const ds = f?.drawSize;
+            const A = Math.max(1e-3, ((p.frameW ?? 0.5) * (ds ? ds.x : 16)) / Math.max(1e-6, (p.frameH ?? 0.1) * (ds ? ds.y : 9)));
+            const r = (v) => Math.round(v * 1e5) / 1e5;
+            q = {
+                ...q,
+                corners: [[r(-A / 2), 0.5, 0], [r(A / 2), 0.5, 0], [r(A / 2), -0.5, 0], [r(-A / 2), -0.5, 0]],
+                lit: false,
+                castShadow: false,
+                hideBehindScan: false,
+            };
+        }
+        this.text.sync(q);
+        this.model.op = q;
         this.object.userData.objectId = obj.id;
     }
 
-    update() {}
+    // Keep the letters rasterised at the size they are drawn on screen.
+    update(dt, f) {
+        if (this.model.op.space === 'frame') this.text.place2D(f.camera, this.model.op);
+        else if (this.model.op.faceCamera) this.text.face(f.camera, !!this.anchor || !!this.aboutOrigin);
+        this.text.fit(f.camera, f.drawSize, f.renderer);
+        this.text.setTime(f.time);
+    }
 
     setScanDepth(tex, size) { this.text.setScanDepth(tex, size); }
 
     dispose() { this.text.dispose(); }
+}
+
+// ---- A spline's point -------------------------------------------------------------------
+
+/**
+ * One defining point of a spline, as its own object: a marker at its origin
+ * (the engine hangs it on the point) and a label measured from there. The
+ * engine hands it the spline's resolved settings as `look` before each sync.
+ */
+class SplinePointAdapter {
+    constructor(obj, parent) {
+        this.object = new THREE.Group();
+        parent.add(this.object);
+        this.label = new TextAdapter(obj, this.object);
+        this.label.aboutOrigin = true;
+        this.marker = new Dots();
+        this.object.add(this.marker.object);
+        this.model = this.label.model;
+        this.look = {};
+        this.size = new THREE.Vector2();
+        this.wq = new THREE.Quaternion();
+        this.cq = new THREE.Quaternion();
+        this.col = new THREE.Color();
+    }
+
+    /** The label's own node: its corners are in its frame. */
+    get labelNode() { return this.label.object; }
+
+    sync(obj, p, f) {
+        const L = this.look || {};
+        this.object.userData.objectId = obj.id;
+        this.object.visible = p.visible !== false;
+        // The label: a Text, in the scene, hidden with the spline's labels.
+        const labelOn = L.labels === true && p.showLabel !== false;
+        this.label.sync(obj, { ...p, space: 'scene', visible: labelOn }, f);
+        this.drawMarker(p, f, L.showKnots !== false && p.showMarker !== false, obj.pointLabel?.index ?? 0);
+    }
+
+    drawMarker(p, f, on, index) {
+        const L = this.look || {};
+        if (!on) { this.marker.hide(); return; }
+        const own = !!p.markerOwn;
+        const shape = (own ? p.markerShape : L.knotShape) || 'octa';
+        const style = own ? p.markerStyle : L.knotStyle;
+        const c = this.col.set((own ? p.markerColor : L.knotColor) || '#ffffff');
+        f?.renderer?.getDrawingBufferSize(this.size);
+        // Flat markers face the camera, in this point's own frame.
+        const face = this.cq.identity();
+        if (f?.camera) {
+            this.object.updateWorldMatrix(true, false);
+            this.object.getWorldQuaternion(this.wq).invert();
+            f.camera.getWorldQuaternion(face);
+            face.premultiply(this.wq);
+        }
+        this.marker.write(1, [0, 0, 0], [(own ? p.markerSize : L.knotSize) ?? 0.035], [c.r, c.g, c.b, 1], {
+            shape,
+            lit: false,
+            face,
+            // The spline turns them all, each about an axis of its own (seeded by the point).
+            spin: L.knotSpin ? [knotAngle(L, index, f?.time)] : null,
+            spinAxis: L.knotSpinAxis,
+            seed: index,
+            opacity: L.opacity ?? 1,
+            wire: style === 'wire',
+            wireWidth: own ? p.markerWire : L.knotWire,
+            resolution: this.size,
+        });
+    }
+
+    update(dt, f) { this.label.update(dt, f); }
+
+    setScanDepth(tex, size) { this.label.setScanDepth(tex, size); }
+
+    dispose() {
+        this.label.dispose();
+        this.marker.dispose();
+        this.object.removeFromParent();
+    }
 }
 
 export function makeAdapter(obj, parent, ctx) {
@@ -313,6 +421,9 @@ export function makeAdapter(obj, parent, ctx) {
         case 'prop': return new PropAdapter(obj, parent, ctx.library);
         case 'window': return new WindowAdapter(obj, parent);
         case 'text': return new TextAdapter(obj, parent);
+        case 'splinePoint': return new SplinePointAdapter(obj, parent);
+        case 'equation':
+        case 'spline': return new CurveAdapter(obj, parent);
         default: return null;
     }
 }

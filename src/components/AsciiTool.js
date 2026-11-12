@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import { SlidersHorizontal, X, Plus, Upload, Download } from 'lucide-react';
 import AsterDynamic from './AsterDynamic';
 import VfxNumberField from './VfxNumberField';
+import ColorPicker from './ui/ColorPicker';
 import styles from './vfx.module.css';
 
 const DEFAULTS = {
@@ -291,12 +292,11 @@ function AsciiTool() {
                                 {sliderRow('Intensity', light.intensity, (n) => updateLight(light.id, 'intensity', n), 0, 5, 0.1)}
                                 <div className={styles.vfx_row}>
                                     <span className={styles.vfx_label}>Color</span>
-                                    <input
-                                        type="color"
-                                        className={styles.vfx_color}
+                                    <ColorPicker
+                                        title="Color"
                                         style={{ gridColumn: '2 / 4' }}
                                         value={light.color}
-                                        onChange={(e) => updateLight(light.id, 'color', e.target.value)}
+                                        onChange={(v) => updateLight(light.id, 'color', v)}
                                     />
                                 </div>
                             </div>

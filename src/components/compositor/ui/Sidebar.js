@@ -2,17 +2,23 @@
 // scene's objects, the effects, the controllers) over an inspector for the
 // selection. It sits beside the viewport and pushes it, never over it.
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
     Eye, EyeOff, Move3d, Box, Camera, Sun, Sparkles, Activity, Plus, Trash2, Copy,
     ChevronDown, ChevronRight, Spline, PersonStanding, Square, Monitor, AlertTriangle, Clapperboard,
-    Circle, Layers, ArrowUp, ArrowDown, Shapes, Frame, Type, LayoutGrid,
+    Circle, Layers, ArrowUp, ArrowDown, Shapes, Frame, Type, LayoutGrid, ArrowDownWideNarrow, ScanSearch,
+    SquareFunction, Waypoints, Variable, CircleDot,
 } from 'lucide-react';
 import { Film, Music } from './icons';
 import { OBJECT_TYPES, ADDABLE, paramDefs } from '../model/schema';
 import { CONTROLLER_TYPES } from '../model/controllers';
-import { useComp } from './context';
+import { useComp, useTick } from './context';
+import {
+    globalsOf, scopeOf, variableKey, variableLabel, VARIABLE_KINDS,
+} from '../model/globals';
+import { formatValue } from '../model/expr';
+import { unusedScenes } from '../model/project';
 import Inspector from './Inspector';
 import styles from '../compositor.module.css';
 
@@ -26,6 +32,11 @@ const ICONS = {
     camera: Camera,
     cloud: Circle,
     curve: Spline,
+    equation: SquareFunction,
+    spline: Waypoints,
+    splinePoint: CircleDot,
+    stage: Box,
+    variable: Variable,
     protagonist: PersonStanding,
     sackboy: PersonStanding,
     prop: Shapes,
@@ -35,6 +46,8 @@ const ICONS = {
     haze: Sparkles,
     grade: Sparkles,
     quadtree: LayoutGrid,
+    pixelsort: ArrowDownWideNarrow,
+    blobs: ScanSearch,
 };
 
 const MEDIA_ICONS = { take: Clapperboard, video: Film, audio: Music, stage: Box };
@@ -90,7 +103,7 @@ function AddButton({ label, items, onPick }) {
     );
 }
 
-function ObjectRow({ obj, depth = 1 }) {
+function ObjectRow({ obj, depth = 1, kids = 0, folded = false, onFold = null }) {
     const comp = useComp();
     const Icon = ICONS[obj.type] || Box;
     const on = comp.selection?.kind === 'object' && comp.selection.id === obj.id;
@@ -104,8 +117,19 @@ function ObjectRow({ obj, depth = 1 }) {
             style={{ '--depth': depth }}
             onClick={() => comp.select({ kind: 'object', id: obj.id })}
         >
+            {kids > 0 && (
+                <button
+                    type="button"
+                    className={styles.olToggle}
+                    title={folded ? `Show its ${kids} part${kids === 1 ? '' : 's'}` : 'Fold its parts away'}
+                    onClick={(e) => { e.stopPropagation(); onFold?.(); }}
+                >
+                    {folded ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                </button>
+            )}
             <span className={styles.olIcon}><Icon size={12} /></span>
             <span className={styles.olName}>{obj.name}</span>
+            {kids > 0 && folded && <span className={styles.olTag}>{`+${kids}`}</span>}
             {Object.keys(obj.links || {}).length > 0 && <span className={styles.olTag} title="Has controller links">⌁</span>}
             {hasGizmo && (
                 <button
@@ -131,12 +155,44 @@ function ObjectRow({ obj, depth = 1 }) {
     );
 }
 
+/** A variable in the outliner, with its value as it is now. */
+function VariableRow({ v }) {
+    const comp = useComp();
+    const ref = useRef(null);
+    const on = comp.selection?.kind === 'variable' && comp.selection.id === v.id;
+    const key = variableKey(v);
+    const dupe = scopeOf(comp.project).dupes.has(v.id);
+    useTick((t, frame) => {
+        const g = frame && globalsOf(frame);
+        if (!ref.current || !g) return;
+        if (dupe) ref.current.textContent = 'taken';
+        else if (v.set === 'text') {
+            const words = String(g.text(key) ?? '');
+            ref.current.textContent = words.length > 14 ? `${words.slice(0, 13)}…` : words;
+        } else ref.current.textContent = formatValue(g.value(key), v.set === 'int' ? 0 : 3);
+    });
+    const link = v.set === 'text' ? v.links?.text : v.links?.value;
+    const ctrl = link && comp.project.controllers.find((c) => c.id === link.controller);
+    return (
+        <div className={`${styles.olRow} ${on ? styles.olRowOn : ''}`} style={{ '--depth': 1 }} onClick={() => comp.select({ kind: 'variable', id: v.id })}>
+            <span className={styles.olIcon}><Variable size={12} /></span>
+            <span className={styles.olName}>{variableLabel(v)}</span>
+            {ctrl && <span className={styles.swatch} style={{ background: ctrl.color }} title={`Follows ${ctrl.name}`} />}
+            <span ref={ref} className={`${styles.olTag} ${dupe ? styles.warn : ''}`} />
+            <span className={styles.olTag}>{v.set === 'text' ? 'T' : v.set === 'int' ? 'ℤ' : 'ℝ'}</span>
+        </div>
+    );
+}
+
 function Outliner() {
     const comp = useComp();
     const { project } = comp;
     const [closed, setClosed] = useState({});
     const effects = project.objects.filter((o) => !o.sceneId);
     const missing = comp.missingMedia;
+    // Scenes no clip plays, which can be deleted.
+    const unused = unusedScenes(project);
+    const unusedIds = new Set(unused.map((sc) => sc.id));
 
     const addItems = useMemo(() => [
         ...ADDABLE.placed.map((t) => ({ id: t, label: OBJECT_TYPES[t].label })),
@@ -194,9 +250,23 @@ function Outliner() {
                 })}
             </Section>
 
+            {unused.length > 1 && (
+                <div className={styles.olRow} style={{ '--depth': 0 }}>
+                    <span className={styles.olName} style={{ color: 'var(--faint)' }}>{`${unused.length} scenes aren't on the timeline`}</span>
+                    <button
+                        type="button"
+                        className={styles.olToggle}
+                        title={`Delete them all: ${unused.map((sc) => sc.name).join(', ')}`}
+                        onClick={() => comp.removeScenes(unused.map((sc) => sc.id))}
+                    >
+                        <Trash2 size={12} />
+                    </button>
+                </div>
+            )}
             {project.scenes.map((sc) => {
                 const objs = project.objects.filter((o) => o.sceneId === sc.id);
                 const isClosed = closed[sc.id];
+                const isUnused = unusedIds.has(sc.id);
                 return (
                     <React.Fragment key={sc.id}>
                         <div className={styles.olHead}>
@@ -204,10 +274,32 @@ function Outliner() {
                                 {isClosed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
                             </button>
                             <span className={styles.olName}>{sc.name}</span>
-                            <span className={styles.olTag}>{sc.take ? 'take' : 'stage'}</span>
+                            <span className={styles.olTag}>{isUnused ? `${sc.take ? 'take' : 'stage'} · unused` : sc.take ? 'take' : 'stage'}</span>
+                            {isUnused && (
+                                <button
+                                    type="button"
+                                    className={styles.olToggle}
+                                    title={`Delete ${sc.name}: no clip plays it. Its ${sc.take ? 'take' : 'stage'} leaves the media too, with everything in the scene (undo brings it back).`}
+                                    onClick={() => comp.removeScenes([sc.id])}
+                                >
+                                    <Trash2 size={12} />
+                                </button>
+                            )}
                             <AddButton label={`Add to ${sc.name}`} items={addItems} onPick={(type) => comp.addObject(type, sc.id)} />
                         </div>
-                        {!isClosed && objs.map((o) => <ObjectRow key={o.id} obj={o} />)}
+                        {!isClosed && (() => {
+                            // Children (a spline's labels) under their parent.
+                            const ids = new Set(objs.map((o) => o.id));
+                            const kidsOf = (id) => objs.filter((o) => o.parentId === id);
+                            return objs.filter((o) => !o.parentId || !ids.has(o.parentId)).flatMap((o) => {
+                                const kids = kidsOf(o.id);
+                                const folded = !!closed[o.id];
+                                return [
+                                    <ObjectRow key={o.id} obj={o} kids={kids.length} folded={folded} onFold={() => setClosed({ ...closed, [o.id]: !folded })} />,
+                                    ...(folded ? [] : kids.map((k) => <ObjectRow key={k.id} obj={k} depth={2} />)),
+                                ];
+                            });
+                        })()}
                     </React.Fragment>
                 );
             })}
@@ -225,6 +317,21 @@ function Outliner() {
             >
                 {effects.length === 0 && <div className={styles.empty}>Glow, haze, grade and quad trees go here, applied in order.</div>}
                 {effects.map((o) => <ObjectRow key={o.id} obj={o} />)}
+            </Section>
+
+            <Section
+                title="Variables"
+                open
+                actions={(
+                    <AddButton
+                        label="Add variable"
+                        items={[{ id: 'real', label: 'Real number (ℝ)' }, { id: 'int', label: 'Integer (ℤ)' }, { id: 'text', label: 'Text (shown in text, cut like a Switch)' }]}
+                        onPick={(set) => comp.addVariable(null, '', true, VARIABLE_KINDS[set] || {})}
+                    />
+                )}
+            >
+                {!(project.variables || []).length && <div className={styles.empty}>Greek letters equations, splines and text can read (θ, ω_1), each a value a controller can drive; or text a Text controller cuts between, shown in any text.</div>}
+                {(project.variables || []).map((v) => <VariableRow key={v.id} v={v} />)}
             </Section>
 
             <Section

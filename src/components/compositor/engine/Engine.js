@@ -31,14 +31,47 @@ import { WindowCompositor, LAYER, cornersFacing } from '../../../lib/scanAssets/
 import { MatteSet, HoldoutPass, mattesFor } from '../../../lib/scanAssets/roto';
 import { DEFAULT_SCREEN } from '../../../lib/scanAssets/library';
 import { makeFrame, resolveObject, resolveTrack } from '../model/resolve';
+import { globalsOf } from '../model/globals';
+import { ALL_POINTS } from '../model/spline';
 import { switchAt as switchStateAt, isSwitch } from '../model/controllers';
 import { OBJECT_TYPES } from '../model/schema';
 import { programAt, clipSourceTime } from '../model/timeline';
 import { TakeRig, poseAt, applyIntrinsics } from './takeRig';
 import { makeAdapter } from './adapters';
+import { drawnSpan, knotU } from './curveObject';
 import { VideoPool } from './media';
 import { GradeShader, GRADE_KEYS } from './passes';
 import QuadTreeFx from '../../quadtree/engine/threeFx';
+import SortFx from './sortFx';
+import BlobFx from './blobFx';
+import { setReactSeed } from '../../../lib/audioScene';
+import { quadAspect } from '../../../lib/scanAssets/props';
+
+// Effects that run on a picture (the program's or one track's) in compose, not as composer passes.
+// They run in effect order, each on the picture the ones before it left.
+const PICTURE_FX = new Set(['quadtree', 'pixelsort', 'blobs']);
+const NOT_PASSES = PICTURE_FX;
+const PICTURE_KIND = { quadtree: 'qt', pixelsort: 'sort', blobs: 'blobs' };
+
+// A window's picture laid flat: its patch drawn in its own UV space, each
+// point reading the composite where the camera sees that point of the
+// window. Clip coordinates are linear across each triangle in UV space, so
+// dividing per fragment is exact perspective.
+const UNWARP_VERT = /* glsl */`
+varying vec4 vClip;
+void main() {
+    vClip = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
+}`;
+const UNWARP_FRAG = /* glsl */`
+uniform sampler2D tComp;
+varying vec4 vClip;
+void main() {
+    if (vClip.w <= 0.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+    vec2 s = vClip.xy / vClip.w * 0.5 + 0.5;
+    if (s.x < 0.0 || s.y < 0.0 || s.x > 1.0 || s.y > 1.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+    gl_FragColor = vec4(texture2D(tComp, s).rgb, 1.0);
+}`;
 
 const D2R = Math.PI / 180;
 const OVERLAY_ONLY = 1 << LAYER.OVERLAY;
@@ -58,10 +91,26 @@ export function cameraPoseAt(obj, p, t) {
             pos.lerp(new THREE.Vector3().fromArray(b.p), f);
             quat.slerp(new THREE.Quaternion().fromArray(b.q), f);
         }
-        return { pos, quat, fov: a.fov ?? p.fov };
+        return { pos, quat, fov: a.fov ?? p.fov, ...projectionOf(p) };
     }
     const quat = new THREE.Quaternion().setFromEuler(new THREE.Euler(p.rotX * D2R, p.rotY * D2R, p.rotZ * D2R, 'YXZ'));
-    return { pos: new THREE.Vector3(p.posX, p.posY, p.posZ), quat, fov: p.fov };
+    return { pos: new THREE.Vector3(p.posX, p.posY, p.posZ), quat, fov: p.fov, ...projectionOf(p) };
+}
+
+/** Whether a camera object draws orthographically, and how much it sees top to bottom. */
+const projectionOf = (p) => ({ ortho: p.projection === 'orthographic', height: Math.max(1e-3, p.orthoHeight ?? 4) });
+
+/** Frame an orthographic camera `height` tall at `aspect`. */
+function setOrtho(cam, height, aspect, near, far) {
+    const h = height / 2;
+    cam.left = -h * aspect;
+    cam.right = h * aspect;
+    cam.top = h;
+    cam.bottom = -h;
+    cam.near = near;
+    cam.far = far;
+    cam.zoom = 1;
+    cam.updateProjectionMatrix();
 }
 
 export default class Engine {
@@ -87,7 +136,14 @@ export default class Engine {
         this.status = '';
         // Quad tree effects and windows, each with its own runner, by id.
         this.qtFx = new Map();
-        this.qtActive = [];
+        // Pixel sort effects, likewise.
+        this.sortFx = new Map();
+        // Quad tree and pixel sort effects on now, in effect order: { obj, p, kind, target }.
+        this.pictureFx = [];
+        this.drawNo = 0;
+        // Blob Tracker effects, by id, and those on now: { obj, p, fx, target }.
+        this.blobFx = new Map();
+        this.blobActive = [];
     }
 
     on(kind, fn) {
@@ -132,6 +188,7 @@ export default class Engine {
 
         this.trackedCamera = new THREE.PerspectiveCamera(50, 4 / 3, 0.01, 100);
         this.objectCamera = new THREE.PerspectiveCamera(50, 4 / 3, 0.01, 500);
+        this.orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 1000);
         this.freeCamera = new THREE.PerspectiveCamera(50, 4 / 3, 0.001, 1000);
         this.freeCamera.position.set(0, 0.5, 4);
         this.controls = new OrbitControls(this.freeCamera, renderer.domElement);
@@ -203,23 +260,16 @@ export default class Engine {
         this.cameraProxy = new THREE.Object3D();
         scene.add(this.cameraProxy);
 
-        // Corner editing (windows, screens, the pulse plane and line): a
-        // marker per corner plus one in the middle that moves them all, the
-        // gizmo on a proxy standing where the picked one is, and lines
-        // joining them.
+        // Corner editing (windows, screens, the pulse plane and line, a
+        // spline's points): a marker per corner plus one in the middle that
+        // moves them all, the gizmo on a proxy standing where the picked one
+        // is, and lines joining them. Markers are made as many as needed.
         this.cornerProxy = new THREE.Object3D();
         scene.add(this.cornerProxy);
         this.cornerHandles = new THREE.Group();
-        const cornerGeo = new THREE.OctahedronGeometry(1, 0);
-        for (let i = 0; i < 5; i++) {
-            const m = new THREE.Mesh(cornerGeo, new THREE.MeshBasicMaterial({
-                color: 0xffffff, depthTest: false, depthWrite: false, transparent: true, opacity: 0.9, toneMapped: false,
-            }));
-            m.layers.set(LAYER.OVERLAY);
-            m.renderOrder = 1001;
-            m.userData.handle = true;
-            this.cornerHandles.add(m);
-        }
+        this.cornerGeo = new THREE.OctahedronGeometry(1, 0);
+        this.cornerMarkers = [];
+        this.cornerMid = this.makeMarker();
         this.cornerHandles.visible = false;
         scene.add(this.cornerHandles);
         this.cornerGuide = new THREE.LineSegments(
@@ -227,11 +277,14 @@ export default class Engine {
             new THREE.LineBasicMaterial({ color: 0xffb347, transparent: true, opacity: 0.8, depthTest: false, depthWrite: false }),
         );
         this.cornerGuide.layers.set(LAYER.OVERLAY);
+        // Its parent may be a placed object (a prop's screen, a spline), whose layers the frame resets: not this.
+        this.cornerGuide.userData.handle = true;
         this.cornerGuide.frustumCulled = false;
         this.cornerGuide.renderOrder = 1000;
         this.cornerGuide.visible = false;
         scene.add(this.cornerGuide);
 
+        this.cornerHandles.add(this.cornerMid);
         this.pool = new VideoPool((missing) => { this.dirty = true; if (missing) this.emit('change'); });
 
         this.onPointerDown = (e) => this.pick(e);
@@ -274,6 +327,20 @@ export default class Engine {
         this.fit();
     }
 
+    /** A corner marker: on top of everything, on the overlay. */
+    makeMarker() {
+        const m = new THREE.Mesh(this.cornerGeo, new THREE.MeshBasicMaterial({
+            color: 0xffffff, depthTest: false, depthWrite: false, transparent: true, opacity: 0.9, toneMapped: false,
+        }));
+        m.layers.set(LAYER.OVERLAY);
+        m.renderOrder = 1001;
+        m.userData.handle = true;
+        return m;
+    }
+
+    /** The handle that moves all of the target's corners at once. */
+    allHandle(target) { return target?.kind === 'spline' ? ALL_POINTS : 4; }
+
     dispose() {
         this.resizeObserver?.disconnect();
         window.removeEventListener('keydown', this.onKey);
@@ -298,6 +365,13 @@ export default class Engine {
         this.postPasses?.forEach(({ pass }) => pass.dispose?.());
         this.qtFx?.forEach((fx) => fx.dispose());
         this.qtFx?.clear();
+        this.sortFx?.forEach((fx) => fx.dispose());
+        this.sortFx?.clear();
+        this.blobFx?.forEach((fx) => fx.dispose());
+        this.blobFx?.clear();
+        this.soloLayer?.quad.material.dispose();
+        this.unwarp?.targets.forEach((rt) => rt.dispose());
+        this.unwarp?.mat.dispose();
         this.renderer?.dispose();
         this.stage?.remove();
     }
@@ -396,6 +470,7 @@ export default class Engine {
                 if (ids.has(oid)) return;
                 if (this.gizmo.object && (this.gizmo.object === a.object || this.gizmo.object === a.gizmoTarget)) this.gizmo.detach();
                 a.dispose();
+                a.anchor?.removeFromParent();
                 s.adapters.delete(oid);
             });
             objs.forEach((o) => {
@@ -444,7 +519,7 @@ export default class Engine {
             return { id: e.id, point, bloom };
         });
         c.addPass(this.gamma);
-        this.postPasses = effects.filter((e) => e.type !== 'glow' && e.type !== 'quadtree').map((e) => {
+        this.postPasses = effects.filter((e) => e.type !== 'glow' && !NOT_PASSES.has(e.type)).map((e) => {
             const pass = new ShaderPass(e.type === 'grade' ? GradeShader : DreamHazeShader);
             c.addPass(pass);
             return { id: e.id, type: e.type, pass };
@@ -495,14 +570,43 @@ export default class Engine {
             }
             any = any || pass.enabled;
         });
-        // Quad trees run in compose (some on one track's picture only); here
-        // they are resolved, and their runners kept or let go.
-        this.qtActive = fx ? effects.filter((o) => o.type === 'quadtree').map((obj) => ({ obj, p: resolveObject(obj, frame) }))
-            .filter(({ p }) => p.visible !== false && (p.qt_mix ?? 1) > 0) : [];
-        any = any || this.qtActive.length > 0;
+        // Quad trees, pixel sorts and Blob Trackers run in compose (some on
+        // one track's picture only); here they are resolved, and their
+        // runners kept or let go.
+        this.pictureFx = fx ? effects.filter((o) => PICTURE_FX.has(o.type)).map((obj) => {
+            const p = resolveObject(obj, frame);
+            const qt = obj.type === 'quadtree';
+            return {
+                obj, p, kind: PICTURE_KIND[obj.type],
+                target: (qt ? p.qt_target : p.target) || 'program',
+                mix: qt ? (p.qt_mix ?? 1) : obj.type === 'pixelsort' ? (p.sortMix ?? 1) : 1,
+                preview: qt ? p.qt_preview : p.preview,
+            };
+        }).filter((e) => e.p.visible !== false && e.mix > 0 && (this.exporting || e.preview !== false)) : [];
+        any = any || this.pictureFx.length > 0;
+        const keepSort = new Set(effects.filter((o) => o.type === 'pixelsort').map((o) => o.id));
+        // Blob Trackers that are on (their mattes are loaded with the take's).
+        this.blobActive = this.pictureFx.filter((e) => e.kind === 'blobs');
+        const keepBlobs = new Set(effects.filter((o) => o.type === 'blobs').map((o) => o.id));
+        this.blobFx.forEach((b, id) => { if (!keepBlobs.has(id)) { b.dispose(); this.blobFx.delete(id); } });
+        this.sortFx.forEach((q, id) => { if (!keepSort.has(id)) { q.dispose(); this.sortFx.delete(id); } });
         const keepQt = new Set(effects.filter((o) => o.type === 'quadtree').map((o) => o.id));
-        this.scenes.forEach((sc) => sc.adapters.forEach((a, id) => { if (a.model?.op?.qt_on) keepQt.add(`win:${id}`); }));
+        // Windows with a quad tree need the frame in a target they can read.
+        let winQt = false;
+        this.blobActive.forEach(({ obj }) => this.blobFx.get(obj.id)?.windows.forEach((w) => {
+            if (!w.model.op?.qt_on) return;
+            keepQt.add(`win:${w.id}`);
+            winQt = true;
+        }));
+        this.scenes.forEach((sc) => sc.adapters.forEach((a, id) => {
+            const op = a.model?.op;
+            if (!op?.qt_on) return;
+            keepQt.add(`win:${id}`);
+            if (sc.id === this.activeSceneId && (this.exporting || op.qt_preview !== false)) winQt = true;
+        }));
+        any = any || winQt;
         this.qtFx.forEach((q, id) => { if (!keepQt.has(id)) { q.dispose(); this.qtFx.delete(id); } });
+        this.unwarp?.targets.forEach((rt, id) => { if (!keepQt.has(`win:${id}`)) { rt.dispose(); this.unwarp.targets.delete(id); } });
         const cur = this.composer.renderTarget1;
         const sizeKey = `${size.x}x${size.y}`;
         if (cur.width !== size.x || cur.height !== size.y || this.composerSized !== sizeKey) {
@@ -532,7 +636,8 @@ export default class Engine {
         if (this.cornerTargetNow && this.cornerHandles.visible) {
             const p = new THREE.Vector3();
             let best = null;
-            this.cornerHandles.children.forEach((h, i) => {
+            const all = this.allHandle(this.cornerTargetNow);
+            [...this.cornerMarkers.map((h, i) => [h, i]), [this.cornerMid, all]].forEach(([h, i]) => {
                 if (!h.visible) return;
                 h.getWorldPosition(p).project(this.activeCamera);
                 if (p.z < -1 || p.z > 1) return;
@@ -574,7 +679,7 @@ export default class Engine {
         if (obj.type === 'camera') return { node: this.cameraProxy, kind: 'camera' };
         const a = this.adapterOf(obj.id)?.adapter;
         if (!a) return null;
-        if (obj.type === 'window' || obj.type === 'text') return null; // moved by their corners
+        if (obj.type === 'window' || obj.type === 'text' || obj.type === 'splinePoint') return null; // moved by their corners
         const node = a.gizmoTarget || a.object;
         return node ? { node, kind: 'object' } : null;
     }
@@ -587,7 +692,7 @@ export default class Engine {
         this.gizmoKind = target?.kind || null;
         // One corner only moves; all of them together move, turn and size
         // about their middle like any object.
-        const one = this.gizmoKind === 'corners' && (this.cornerEdit?.handle ?? 4) !== 4;
+        const one = this.gizmoKind === 'corners' && (this.cornerEdit?.handle ?? 4) < (this.cornerTargetNow?.corners.length ?? 4);
         const want = one ? 'translate' : (this.userGizmoMode || 'translate');
         if (this.gizmo.mode !== want && !this.dragging) this.gizmo.setMode(want);
         if (target && obj.type === 'camera' && !this.dragging) {
@@ -626,7 +731,9 @@ export default class Engine {
                 const m = this.cornerProxy.matrix;
                 corners = from.corners.map((c) => new THREE.Vector3().fromArray(c).sub(from.mid).applyMatrix4(m).toArray().map((v) => r(v)));
             }
-            this.emit('corners', { objectId: t.obj.id, kind: t.kind, key: t.key, entryId: t.entry?.id, corners, done });
+            this.emit('corners', {
+                objectId: t.obj.id, kind: t.kind, key: t.key, entryId: t.entry?.id, corners, done, handle: h,
+            });
             return;
         }
         const obj = this.project?.objects.find((o) => o.id === this.selectedId);
@@ -651,19 +758,87 @@ export default class Engine {
         this.emit('edit', obj.id, patch, done);
     }
 
+    /**
+     * Hang an object's node where it belongs: in its scene, or in its
+     * parent's frame; a spline's point label on an anchor at its point
+     * (shown while the spline shows labels).
+     */
+    attach(o, a, S, resolved, f) {
+        const node = a.object;
+        if (!node) return;
+        let want = S.root;
+        const pa = o.parentId ? S.adapters.get(o.parentId) : null;
+        const frameOf = pa ? (pa.group || pa.object) : null;
+        if (frameOf) {
+            if (o.pointLabel) {
+                if (!a.anchor) a.anchor = new THREE.Group();
+                if (a.anchor.parent !== frameOf) frameOf.add(a.anchor);
+                // (A spline whose symbol another has is solved by its adapter alone.)
+                const st = f.globals?.spline(o.parentId) || pa.splineState;
+                const i = o.pointLabel.index;
+                const pt = st?.points?.[i];
+                const ok = !!pt && pt.every(Number.isFinite);
+                if (ok) a.anchor.position.set(pt[0], pt[1], pt[2]);
+                const sp = resolved.get(o.parentId) || {};
+                // A Text label (from before points were objects) shows with the labels.
+                let shown = ok && (o.type === 'splinePoint' || sp.labels === true);
+                let grow = 1;
+                if (shown && sp.pointsByU) {
+                    // Only once the drawn part of the curve has reached it.
+                    const u = knotU(st.sol)[i];
+                    const span = drawnSpan(sp, f.time);
+                    const eps = 1e-6;
+                    shown = !!span && Number.isFinite(u) && u >= span[0] - eps && u <= span[1] + eps;
+                    const over = Math.max(0, sp.pointsAppear || 0);
+                    if (shown && over > 0) {
+                        const lead = sp.revealFrom === 'end' ? u - span[0] : sp.revealFrom === 'centre' ? Math.min(u - span[0], span[1] - u) : span[1] - u;
+                        const x = Math.max(0, Math.min(1, lead / over));
+                        grow = x * x * (3 - 2 * x);
+                    }
+                }
+                a.anchor.visible = shown && grow > 1e-4;
+                a.anchor.scale.setScalar(Math.max(1e-4, grow));
+                want = a.anchor;
+            } else {
+                want = frameOf;
+            }
+        }
+        if (want !== a.anchor && a.anchor) { a.anchor.removeFromParent(); a.anchor = null; }
+        if (node.parent !== want) want.add(node);
+    }
+
     /** The corners being edited, in the space they are written in, or null. */
     cornerTarget(objects, S) {
         const ed = this.cornerEdit;
         if (!ed || !S || this.exporting || this.roto?.on) return null;
         const obj = objects.find((o) => o.id === ed.objectId);
         if (!obj) return null;
-        // Windows and text are both drawn by their corners, written to `corners`.
-        if (obj.type === 'window' || obj.type === 'text') return { obj, kind: 'window', corners: obj.params.corners, space: S.root };
+        // Windows and text are both drawn by their corners, written to `corners`
+        // (text over the frame is placed in frame coordinates instead).
+        if (obj.type === 'text' && obj.params.space === 'frame') return null;
+        if (obj.type === 'text' || obj.type === 'splinePoint') {
+            // In the text's own frame: its parent's (a label's, from its point),
+            // turned with it when it faces the camera, so the markers sit on it.
+            const a = S.adapters.get(obj.id);
+            if (obj.type === 'splinePoint' && (a?.look?.labels !== true || obj.params.showLabel === false)) return null;
+            const node = a?.labelNode || a?.object;
+            return { obj, kind: 'window', corners: obj.params.corners, space: node?.parent ? node : S.root };
+        }
+        if (obj.type === 'window') return { obj, kind: 'window', corners: obj.params.corners, space: S.root };
         if (obj.type === 'prop') {
             const a = S.adapters.get(obj.id);
             const entry = this.library().assets.find((x) => x.id === obj.params.assetId);
             if (!a?.model?.ready || entry?.category !== 'screen') return null;
             return { obj, kind: 'screen', entry, corners: { ...DEFAULT_SCREEN, ...entry.screen }.corners, space: a.model.norm };
+        }
+        if (obj.type === 'spline') {
+            // Where its points are now (expressions worked out), in its own frame.
+            const a = S.adapters.get(obj.id);
+            const pts = a?.splineState?.points;
+            if (!pts?.length) return null;
+            return {
+                obj, kind: 'spline', corners: pts.map((pt) => pt.map((v) => (Number.isFinite(v) ? v : 0))), space: a.group, path: true, closed: obj.params.ends === 'closed',
+            };
         }
         if (obj.type === 'scanPoints' && S.rig?.cloud) {
             const key = obj.params.pulseMode === 'plane' ? 'pulsePlane' : obj.params.pulseMode === 'line' ? 'pulseLine' : null;
@@ -686,36 +861,56 @@ export default class Engine {
         G.visible = true;
         const C = target.corners.map((c) => new THREE.Vector3().fromArray(c));
         const mid = C.reduce((a, c) => a.add(c), new THREE.Vector3()).multiplyScalar(1 / C.length);
-        const active = this.cornerEdit.handle ?? 4;
+        const all = this.allHandle(target);
+        const picked = this.cornerEdit.handle ?? all;
+        const active = picked < C.length ? picked : all;
         const camAt = cam.getWorldPosition(new THREE.Vector3());
         const k = target.space.getWorldScale(new THREE.Vector3()).x || 1;
         const wp = new THREE.Vector3();
-        H.children.forEach((m, i) => {
-            m.visible = i < C.length || i === 4;
-            m.position.copy(i < C.length ? C[i] : mid);
-            m.material.color.set(i === active ? '#ffb347' : (i === 4 ? '#7fe3ff' : '#ffffff'));
+        while (this.cornerMarkers.length < C.length) {
+            const m = this.makeMarker();
+            this.cornerMarkers.push(m);
+            H.add(m);
+        }
+        const place = (m, at, on, color) => {
+            m.position.copy(at);
+            m.material.color.set(on ? '#ffb347' : color);
             m.updateMatrixWorld(true);
             m.getWorldPosition(wp);
-            m.scale.setScalar((wp.distanceTo(camAt) * (i === active ? 0.016 : 0.011)) / k);
+            m.scale.setScalar((wp.distanceTo(camAt) * (on ? 0.016 : 0.011)) / k);
+        };
+        this.cornerMarkers.forEach((m, i) => {
+            m.visible = i < C.length;
+            if (m.visible) place(m, C[i], i === active, '#ffffff');
         });
-        // The outline, closed for a quad or plane; a line runs on past its ends.
-        const attr = G.geometry.getAttribute('position');
+        this.cornerMid.visible = true;
+        place(this.cornerMid, mid, active === all, '#7fe3ff');
+        // The outline, closed for a quad or plane; a line runs on past its
+        // ends; a spline's points are joined in order (back to the first if it loops).
         const segs = [];
-        if (C.length === 2) {
+        if (target.path) {
+            for (let i = 0; i < C.length - 1; i++) segs.push([C[i], C[i + 1]]);
+            if (target.closed && C.length > 2) segs.push([C[C.length - 1], C[0]]);
+        } else if (C.length === 2) {
             const d = C[1].clone().sub(C[0]);
             segs.push([C[0].clone().addScaledVector(d, -0.5), C[1].clone().addScaledVector(d, 0.5)]);
         } else {
             C.forEach((c, i) => segs.push([c, C[(i + 1) % C.length]]));
         }
-        segs.slice(0, 8).forEach(([a, b], i) => {
+        let attr = G.geometry.getAttribute('position');
+        if (attr.count < segs.length * 2) {
+            attr = new THREE.BufferAttribute(new Float32Array(Math.ceil(segs.length * 1.5) * 2 * 3), 3);
+            G.geometry.setAttribute('position', attr);
+        }
+        segs.forEach(([a, b], i) => {
             attr.setXYZ(i * 2, a.x, a.y, a.z);
             attr.setXYZ(i * 2 + 1, b.x, b.y, b.z);
         });
-        G.geometry.setDrawRange(0, Math.min(8, segs.length) * 2);
+        G.geometry.setDrawRange(0, segs.length * 2);
         attr.needsUpdate = true;
         if (!this.dragging) {
             if (this.cornerProxy.parent !== target.space) target.space.add(this.cornerProxy);
-            this.cornerProxy.position.copy(active < C.length ? C[active] : mid);
+            this.cornerProxy.position.copy(active !== all && active < C.length ? C[active] : mid);
             this.cornerProxy.rotation.set(0, 0, 0);
             this.cornerProxy.scale.set(1, 1, 1);
             this.cornerProxy.updateMatrixWorld(true);
@@ -769,7 +964,9 @@ export default class Engine {
         S.root.updateMatrixWorld(true);
         const c = S.rig?.sphere ? S.root.localToWorld(S.rig.sphere.center.clone()) : new THREE.Vector3();
         const dist = Math.max(0.3, c.distanceTo(cam.getWorldPosition(new THREE.Vector3())));
-        const span = 2 * Math.tan(THREE.MathUtils.degToRad(cam.fov || 50) / 2);
+        const span = cam.isOrthographicCamera
+            ? (cam.top - cam.bottom) / (cam.zoom || 1) / dist
+            : 2 * Math.tan(THREE.MathUtils.degToRad(cam.fov || 50) / 2);
         return cornersFacing(cam, S.root, dist, dist * span * 0.35);
     }
 
@@ -835,6 +1032,8 @@ export default class Engine {
         this.renderer.setPixelRatio(1);
         this.renderer.setSize(w, h, false);
         this.scenes.forEach((s) => s.adapters.forEach((a) => a.reset?.()));
+        // Tracking starts from nothing, so an export's boxes are its own.
+        this.blobFx.forEach((b) => b.reset());
     }
 
     endExport() {
@@ -847,6 +1046,7 @@ export default class Engine {
         this.renderer.setSize(s.size.x, s.size.y, true);
 
         this.saved = null;
+        this.blobFx.forEach((b) => b.reset());
         this.fit();
         this.dirty = true;
     }
@@ -892,6 +1092,7 @@ export default class Engine {
 
         const frame = makeFrame(P, t, this.analysis);
         this.lastFrame = frame;
+        this.drawNo++;
         const program = programAt(P, t, (tr) => resolveTrack(tr, frame).visible !== false);
         const base = program.base;
 
@@ -948,12 +1149,16 @@ export default class Engine {
                 : (base?.media.kind === 'stage' ? objects.find((o) => o.type === 'camera') : null);
             if (camObj) {
                 const pose = cameraPoseAt(camObj, resolveObject(camObj, frame), t);
-                cam = this.objectCamera;
+                cam = pose.ortho ? this.orthoCamera : this.objectCamera;
                 cam.position.copy(pose.pos);
                 cam.quaternion.copy(pose.quat);
-                cam.fov = pose.fov;
-                cam.aspect = aspect;
-                cam.updateProjectionMatrix();
+                if (pose.ortho) {
+                    setOrtho(cam, pose.height, aspect, 0.01, 1000);
+                } else {
+                    cam.fov = pose.fov;
+                    cam.aspect = aspect;
+                    cam.updateProjectionMatrix();
+                }
             } else if (rig?.track && !rig.track.unsolved && takeTime != null) {
                 cam = this.trackedCamera;
                 const pose = poseAt(takeTime, rig.track);
@@ -982,6 +1187,9 @@ export default class Engine {
         // ---- Scene contents
         const music = this.analysis.music;
         const freq = this.analysis.spectrumAt?.(t) || null;
+        // The audio reaction's scatter follows the timeline's frame, so a
+        // paused frame holds still (and what is tracked in it does too).
+        setReactSeed(Math.floor(t * (P.output?.fps || 30) + 1e-6));
         const live = !!freq;
         const behind = { points: false, mesh: false, wire: false };
         if (rig) {
@@ -996,16 +1204,30 @@ export default class Engine {
             behind.wire = wire?.depthLayer === 'behind';
         }
         const f = {
-            music, time: t, take: takeTime, freq, live, drawSize, renderer: this.renderer, scene: this.scene,
+            // What expressions read now: variables and splines.
+            globals: globalsOf(frame, P),
+            music, time: t, take: takeTime, freq, live, drawSize, renderer: this.renderer, scene: this.scene, camera: cam,
             exporting, playing: !!opts.playing, envReady: !!rig?.envMesh,
             // A window shows at its drawn size while one of its corners is dragged.
             holdWindow: this.dragging && this.cornerTargetNow?.kind === 'window' ? S?.adapters.get(this.cornerTargetNow.obj.id) : null,
         };
         if (S) {
+            // Parents first, so their children are placed from where they are now.
+            const order = objects.some((o) => o.parentId) ? [...objects.filter((o) => !o.parentId), ...objects.filter((o) => o.parentId)] : objects;
+            // Which of each spline's points are objects of their own (and draw their own markers).
+            const owners = new Map();
             objects.forEach((o) => {
+                if (o.type !== 'splinePoint' || !o.pointLabel) return;
+                if (!owners.has(o.parentId)) owners.set(o.parentId, new Set());
+                owners.get(o.parentId).add(o.pointLabel.index);
+            });
+            order.forEach((o) => {
                 const a = S.adapters.get(o.id);
                 if (!a) return;
-                a.sync(o, resolved.get(o.id));
+                if (o.type === 'spline') a.knotOwners = owners.get(o.id) || null;
+                if (o.type === 'splinePoint') a.look = resolved.get(o.parentId) || {};
+                this.attach(o, a, S, resolved, f);
+                a.sync(o, resolved.get(o.id), f);
                 a.update(dt, f);
             });
         }
@@ -1023,10 +1245,14 @@ export default class Engine {
                 const p = resolved.get(id);
                 const back = p?.depthLayer === 'behind';
                 const mask = 1 << (back ? LAYER.BEHIND : LAYER.FRONT);
-                a.object.traverse((o) => {
+                const walk = (o) => {
+                    // A child object's nodes are its own to set.
+                    if (o !== a.object && o.userData.objectId && o.userData.objectId !== id) return;
                     if (o.userData.handle) o.layers.set(LAYER.OVERLAY);
                     else if (o.layers.mask !== mask && o.layers.mask !== (1 << LAYER.WIN_CUT) && o.layers.mask !== (1 << LAYER.WIN_FX)) o.layers.mask = mask;
-                });
+                    o.children.forEach(walk);
+                };
+                walk(a.object);
                 if (back && a.object.visible) behindCount++;
             });
         }
@@ -1091,6 +1317,7 @@ export default class Engine {
                 const idx = Math.max(0, Math.min(rig.track.frame_count - 1, Math.floor(takeTime * rig.track.fps + 1e-3)));
                 const winMattes = [];
                 S.adapters.forEach((a) => { if (a.model?.op?.matte) winMattes.push(a.model.op.matte); });
+                this.blobActive.forEach(({ p }) => { if (p.spawnWindows && p.matte) winMattes.push(p.matte); });
                 const all = Array.from(new Set([...ids.filter((id) => holdMap[id] !== false), ...winMattes]));
                 if (!opts.exportFrame) this.mattes.follow(all, idx, src?.dir < 0);
                 this.matteFrame = { all, idx, back: src?.dir < 0 };
@@ -1153,8 +1380,8 @@ export default class Engine {
     }
 
     /** A camera and a frustum drawn for it, in one colour, on the overlay. */
-    makeFrustum(color) {
-        const cam = new THREE.PerspectiveCamera(50, this.outputAspect, 0.05, 0.4);
+    makeFrustum(color, ortho = false) {
+        const cam = ortho ? new THREE.OrthographicCamera(-1, 1, 1, -1, 0.05, 0.4) : new THREE.PerspectiveCamera(50, this.outputAspect, 0.05, 0.4);
         this.scene.add(cam);
         const h = new THREE.CameraHelper(cam);
         const c = new THREE.Color(color);
@@ -1164,20 +1391,26 @@ export default class Engine {
         h.material.depthTest = false;
         h.material.transparent = true;
         h.renderOrder = 999;
+        h.userData.ortho = ortho;
         this.helpers.add(h);
         return h;
     }
 
     /** Point a frustum's camera; its length follows the scene's size so it reads at any scale. */
-    placeFrustum(h, pos, quat, fov, reach) {
+    placeFrustum(h, pos, quat, fov, reach, orthoHeight = null) {
         const c = h.userData.cam;
         c.position.copy(pos);
         c.quaternion.copy(quat);
-        c.fov = fov;
-        c.aspect = this.outputAspect;
-        c.near = reach * 0.04;
-        c.far = reach;
-        c.updateProjectionMatrix();
+        if (c.isOrthographicCamera) {
+            // An orthographic one shows its true width, its length the scene's.
+            setOrtho(c, orthoHeight || 1, this.outputAspect, reach * 0.04, reach);
+        } else {
+            c.fov = fov;
+            c.aspect = this.outputAspect;
+            c.near = reach * 0.04;
+            c.far = reach;
+            c.updateProjectionMatrix();
+        }
         c.updateMatrixWorld(true);
         h.update();
     }
@@ -1204,13 +1437,19 @@ export default class Engine {
             this.cameraHelpers.delete(id);
         });
         cams.forEach((o) => {
+            const pose = cameraPoseAt(o, resolved.get(o.id), takeTime ?? this.lastTime);
             let h = this.cameraHelpers.get(o.id);
+            if (h && h.userData.ortho !== pose.ortho) {
+                h.removeFromParent();
+                h.userData.cam.removeFromParent();
+                h = null;
+            }
             if (!h) {
-                h = this.makeFrustum('#ffb347');
+                h = this.makeFrustum('#ffb347', pose.ortho);
+                h.traverse((x) => x.layers.set(LAYER.OVERLAY));
                 this.cameraHelpers.set(o.id, h);
             }
-            const pose = cameraPoseAt(o, resolved.get(o.id), takeTime ?? this.lastTime);
-            this.placeFrustum(h, pose.pos, pose.quat, pose.fov, reach);
+            this.placeFrustum(h, pose.pos, pose.quat, pose.fov, reach, pose.height);
         });
         // The solve: where the real camera was at this moment of the take.
         if (!this.solveHelper) this.solveHelper = this.makeFrustum('#6fd3ff');
@@ -1313,48 +1552,239 @@ export default class Engine {
         return q;
     }
 
-    /**
-     * Run the quad tree effects `list` ({ obj, p }) in order on `rt` and draw
-     * the result back into it. The tree is laid out in output pixels.
-     */
-    applyQuadTrees(list, rt, t) {
-        if (!list.length) return;
-        const out = this.project.output || {};
-        let src = rt;
-        list.forEach(({ obj, p }) => {
-            src = this.qtRunner(obj.id).run({
-                src, params: { ...p, qt_mix: p.qt_mix ?? 1 }, outW: out.width || 1440, outH: out.height || 1080, time: t,
-            });
-        });
-        this.renderer.setRenderTarget(rt);
-        this.windows.blit(src.texture);
+    /** Scale a full-frame quad `q` to cover the drawing buffer with layer `L`'s picture. */
+    layerScale(L, q, bufSize) {
+        const img = L.tex.image;
+        const w = img?.videoWidth || img?.displayWidth || L.media.width || 16;
+        const h = img?.videoHeight || img?.displayHeight || L.media.height || 9;
+        const src = w / h;
+        const a = bufSize.x / Math.max(1, bufSize.y);
+        q.scale.set(a > src ? 1 : src / a, a > src ? a / src : 1, 1);
     }
 
-    /** A window's quad tree, on the composite under its box, for its effect pass. */
+    /** Draw video layer `L` alone, framed as the program draws it, into the bound target. */
+    drawLayerAlone(L, bufSize) {
+        if (!this.soloLayer) {
+            const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ depthTest: false, depthWrite: false }));
+            const scene = new THREE.Scene();
+            scene.add(quad);
+            this.soloLayer = { quad, scene };
+        }
+        const { quad, scene } = this.soloLayer;
+        if (quad.material.map !== L.tex) { quad.material.map = L.tex; quad.material.needsUpdate = true; }
+        this.layerScale(L, quad, bufSize);
+        this.renderer.render(scene, this.bgCamera);
+    }
+
+    /** The runner for a Blob Tracker effect, made on first use. */
+    blobRunner(id) {
+        let b = this.blobFx.get(id);
+        if (!b) {
+            b = new BlobFx(this.renderer, this.windows, id);
+            this.blobFx.set(id, b);
+        }
+        return b;
+    }
+
+    /**
+     * A Blob Tracker at its place in the effects, on `rt` (the picture the
+     * effects before it left): it looks at that picture, before anything of
+     * its own is on it, then puts its windows over the boxes and draws its
+     * boxes and labels, in place. Effects after it see all of that.
+     */
+    runBlobs(obj, p, rt, t) {
+        const bf = this.blobRunner(obj.id);
+        const o = this.project.output || {};
+        const outW = o.width || 1440;
+        const cam = this.composeCam;
+        bf.begin(this.drawNo);
+        bf.captureTexture(rt.texture, rt.width, rt.height, this.exporting);
+        bf.step(p, t);
+        bf.placeWindows(cam, p, outW, { music: this.analysis.music, time: t, take: null });
+        this.blobWindowsOver(bf, rt, cam, t);
+        bf.drawOver(rt, p, outW, o.height || 1080);
+    }
+
+    /**
+     * Draw a Blob Tracker's windows over `rt` with the window passes the
+     * placed windows use: each window's cut, then its hue shift, pixel sort
+     * and quad tree, read from `rt` as it is and held to the window's shape
+     * (feather, matte, the scan in front).
+     */
+    blobWindowsOver(bf, rt, cam, t) {
+        const r = this.renderer;
+        const comp = this.windows;
+        const ctx = this.winCtx || {};
+        const wins = bf.windows.filter((w) => w.open).map((w) => w.model);
+        bf.windows.forEach((w) => {
+            if (w.open) return;
+            w.model.cutMesh.visible = false;
+            w.model.fxMesh.visible = false;
+        });
+        if (!wins.length) return;
+        wins.forEach((w) => {
+            w.setScanDepth(ctx.scanDepth || null);
+            w.setMatte(ctx.matteOn && w.op.matte ? this.mattes.texture(w.op.matte) : null, comp.size, ctx.crop);
+        });
+        const cutWins = wins.filter((w) => w.op.cut);
+        if (cutWins.length) {
+            r.setRenderTarget(rt);
+            wins.forEach((w) => { w.cutMesh.visible = cutWins.includes(w); comp.prepareCut(w); });
+            cam.layers.set(LAYER.WIN_CUT);
+            r.render(bf.scene, cam);
+        }
+        const qtOn = (w) => w.op.qt_on && (this.exporting || w.op.qt_preview !== false);
+        wins.forEach((w) => { if (!qtOn(w)) w.qt = null; });
+        const fxWins = wins.filter((w) => w.op.hueOn || w.op.sortOn || qtOn(w));
+        if (fxWins.length) {
+            r.setRenderTarget(comp.compRT);
+            comp.blit(rt.texture);
+            fxWins.filter((w) => w.op.sortOn).forEach((w) => comp.sortWindow(w, cam, this.exporting));
+            fxWins.filter(qtOn).forEach((w) => this.windowQuadTree(w, cam, t));
+            r.setRenderTarget(rt);
+            wins.forEach((w) => { w.fxMesh.visible = fxWins.includes(w); comp.prepareFx(w, 'all'); });
+            cam.layers.set(LAYER.WIN_FX);
+            r.render(bf.scene, cam);
+        }
+        cam.layers.set(LAYER.FRONT);
+    }
+
+    /** The runner for a pixel sort effect, made on first use. */
+    sortRunner(id) {
+        let s = this.sortFx.get(id);
+        if (!s) { s = new SortFx(this.renderer, this.windows); this.sortFx.set(id, s); }
+        return s;
+    }
+
+    /**
+     * Run the picture effects `list` (quad trees and pixel sorts, from
+     * pictureFx) in order on `src`, a render target; returns the target
+     * holding the result (`src` itself when the list is empty). Lengths are
+     * in output pixels.
+     */
+    runPictureFx(list, src, t) {
+        const out = this.project.output || {};
+        const outW = out.width || 1440;
+        const outH = out.height || 1080;
+        let cur = src;
+        list.forEach(({ obj, p, kind }) => {
+            // In place: the picture stays where it is.
+            if (kind === 'blobs') { this.runBlobs(obj, p, cur, t); return; }
+            cur = kind === 'qt'
+                ? this.qtRunner(obj.id).run({
+                    src: cur, params: { ...p, qt_mix: p.qt_mix ?? 1 }, outW, outH, time: t,
+                })
+                : this.sortRunner(obj.id).run({
+                    src: cur, params: p, outW, now: this.exporting, drawNo: this.drawNo,
+                });
+        });
+        return cur;
+    }
+
+    /** Run the picture effects `list` on `rt` and draw the result back into it. */
+    applyPictureFx(list, rt, t) {
+        if (!list.length) return;
+        const res = this.runPictureFx(list, rt, t);
+        if (res === rt) return;
+        this.renderer.setRenderTarget(rt);
+        this.windows.blit(res.texture);
+    }
+
+    /**
+     * A window's picture, unwarped into its own plane at w x h: what the
+     * window would show seen face on. Kept per window between frames.
+     */
+    unwarpWindow(win, cam, id, w, h) {
+        const r = this.renderer;
+        if (!this.unwarp) {
+            const mat = new THREE.ShaderMaterial({
+                uniforms: { tComp: { value: null } },
+                vertexShader: UNWARP_VERT,
+                fragmentShader: UNWARP_FRAG,
+                side: THREE.DoubleSide,
+                depthTest: false,
+                depthWrite: false,
+            });
+            const mesh = new THREE.Mesh(new THREE.BufferGeometry(), mat);
+            mesh.matrixAutoUpdate = false;
+            mesh.frustumCulled = false;
+            const scene = new THREE.Scene();
+            scene.add(mesh);
+            this.unwarp = { mesh, mat, scene, targets: new Map() };
+        }
+        const U = this.unwarp;
+        let rt = U.targets.get(id);
+        if (!rt) {
+            rt = new THREE.WebGLRenderTarget(w, h, {
+                type: THREE.HalfFloatType, depthBuffer: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+            });
+            U.targets.set(id, rt);
+        } else if (rt.width !== w || rt.height !== h) {
+            rt.setSize(w, h);
+        }
+        win.fxMesh.updateMatrixWorld(true);
+        U.mesh.geometry = win.fxMesh.geometry;
+        U.mesh.matrix.copy(win.fxMesh.matrixWorld);
+        U.mesh.matrixWorldNeedsUpdate = true;
+        U.mat.uniforms.tComp.value = this.windows.compRT.texture;
+        const mask = cam.layers.mask;
+        cam.layers.enableAll();
+        r.setRenderTarget(rt);
+        r.setClearColor(0x000000, 1);
+        r.clear();
+        r.render(U.scene, cam);
+        cam.layers.mask = mask;
+        return rt;
+    }
+
+    /**
+     * A window's quad tree, for its effect pass. On the window plane: the
+     * picture is unwarped into the window's own space, subdivided there at
+     * the plane resolution, and drawn back through the window's UVs, so the
+     * quads lie on the plane in perspective and follow it frame by frame.
+     * On the screen: subdivided over the window's box on screen, as drawn.
+     */
     windowQuadTree(win, cam, t) {
+        const op = win.op;
+        const id = win.item?.id || win.object.userData.itemId;
+        if (op.qt_space === 'plane') {
+            const aspect = Math.max(0.05, Math.min(20, quadAspect(win.corners || op.corners)));
+            const res = Math.max(64, Math.min(4096, Math.round(op.qt_planeRes || 768)));
+            let h = res;
+            let w = Math.round(res * aspect);
+            if (w > 4096) { w = 4096; h = Math.round(4096 / aspect); }
+            const flat = this.unwarpWindow(win, cam, id, Math.max(2, w), Math.max(2, h));
+            const res2 = this.qtRunner(`win:${id}`).run({
+                src: flat, params: op, outW: flat.width, outH: flat.height, time: t,
+            });
+            win.qt = { tex: res2.texture, rect: null, plane: true };
+            return;
+        }
         const rect = this.windows.screenRect(win, cam);
         if (!rect) { win.qt = null; return; }
         const out = this.project.output || {};
         const k = (out.width || 1440) / Math.max(1, this.windows.size.x);
-        const id = win.item?.id || win.object.userData.itemId;
         const res = this.qtRunner(`win:${id}`).run({
             src: this.windows.compRT, rect, params: win.op, outW: rect.w * k, outH: rect.h * k, time: t,
         });
-        win.qt = { tex: res.texture, rect };
+        win.qt = { tex: res.texture, rect, plane: false };
     }
 
     compose({
         cam, behindCount, footage, matteFootage, holdTex, layers, S, frame, sortNow, objects, baseTrack,
     }) {
         const r = this.renderer;
-        const takeObj = objects.find((o) => o.type === 'take');
-        const bgColor = takeObj?.params.bgColor || '#000000';
+        // A take's backdrop, or a stage's. Resolved, so one linked to a controller follows it.
+        const takeObj = objects.find((o) => o.type === 'take' || o.type === 'stage');
+        const bgColor = (takeObj ? resolveObject(takeObj, frame) : null)?.bgColor || '#000000';
         const fx = this.applyEffects(frame);
         this.glowPasses.forEach(({ point }) => {
             point.drawSource = point.enabled ? (rr) => this.drawPointSource(rr, cam) : null;
         });
         const out = fx ? this.composer.readBuffer : null;
         const drawScene = !!S;
+        const bufSize = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+        this.composeCam = cam;
         const wins = [];
         let screens = false;
         S?.adapters.forEach((a) => {
@@ -1376,19 +1806,33 @@ export default class Engine {
         // Windows and text that hide behind the scan read its depth.
         let wantDepth = wins.some((w) => w.op.hideBehindScan);
         S?.adapters.forEach((a) => { if (a.setScanDepth && a.model?.op?.hideBehindScan) wantDepth = true; });
+        if (this.blobActive.some(({ p }) => p.spawnWindows && p.hideBehindScan)) wantDepth = true;
         const scanDepth = wantDepth ? this.renderScanDepth(S, cam, size) : null;
         wins.forEach((w) => w.setScanDepth(scanDepth));
         S?.adapters.forEach((a) => a.setScanDepth?.(scanDepth, size));
         // The footage quad is scaled up to cover the frame; mattes are cropped the same.
         const crop = this.matteCrop || (this.matteCrop = new THREE.Vector2());
         crop.set(1 / Math.max(1e-6, this.bgQuad.scale.x), 1 / Math.max(1e-6, this.bgQuad.scale.y));
-        wins.forEach((w) => w.setMatte(footage && w.op.matte ? this.mattes.texture(w.op.matte) : null, size, crop));
+        // A window holds to its matte wherever that object is in the picture:
+        // over the footage, or over hidden footage when the take's mattes put
+        // the real object back in front.
+        wins.forEach((w) => w.setMatte((footage || matteFootage) && w.op.matte ? this.mattes.texture(w.op.matte) : null, size, crop));
+        // The same for the Blob Trackers' windows, drawn later with the effects.
+        this.winCtx = { scanDepth, matteOn: !!(footage || matteFootage), crop };
         const hold = holdTex.length > 0 && drawScene;
         const target = hold ? this.holdout.baseRT : out;
         // Over hidden footage a half-on patch inside a matte would let the
         // scene show through the person; firm it up so only the outline is soft.
         if (hold) this.holdout.build(holdTex, size, crop, matteFootage ? [0.25, 0.45] : null);
         this.pointHold = hold;
+
+        // Windows that work on everything (3D too) wait for the finished
+        // frame, after the scene in front is drawn; the rest work on the
+        // footage, under it. Without post (editing) there is no finished
+        // frame to read, so they all work on the footage.
+        const late = (w) => !!out && w.op.fxStage === 'all';
+        const earlyWins = wins.filter((w) => !late(w));
+        const lateWins = wins.filter(late);
 
         const bg = this.backdrop || (this.backdrop = new THREE.Color());
         bg.set(bgColor);
@@ -1404,8 +1848,9 @@ export default class Engine {
             }
         } else {
             const comp = this.windows;
-            const cutWins = footage ? wins.filter((w) => w.op.cut) : [];
-            const fxWins = wins.filter((w) => w.hasFx);
+            const cutWins = footage ? earlyWins.filter((w) => w.op.cut) : [];
+            // Hue shift and sort here; quad trees go last, over everything.
+            const fxWins = earlyWins.filter((w) => w.op.hueOn || w.op.sortOn);
             clearTo(comp.behindRT);
             if (behindCount) {
                 cam.layers.set(LAYER.BEHIND);
@@ -1424,10 +1869,9 @@ export default class Engine {
             }
             if (fxWins.length) {
                 fxWins.filter((w) => w.op.sortOn).forEach((w) => comp.sortWindow(w, cam, !!sortNow));
-                fxWins.forEach((w) => { if (w.op.qt_on) this.windowQuadTree(w, cam, frame.t); else w.qt = null; });
                 clearTo(target);
                 comp.blit(comp.compRT.texture);
-                wins.forEach((w) => { w.fxMesh.visible = fxWins.includes(w); comp.prepareFx(w); });
+                wins.forEach((w) => { w.fxMesh.visible = fxWins.includes(w); comp.prepareFx(w, 'early'); });
                 cam.layers.set(LAYER.WIN_FX);
                 r.render(this.scene, cam);
             }
@@ -1455,49 +1899,58 @@ export default class Engine {
             this.holdout.apply(over);
         }
 
-        // Quad trees on the base track's picture (a take or stage), before
-        // the plain video layers go over it.
-        const qtOn = (target) => this.qtActive.filter(({ p }) => (p.qt_target || 'program') === target);
-        if (out && baseTrack) this.applyQuadTrees(qtOn(baseTrack), out, frame.t);
+        // Windows on the finished frame (footage, windows, and the meshes,
+        // props, points and text in front): the cuts of those that work on
+        // everything, which lay what is behind the video over all of it,
+        // then their hue shifts and sorts, and every window's quad tree,
+        // drawn over it and held to each window's shape. Quad trees are left
+        // out of the preview when asked; exports always have them.
+        const lateCut = lateWins.filter((w) => w.op.cut);
+        if (lateCut.length) {
+            const comp = this.windows;
+            r.setRenderTarget(out);
+            wins.forEach((w) => { w.cutMesh.visible = lateCut.includes(w); comp.prepareCut(w); });
+            cam.layers.set(LAYER.WIN_CUT);
+            r.render(this.scene, cam);
+        }
+        const qtWins = out ? wins.filter((w) => w.op.qt_on && (this.exporting || w.op.qt_preview !== false)) : [];
+        wins.forEach((w) => { if (!qtWins.includes(w)) w.qt = null; });
+        const lateFx = lateWins.filter((w) => w.op.hueOn || w.op.sortOn);
+        if (qtWins.length || lateFx.length) {
+            const comp = this.windows;
+            r.setRenderTarget(comp.compRT);
+            comp.blit(out.texture);
+            lateFx.filter((w) => w.op.sortOn).forEach((w) => comp.sortWindow(w, cam, !!sortNow));
+            qtWins.forEach((w) => this.windowQuadTree(w, cam, frame.t));
+            r.setRenderTarget(out);
+            wins.forEach((w) => {
+                w.fxMesh.visible = qtWins.includes(w) || lateFx.includes(w);
+                comp.prepareFx(w, late(w) ? 'all' : 'late');
+            });
+            cam.layers.set(LAYER.WIN_FX);
+            r.render(this.scene, cam);
+        }
+
+        // Quad trees and pixel sorts on the base track's picture (a take or
+        // stage), before the plain video layers go over it.
+        const fxOn = (target) => this.pictureFx.filter((e) => e.target === target);
+        if (out && baseTrack) this.applyPictureFx(fxOn(baseTrack), out, frame.t);
 
         // Plain video layers over the composite, before the effects.
-        const bufSize = this.renderer.getDrawingBufferSize(new THREE.Vector2());
-        const layerScale = (L, q) => {
-            const img = L.tex.image;
-            const w = img?.videoWidth || img?.displayWidth || L.media.width || 16;
-            const h = img?.videoHeight || img?.displayHeight || L.media.height || 9;
-            const src = w / h;
-            const a = bufSize.x / Math.max(1, bufSize.y);
-            q.scale.set(a > src ? 1 : src / a, a > src ? a / src : 1, 1);
-        };
-        // A layer with a quad tree on its track: the layer alone, framed as
-        // it would be drawn, through the quad tree, then drawn as that.
+        const layerScale = (L, q) => this.layerScale(L, q, bufSize);
+        // A layer with a quad tree or pixel sort on its track: the layer
+        // alone, framed as it would be drawn, through those, then drawn as that.
         layers.forEach((L) => {
-            const list = out ? qtOn(L.trackId) : [];
+            const list = out ? fxOn(L.trackId) : [];
             L.qt = null;
             if (!list.length) return;
-            if (!this.qtLayerRT) {
-                this.qtLayerRT = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false });
-                this.qtLayerQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ depthTest: false, depthWrite: false }));
-                this.qtLayerScene = new THREE.Scene();
-                this.qtLayerScene.add(this.qtLayerQuad);
-            }
+            if (!this.qtLayerRT) this.qtLayerRT = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false });
             if (this.qtLayerRT.width !== bufSize.x || this.qtLayerRT.height !== bufSize.y) this.qtLayerRT.setSize(bufSize.x, bufSize.y);
-            const m = this.qtLayerQuad.material;
-            if (m.map !== L.tex) { m.map = L.tex; m.needsUpdate = true; }
-            layerScale(L, this.qtLayerQuad);
             r.setRenderTarget(this.qtLayerRT);
             r.setClearColor(0x000000, 1);
             r.clear();
-            r.render(this.qtLayerScene, this.bgCamera);
-            const o = this.project.output || {};
-            let src = this.qtLayerRT;
-            list.forEach(({ obj, p }) => {
-                src = this.qtRunner(obj.id).run({
-                    src, params: p, outW: o.width || 1440, outH: o.height || 1080, time: frame.t,
-                });
-            });
-            L.qt = src.texture;
+            this.drawLayerAlone(L, bufSize);
+            L.qt = this.runPictureFx(list, this.qtLayerRT, frame.t).texture;
         });
         if (layers.length) {
             r.setRenderTarget(out);
@@ -1520,8 +1973,9 @@ export default class Engine {
             r.render(this.layerScene, this.bgCamera);
         }
 
-        // Quad trees over the whole program, before the other effects.
-        if (out) this.applyQuadTrees(qtOn('program'), out, frame.t);
+        // Quad trees, pixel sorts and Blob Trackers over the whole program,
+        // in effect order, before the other effects.
+        if (out) this.applyPictureFx(fxOn('program'), out, frame.t);
 
         if (fx) {
             r.setRenderTarget(null);

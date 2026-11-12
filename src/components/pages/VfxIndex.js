@@ -20,6 +20,7 @@ const PREVIEWS = {
     ascii: { kind: 'engine' },
     procedural: { kind: 'video', clip: 'procedural' },
     compositor: { kind: 'video', clip: 'compositor' },
+    'quad-trees': { kind: 'video', clip: 'quad-trees' },
 };
 
 const FALLBACK = {

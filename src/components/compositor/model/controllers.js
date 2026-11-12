@@ -17,6 +17,9 @@
 //            switch or another logic in a chosen state, optionally NOT-ed)
 //            combine to true under AND, OR or XOR. Anything that can follow
 //            a switch can follow one.
+//   text     a switch whose states are pieces of text, cut the same way;
+//            a text variable shows the one it is on (and anything that can
+//            follow a switch can follow it).
 
 import { kickEnvelope, kickHits, kickLevelAt } from '../../../lib/protagonist/kicks';
 import { modulate, MOD_DEFAULTS } from '../../../lib/scanAssets/modulate';
@@ -65,6 +68,15 @@ export const CONTROLLER_TYPES = {
             num('beats', 'Beats / cycle', 0.25, 32, 0.25, 1, { when: (p) => p.sync === 'bpm' }),
             num('phase', 'Phase', 0, 1, 0.01, 0),
             num('duty', 'Duty', 0.01, 0.99, 0.01, 0.5, { when: (p) => p.shape === 'square' }),
+            // The wave runs in the first `width` of each cycle, then rests at
+            // the bottom or the top (1: all cycle, as it always was). Kept
+            // apart from the square's duty, which LFOs already saved at 0.5.
+            num('width', 'Duty', 0.01, 1, 0.01, 1, { when: (p) => p.shape === 'sine' || p.shape === 'saw' || p.shape === 'triangle' }),
+            {
+                key: 'rest', label: 'Off duty', type: 'select', def: 'low',
+                options: [['low', 'Rests at the bottom (0)'], ['high', 'Rests at the top (1)']],
+                when: (p) => (p.shape === 'sine' || p.shape === 'saw' || p.shape === 'triangle') && (p.width ?? 1) < 1,
+            },
         ],
     },
     keys: {
@@ -82,6 +94,11 @@ export const CONTROLLER_TYPES = {
         lane: true,
         params: [],
     },
+    text: {
+        label: 'Text',
+        lane: true,
+        params: [],
+    },
     logic: {
         label: 'Logic',
         lane: true,
@@ -94,8 +111,11 @@ export const CONTROLLER_TYPES = {
     },
 };
 
-/** Whether a controller has states to be on in: a Switch, or a Logic worked out from Switches. */
-export const isSwitch = (c) => c?.type === 'switch' || c?.type === 'logic';
+/** Whether a controller has states to be on in: a Switch (or Text), or a Logic worked out from them. */
+export const isSwitch = (c) => c?.type === 'switch' || c?.type === 'text' || c?.type === 'logic';
+
+/** Whether a controller is cut by hand in its lane: a Switch, or a Text. */
+export const isCut = (c) => c?.type === 'switch' || c?.type === 'text';
 
 export const defaultsFor = (type) => Object.fromEntries(
     (CONTROLLER_TYPES[type]?.params || []).map((p) => [p.key, p.def]),
@@ -113,7 +133,8 @@ export function makeController(id, type, over = {}) {
         states: ['Off', 'On'],
     };
     if (type === 'keys') base.keys = [];
-    if (type === 'switch') base.cuts = [{ id: `${id}_c0`, t: 0, s: 0 }];
+    if (type === 'switch' || type === 'text') base.cuts = [{ id: `${id}_c0`, t: 0, s: 0 }];
+    if (type === 'text') base.states = ['Hello', 'World'];
     if (type === 'logic') base.inputs = [];
     return { ...base, ...over, params: { ...base.params, ...(over.params || {}) } };
 }
@@ -175,7 +196,15 @@ const hash = (n) => {
 function lfoAt(p, t) {
     const hz = p.sync === 'bpm' ? (p.bpm / 60) / Math.max(0.0625, p.beats) : p.rate;
     const x = t * hz + (p.phase || 0);
-    const f = x - Math.floor(x);
+    let f = x - Math.floor(x);
+    if (p.shape === 'sine' || p.shape === 'saw' || p.shape === 'triangle' || !p.shape) {
+        // Duty: the whole wave squeezed into the start of the cycle, then rest.
+        const w = Math.min(1, Math.max(0.01, p.width ?? 1));
+        if (w < 1) {
+            if (f >= w) return p.rest === 'high' ? 1 : 0;
+            f /= w;
+        }
+    }
     switch (p.shape) {
         case 'triangle': return f < 0.5 ? f * 2 : 2 - f * 2;
         case 'saw': return f;
@@ -280,13 +309,21 @@ export function controllerValue(ctrl, t, ctx, lookup = null) {
         }
         case 'lfo': return lfoAt(p, t);
         case 'keys': return Math.max(0, Math.min(1, keysAt(ctrl.keys, t, p.interp)));
-        case 'switch': {
+        case 'switch':
+        case 'text': {
             const n = Math.max(1, (ctrl.states?.length || 1) - 1);
             return switchAt(ctrl, t) / n;
         }
         case 'logic': return logicAt(ctrl, t, lookup) ? 1 : 0;
         default: return 0;
     }
+}
+
+/** The text a switch is showing at `t`: a Text's words, or a Switch's (or Logic's) state name. */
+export function textAt(ctrl, t, lookup = null) {
+    if (!isSwitch(ctrl)) return null;
+    const states = ctrl.type === 'logic' ? ['Off', 'On'] : (ctrl.states || []);
+    return String(states[switchAt(ctrl, t, lookup)] ?? '');
 }
 
 /**
@@ -299,7 +336,7 @@ export function logicCuts(ctrl, lookup) {
     const walk = (c, seen) => {
         if (!c || seen.has(c.id)) return;
         seen.add(c.id);
-        if (c.type === 'switch') (c.cuts || []).forEach((k) => times.add(Math.max(0, k.t)));
+        if (isCut(c)) (c.cuts || []).forEach((k) => times.add(Math.max(0, k.t)));
         if (c.type === 'logic') (c.inputs || []).forEach((inp) => walk(lookup(inp.controller), seen));
     };
     walk(ctrl, new Set());

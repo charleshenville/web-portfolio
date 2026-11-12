@@ -21,9 +21,14 @@ import {
 } from '../../../lib/protagonist/poser';
 import { SACKBOY_DEFAULTS } from '../../../lib/scanAssets/sackboy';
 import { PROP_DEFAULTS } from '../../../lib/scanAssets/props';
-import { FONTS } from '../engine/textObject';
+import { FONTS, TEXT_BLENDS } from '../engine/textObject';
 import { WINDOW_DEFAULTS } from '../../../lib/scanAssets/windows';
 import { QT_GROUPS, QT_DEFAULTS } from '../../quadtree/fxParams';
+import {
+    BLOB_DEFAULTS, LABEL_TEXTS, LABEL_PLACES, LABEL_TOKENS,
+} from '../../../lib/blobTracker';
+import { GLYPH_FONTS, GLYPH_WEIGHTS } from '../../quadtree/fonts';
+import { SPLINE_DEGREES, SPLINE_ENDS, SPLINE_SPACING } from './spline';
 
 // The colour grade's parameters (the track editor's, which this replaces).
 const GRADE_PARAMS = [
@@ -124,6 +129,136 @@ const VIEWS = (pointMax, sizeMax) => ({
     ],
 });
 
+// ---- Equations and splines: how a curve is drawn ---------------------------------------
+//
+// Shared by the Equation and Spline types (engine/curveObject.js draws both).
+
+export const CURVE_MODES = [['points', 'Points'], ['solid', 'Solid'], ['seriesSolid', 'Series of solids'], ['seriesPoints', 'Series of points']];
+export const POINT_SHAPES = [
+    ['square', 'Flat square'], ['disc', 'Flat disc'], ['tetra', 'Tetrahedron'], ['cube', 'Cube'],
+    ['octa', 'Octahedron'], ['dodeca', 'Dodecahedron'], ['icosa', 'Icosahedron'], ['sphere', 'Sphere'],
+];
+// Wireframe draws a shape's own edges (a cube's twelve), not its triangles'.
+export const POINT_STYLES = [['solid', 'Solid'], ['wire', 'Wireframe (edges)']];
+export const isSeries = (p) => p.mode === 'seriesSolid' || p.mode === 'seriesPoints';
+export const isPointsMode = (p) => p.mode === 'points' || p.mode === 'seriesPoints';
+const solidMode = (p) => !isPointsMode(p);
+const growing = (p) => !!p.growOn;
+
+const CURVE_LOOK_DEFAULTS = {
+    visible: true,
+    mode: 'solid',
+    samples: 400,
+    thickness: 0.02,
+    thicknessUnits: 'world',
+    widthStart: 1,
+    widthEnd: 1,
+    dotCount: 240,
+    pointShape: 'tetra',
+    pointStyle: 'solid',
+    pointWire: 1.5,
+    dotSize: 0.04,
+    spin: 0,
+    jitter: 0,
+    flowSpeed: 0,
+    reactivity: 0,
+    lit: false,
+    opacity: 1,
+    fadeStart: 1,
+    fadeEnd: 1,
+    depthLayer: 'front',
+    colorStart: '#ffffff',
+    colorEnd: '#ffffff',
+    reveal: 1,
+    revealFrom: 'start',
+    growOn: false,
+    growStart: 0,
+    growDur: 2,
+    growEase: 'inOut',
+    seriesCount: 6,
+    seriesDX: 0,
+    seriesDY: 0.15,
+    seriesDZ: 0,
+    seriesCentre: false,
+    seriesLen: 0,
+    seriesLenAt: 'end',
+    seriesStagger: 0,
+    seriesColors: true,
+    seriesColorA: '#ff3b3b',
+    seriesColorB: '#3bb0ff',
+    posX: 0, posY: 0, posZ: 0, rotX: 0, rotY: 0, rotZ: 0, scale: 1,
+};
+
+/** The groups that say how a curve is drawn; `v` is its parameter's name (t or u). */
+function curveLookGroups(v) {
+    return [
+        {
+            title: 'Draw as',
+            hint: 'Sizes are in the curve\u2019s own units, so they scale with it. Start and end \u00d7 scale the width (or point size) and opacity along the curve.',
+            params: [
+                VISIBLE,
+                select('mode', 'Mode', CURVE_MODES, 'solid'),
+                num('samples', 'Resolution', 8, 4000, 1, 400, { link: false, when: solidMode }),
+                num('thickness', 'Thickness', 0, 0.5, 0.0005, 0.02, { when: solidMode, swing: 0.02 }),
+                select('thicknessUnits', 'Thickness in', [['world', 'Scene units'], ['pixels', 'Pixels (of 1080)']], 'world', { when: solidMode }),
+                num('dotCount', 'Points', 1, 5000, 1, 240, { link: false, when: isPointsMode }),
+                select('pointShape', 'Point shape', POINT_SHAPES, 'tetra', { when: isPointsMode }),
+                select('pointStyle', 'Points drawn', POINT_STYLES, 'solid', { when: isPointsMode }),
+                num('pointWire', 'Edge width (px)', 0.25, 12, 0.05, 1.5, { when: (p) => isPointsMode(p) && p.pointStyle === 'wire' }),
+                num('dotSize', 'Point size', 0.001, 0.5, 0.001, 0.04, { when: isPointsMode }),
+                num('spin', 'Spin (\u00b0/s)', -720, 720, 1, 0, { when: (p) => isPointsMode(p) && p.pointShape !== 'square' && p.pointShape !== 'disc' }),
+                num('jitter', 'Jitter', 0, 1, 0.001, 0, { when: isPointsMode }),
+                num('flowSpeed', 'Flow', -2, 2, 0.01, 0, { when: isPointsMode }),
+                num('reactivity', 'Bass pulse', 0, 3, 0.01, 0, { when: isPointsMode }),
+                bool('lit', 'Lit by the sun', false, { when: isPointsMode }),
+                num('widthStart', 'Start size \u00d7', 0, 4, 0.01, 1),
+                num('widthEnd', 'End size \u00d7', 0, 4, 0.01, 1),
+                OPACITY,
+                num('fadeStart', 'Start opacity \u00d7', 0, 1, 0.01, 1),
+                num('fadeEnd', 'End opacity \u00d7', 0, 1, 0.01, 1),
+                LAYER,
+            ],
+        },
+        {
+            title: 'Colour',
+            params: [
+                color('colorStart', 'Start', '#ffffff'),
+                color('colorEnd', 'End', '#ffffff'),
+                bool('seriesColors', 'Colour by copy', true, { when: isSeries }),
+                color('seriesColorA', 'First copy', '#ff3b3b', { when: (p) => isSeries(p) && p.seriesColors }),
+                color('seriesColorB', 'Last copy', '#3bb0ff', { when: (p) => isSeries(p) && p.seriesColors }),
+            ],
+        },
+        {
+            title: 'Series',
+            when: isSeries,
+            hint: `Copies of the curve, each a step on from the last. k in the equations is the copy (0 for the first). Length change grows (or shrinks) each copy's ${v} range by that much more than the one before.`,
+            params: [
+                num('seriesCount', 'Copies', 1, 64, 1, 6, { link: false }),
+                num('seriesDX', 'Step X', -5, 5, 0.001, 0),
+                num('seriesDY', 'Step Y', -5, 5, 0.001, 0.15),
+                num('seriesDZ', 'Step Z', -5, 5, 0.001, 0),
+                bool('seriesCentre', 'Centred on the original', false),
+                num('seriesLen', 'Length change', -10, 10, 0.001, 0),
+                select('seriesLenAt', 'At', [['end', 'The end'], ['start', 'The start'], ['both', 'Both ends']], 'end', { when: (p) => p.seriesLen !== 0 }),
+                num('seriesStagger', 'Grow stagger (s)', 0, 5, 0.01, 0, { when: growing }),
+            ],
+        },
+        {
+            title: 'Growth',
+            hint: 'How much of the curve is drawn. Link Drawn to a Keyframes controller to grow it by hand, or let it grow over time.',
+            params: [
+                num('reveal', 'Drawn', 0, 1, 0.001, 1),
+                select('revealFrom', 'Grows from', [['start', 'The start'], ['end', 'The end'], ['centre', 'The middle']], 'start'),
+                bool('growOn', 'Grow over time', false),
+                num('growStart', 'Starts at (s)', 0, 600, 0.01, 0, { when: growing }),
+                num('growDur', 'Takes (s)', 0.01, 60, 0.01, 2, { when: growing }),
+                select('growEase', 'Ease', [['linear', 'Linear'], ['in', 'In'], ['out', 'Out'], ['inOut', 'In-out']], 'inOut', { when: growing }),
+            ],
+        },
+    ];
+}
+
 export const OBJECT_TYPES = {
     // ---- A take's own scene --------------------------------------------------
 
@@ -179,6 +314,19 @@ export const OBJECT_TYPES = {
             },
             { title: 'Roto', custom: 'roto', collapsed: true },
         ],
+    },
+
+    // An empty 3D stage's own settings (a take's are on its Take).
+    stage: {
+        label: 'Stage',
+        category: 'scene',
+        unique: true,
+        defaults: { bgColor: '#000000' },
+        groups: [{
+            title: 'Stage',
+            hint: 'What shows behind everything in this stage. Link it to a controller to change it over time.',
+            params: [color('bgColor', 'Backdrop', '#000000')],
+        }],
     },
 
     footage: {
@@ -309,12 +457,16 @@ export const OBJECT_TYPES = {
         gizmo: 'transform',
         defaults: {
             posX: 0, posY: 0, posZ: 3, rotX: 0, rotY: 0, rotZ: 0, fov: 50, usePath: true,
+            projection: 'perspective', orthoHeight: 4,
         },
         groups: [
             {
                 title: 'Camera',
+                hint: 'Orthographic draws without perspective: parallel lines stay parallel and size doesn\u2019t change with distance. View height is how much of the scene fits top to bottom.',
                 params: [
-                    num('fov', 'Field of view', 5, 140, 0.5, 50),
+                    select('projection', 'Projection', [['perspective', 'Perspective'], ['orthographic', 'Orthographic']], 'perspective'),
+                    num('fov', 'Field of view', 5, 140, 0.5, 50, { when: (p) => p.projection !== 'orthographic' }),
+                    num('orthoHeight', 'View height', 0.01, 100, 0.01, 4, { when: (p) => p.projection === 'orthographic' }),
                     bool('usePath', 'Follow recorded path', true),
                 ],
             },
@@ -389,6 +541,7 @@ export const OBJECT_TYPES = {
         groups: [
             {
                 title: 'Curve',
+                custom: 'curveConvert',
                 params: [
                     select('funcId', 'Shape', CURVES.map((c) => [c.id, c.name]), CURVES[0].id),
                     VISIBLE,
@@ -542,6 +695,9 @@ export const OBJECT_TYPES = {
             hideBehindScan: false,
             ...QT_DEFAULTS,
             qt_on: false,
+            qt_space: 'plane',
+            qt_planeRes: 768,
+            qt_preview: true,
         },
         groups: [
             { title: 'Corners', custom: 'windowCorners' },
@@ -555,6 +711,7 @@ export const OBJECT_TYPES = {
                     num('cutOpacity', 'Cut opacity', 0, 1, 0.01, 1, { when: (p) => p.cut }),
                     num('feather', 'Feather', 0, 0.5, 0.005, 0.02),
                     bool('hideBehindScan', 'Hide behind the scan', false),
+                    select('fxStage', 'Applies to', [['footage', 'The footage'], ['all', 'Everything (3D too)']], 'footage'),
                 ],
             },
             { title: 'Hold to a matte', custom: 'windowMatte', collapsed: true },
@@ -590,10 +747,13 @@ export const OBJECT_TYPES = {
                 title: 'Quad tree',
                 collapsed: true,
                 custom: 'quadTree',
-                hint: 'Load a Quad Trees preset, or set it up here. The picture under the window is the seed.',
+                hint: 'Load a Quad Trees preset, or set it up here. The picture under the window is the seed. On the window plane the quads lie on the window in perspective, re-subdivided every frame; Plane size is the plane\'s resolution in quad-tree pixels (gaps, outlines and min size are in these). Turn off Show in preview if it slows the preview: exports always include it.',
                 params: [
                     bool('qt_on', 'On', false),
                     num('qt_mix', 'Mix', 0, 1, 0.01, 1, { when: (p) => p.qt_on }),
+                    select('qt_space', 'Lay out on', [['plane', 'Window plane'], ['screen', 'Screen']], 'screen', { when: (p) => p.qt_on }),
+                    num('qt_planeRes', 'Plane size (px)', 128, 2048, 32, 768, { link: false, when: (p) => p.qt_on && p.qt_space === 'plane' }),
+                    bool('qt_preview', 'Show in preview', true, { when: (p) => p.qt_on, link: false }),
                 ],
             },
             ...QT_GROUPS.map((g) => ({
@@ -628,6 +788,14 @@ export const OBJECT_TYPES = {
         defaults: {
             visible: true,
             corners: [[-0.5, 0.25, 0], [0.5, 0.25, 0], [0.5, -0.25, 0], [-0.5, -0.25, 0]],
+            space: 'scene',
+            faceCamera: false,
+            frameX: 0.5,
+            frameY: 0.85,
+            frameW: 0.5,
+            frameH: 0.12,
+            frameRot: 0,
+            textMode: 'plain',
             text: 'Text',
             fontFamily: 'grotesk',
             fontCustom: '',
@@ -648,46 +816,182 @@ export const OBJECT_TYPES = {
             hideBehindScan: false,
             depthLayer: 'front',
             resolution: 512,
+            blend: 'normal',
+            softness: 0,
+            grain: 0,
+            grainMove: true,
+            mottle: 0,
+            wear: 0,
+            noiseDetail: 24,
         },
         groups: [
-            { title: 'Corners', custom: 'windowCorners' },
+            {
+                title: 'Placement',
+                hint: 'In the scene, the text is a patch between four corners, in 3D; facing the camera, it turns about its middle (a spline\u2019s label, about its point) to stay square to the view. In the frame, it is laid flat over the picture (2D), wherever the camera looks: X and Y place its middle (0 to 1 across and down the frame), width and height are fractions of the frame\u2019s.',
+                params: [
+                    select('space', 'Placed in', [['scene', 'The scene (3D)'], ['frame', 'The frame (2D)']], 'scene'),
+                    num('frameX', 'X', -0.5, 1.5, 0.001, 0.5, { when: (p) => p.space === 'frame' }),
+                    num('frameY', 'Y', -0.5, 1.5, 0.001, 0.85, { when: (p) => p.space === 'frame' }),
+                    num('frameW', 'Width', 0.01, 2, 0.001, 0.5, { when: (p) => p.space === 'frame' }),
+                    num('frameH', 'Height', 0.01, 2, 0.001, 0.12, { when: (p) => p.space === 'frame' }),
+                    num('frameRot', 'Rotate', -180, 180, 0.5, 0, { when: (p) => p.space === 'frame' }),
+                    bool('faceCamera', 'Face the camera', false, { link: false, when: (p) => p.space !== 'frame' }),
+                ],
+            },
+            { title: 'Corners', custom: 'windowCorners', when: (p) => p.space !== 'frame' },
             {
                 title: 'Text',
+                custom: 'textDynamic',
                 params: [
+                    select('textMode', 'Kind', [['plain', 'Plain text'], ['latex', 'LaTeX (maths)']], 'plain'),
                     text('text', 'Text', 'Text'),
-                    select('fontFamily', 'Font', FONTS.map(([id, label]) => [id, label]), 'grotesk'),
-                    string('fontCustom', 'Font name', '', { when: (p) => p.fontFamily === 'custom' }),
+                    select('fontFamily', 'Font', FONTS.map(([id, label]) => [id, label]), 'grotesk', { when: (p) => p.textMode !== 'latex' }),
+                    string('fontCustom', 'Font name', '', { when: (p) => p.textMode !== 'latex' && p.fontFamily === 'custom' }),
                     num('fontSize', 'Size', 0.02, 1.5, 0.005, 0.5),
-                    select('weight', 'Weight', [100, 200, 300, 400, 500, 600, 700, 800, 900].map((w) => [w, String(w)]), 600),
-                    bool('italic', 'Italic', false, { link: false }),
+                    select('weight', 'Weight', [100, 200, 300, 400, 500, 600, 700, 800, 900].map((w) => [w, String(w)]), 600, { when: (p) => p.textMode !== 'latex' }),
+                    bool('italic', 'Italic', false, { link: false, when: (p) => p.textMode !== 'latex' }),
                     color('color', 'Colour', '#ffffff'),
                     OPACITY,
+                    select('blend', 'Blend', TEXT_BLENDS, 'normal'),
                     select('align', 'Align', [['left', 'Left'], ['center', 'Centre'], ['right', 'Right']], 'center'),
                     select('valign', 'Vertical', [['top', 'Top'], ['middle', 'Middle'], ['bottom', 'Bottom']], 'middle'),
-                    num('letterSpacing', 'Letter spacing', -0.2, 1, 0.005, 0),
+                    num('letterSpacing', 'Letter spacing', -0.2, 1, 0.005, 0, { when: (p) => p.textMode !== 'latex' }),
                     num('lineHeight', 'Line height', 0.6, 3, 0.01, 1.1),
                     VISIBLE,
+                ],
+            },
+            { title: 'Variables', custom: 'usedVariables', collapsed: true },
+            {
+                title: 'Surface',
+                hint: 'To sit text in the footage: soften it to the shot\'s focus, add grain like the video\'s, and mottle or wear it. Pairs well with Blend: Screen or Multiply.',
+                params: [
+                    num('softness', 'Softness', 0, 5, 0.05, 0),
+                    num('grain', 'Grain', 0, 1, 0.01, 0),
+                    bool('grainMove', 'Grain moves', true, { when: (p) => p.grain > 0 }),
+                    num('mottle', 'Mottle', 0, 1, 0.01, 0),
+                    num('wear', 'Wear', 0, 1, 0.01, 0),
+                    num('noiseDetail', 'Noise detail', 1, 200, 0.5, 24, { when: (p) => p.mottle > 0 || p.wear > 0 }),
                 ],
             },
             {
                 title: 'Box',
                 collapsed: true,
+                hint: 'Letters are rasterised at the size they are drawn on screen, in the preview and in exports (up to 4096 px); Min sharpness is the least they get.',
                 params: [
                     color('bgColor', 'Fill', '#000000'),
                     num('bgOpacity', 'Fill opacity', 0, 1, 0.01, 0),
                     num('padding', 'Padding', 0, 0.4, 0.005, 0.05),
-                    num('resolution', 'Sharpness (px)', 128, 2048, 32, 512, { link: false }),
+                    num('resolution', 'Min sharpness (px)', 128, 2048, 32, 512, { link: false }),
                 ],
             },
             {
                 title: 'Light & shadow',
                 params: [
-                    bool('lit', 'Lit by the sun', false),
-                    bool('castShadow', 'Casts a shadow', false),
-                    bool('hideBehindScan', 'Hide behind the scan', false),
+                    bool('lit', 'Lit by the sun', false, { when: (p) => p.space !== 'frame' }),
+                    bool('castShadow', 'Casts a shadow', false, { when: (p) => p.space !== 'frame' }),
+                    bool('hideBehindScan', 'Hide behind the scan', false, { when: (p) => p.space !== 'frame' }),
                     LAYER,
                 ],
             },
+        ],
+    },
+
+    equation: {
+        label: 'Equation',
+        category: 'placed',
+        gizmo: 'transform',
+        defaults: {
+            ...CURVE_LOOK_DEFAULTS,
+            fx: 'cos(t)',
+            fy: 'sin(t)',
+            fz: '0',
+            rangeFrom: 0,
+            rangeTo: 6.2832,
+        },
+        groups: [
+            {
+                title: 'Equation',
+                custom: 'equation',
+                hint: 'x(t), y(t) and z(t) are worked out for every t from the start to the end. They can use variables (lowercase greek letters, with a subscript if you like: θ, θ_1, ω_k), defined under Variables, which a controller can drive; k is the copy in a series, time the timeline in seconds.',
+                params: [
+                    num('rangeFrom', 't from', -50, 50, 0.001, 0),
+                    num('rangeTo', 't to', -50, 50, 0.001, 6.2832),
+                ],
+            },
+            { title: 'Variables', custom: 'usedVariables' },
+            ...curveLookGroups('t'),
+            transform(),
+        ],
+    },
+
+    spline: {
+        label: 'Spline',
+        category: 'placed',
+        gizmo: 'transform',
+        defaults: {
+            ...CURVE_LOOK_DEFAULTS,
+            symbol: 'P',
+            points: [['-1', '0', '0'], ['-0.33', '0.6', '0'], ['0.33', '-0.6', '0'], ['1', '0', '0']],
+            degree: 3,
+            ends: 'natural',
+            spacing: 'uniform',
+            clamp: { start: {}, end: {} },
+            rangeFrom: 0,
+            rangeTo: 1,
+            showKnots: true,
+            knotSize: 0.035,
+            knotColor: '#ffffff',
+            knotShape: 'octa',
+            knotStyle: 'solid',
+            knotWire: 1.5,
+            labels: false,
+            labelShow: 'point',
+            labelSize: 0.1,
+            labelColor: '#ffffff',
+            knotSpin: 0,
+            knotSpinAxis: 'random',
+            knotSpinTogether: false,
+            pointsByU: false,
+            pointsAppear: 0,
+        },
+        groups: [
+            {
+                title: 'Spline',
+                custom: 'splinePoints',
+                hint: 'Through its points in order. Every derivative below the degree matches on both sides of every point (a cubic\u2019s slope and curvature), and the ends settle the rest. Its symbol is a global: P_0 or P[i] is a point, P(u) the curve at u from 0 to 1, with .x .y .z for a coordinate.',
+                params: [
+                    select('degree', 'Degree', SPLINE_DEGREES, 3),
+                    select('ends', 'Ends', SPLINE_ENDS, 'natural'),
+                    select('spacing', 'Spacing', SPLINE_SPACING, 'uniform'),
+                    num('rangeFrom', 'u from', 0, 1, 0.001, 0),
+                    num('rangeTo', 'u to', 0, 1, 0.001, 1),
+                ],
+            },
+            {
+                title: 'Defining points',
+                collapsed: true,
+                custom: 'splinePointList',
+                hint: 'Each point is a child of the spline (under it in the outliner) with a marker and a LaTeX label, placed where the point is and going with it. Select one to move, size or rewrite its label, hide its marker or label, or give it a look of its own; deleting one deletes the point. A label you rewrite keeps your words; the rest say what their point is. Edge widths are in pixels of a 1080-tall frame. Spin turns every marker (own look or not) at that rate, on the timeline\u2019s clock; flat ones turn in their plane, and In step starts them all at the same angle. Only visible once u reaches them: a point shows when the drawn part of the curve (its u range, as it grows) has got to it.',
+                params: [
+                    bool('showKnots', 'Show markers', true),
+                    select('knotShape', 'Shape', POINT_SHAPES, 'octa', { when: (p) => p.showKnots }),
+                    select('knotStyle', 'Drawn', POINT_STYLES, 'solid', { when: (p) => p.showKnots }),
+                    num('knotWire', 'Edge width (px)', 0.25, 12, 0.05, 1.5, { when: (p) => p.showKnots && p.knotStyle === 'wire' }),
+                    num('knotSize', 'Size', 0.001, 0.5, 0.001, 0.035, { when: (p) => p.showKnots }),
+                    color('knotColor', 'Colour', '#ffffff', { when: (p) => p.showKnots }),
+                    num('knotSpin', 'Spin (\u00b0/s)', -720, 720, 1, 0, { when: (p) => p.showKnots }),
+                    select('knotSpinAxis', 'Spin about', [['random', 'An axis of each one\u2019s own'], ['x', 'X'], ['y', 'Y'], ['z', 'Z']], 'random', { when: (p) => p.showKnots && !!p.knotSpin }),
+                    bool('knotSpinTogether', 'In step', false, { when: (p) => p.showKnots && !!p.knotSpin }),
+                    bool('pointsByU', 'Only visible once u reaches them', false),
+                    num('pointsAppear', 'Grow in over (u)', 0, 0.5, 0.001, 0, { when: (p) => p.pointsByU }),
+                    select('labelShow', 'Labels say', [['point', 'Name and point: P\u2080 = (x, y, z)'], ['name', 'Name: P\u2080']], 'point', { when: (p) => p.labels }),
+                    num('labelSize', 'New label size', 0.005, 2, 0.001, 0.1, { when: (p) => p.labels }),
+                    color('labelColor', 'New label colour', '#ffffff', { when: (p) => p.labels }),
+                ],
+            },
+            { title: 'Variables', custom: 'usedVariables' },
+            ...curveLookGroups('u'),
+            transform(),
         ],
     },
 
@@ -722,15 +1026,56 @@ export const OBJECT_TYPES = {
     quadtree: {
         label: 'Quad Tree',
         category: 'effect',
-        defaults: { visible: true, qt_target: 'program', ...QT_DEFAULTS },
+        defaults: { visible: true, qt_target: 'program', qt_preview: true, ...QT_DEFAULTS },
         groups: [
             {
                 title: 'Quad tree',
                 custom: 'quadTree',
                 hint: 'The Quad Trees tool as an effect: over the whole program, or over one video track (a take or a video) while it shows. The picture is the seed; a preset brings its look.',
-                params: [VISIBLE, num('qt_mix', 'Mix', 0, 1, 0.01, 1)],
+                params: [VISIBLE, num('qt_mix', 'Mix', 0, 1, 0.01, 1), bool('qt_preview', 'Show in preview', true, { link: false })],
             },
             ...QT_GROUPS,
+        ],
+    },
+
+    pixelsort: {
+        label: 'Pixel Sort',
+        category: 'effect',
+        defaults: {
+            visible: true,
+            target: 'program',
+            preview: true,
+            sortBy: 'brightness',
+            thresholdMode: 'brightness',
+            low: 30,
+            high: 100,
+            direction: 'vertical',
+            segmentMaxLength: 0,
+            reverse: false,
+            rgbShift: 0,
+            sortScale: 0.5,
+            sortMix: 1,
+        },
+        groups: [
+            {
+                title: 'Pixel sort',
+                custom: 'effectTarget',
+                hint: 'The Pixel Sorter as an effect: over the whole program, or over one video track (a take or a video) while it shows. In the preview it shows the last sort that finished, so it can trail the picture a little; exports sort every frame. Lengths are in output pixels.',
+                params: [
+                    VISIBLE,
+                    num('sortMix', 'Mix', 0, 1, 0.01, 1),
+                    select('sortBy', 'Sort by', ['brightness', 'hue', 'saturation', 'lightness', 'red', 'green', 'blue'].map((v) => [v, v]), 'brightness'),
+                    select('thresholdMode', 'Threshold', ['brightness', 'saturation', 'hue', 'none'].map((v) => [v, v]), 'brightness'),
+                    num('low', 'Low %', 0, 100, 1, 30, { when: (p) => p.thresholdMode !== 'none' }),
+                    num('high', 'High %', 0, 100, 1, 100, { when: (p) => p.thresholdMode !== 'none' }),
+                    select('direction', 'Direction', [['vertical', 'Vertical'], ['horizontal', 'Horizontal']], 'vertical'),
+                    num('segmentMaxLength', 'Seg max px', 0, 2000, 10, 0),
+                    bool('reverse', 'Reverse', false),
+                    num('rgbShift', 'RGB shift', 0, 64, 1, 0),
+                    num('sortScale', 'Resolution', 0.1, 1, 0.05, 0.5, { link: false }),
+                    bool('preview', 'Show in preview', true, { link: false }),
+                ],
+            },
         ],
     },
 
@@ -745,11 +1090,192 @@ export const OBJECT_TYPES = {
     },
 };
 
+// ---- The Blob Tracker effect ----------------------------------------------------
+//
+// The Blob Tracker tool's engine (lib/blobTracker) over a picture, with a
+// window in every box. Its window settings are the Window type's own, taken
+// from it here (all but where the corners are and how big it is, which the
+// boxes decide), so a window feature added there shows here too.
+
+const BLOB_WINDOW_SKIP_GROUPS = new Set(['Corners', 'Size over time']);
+// Set by the boxes, or only for windows placed by hand.
+// (A Blob Tracker's windows always work on what is behind the effect: the
+// picture the effects before it left, 3D and all, so not `fxStage`.)
+const BLOB_WINDOW_SKIP_KEYS = new Set(['visible', 'outline', 'qt_space', 'qt_planeRes', 'fxStage']);
+const spawning = (p) => !!p.spawnWindows;
+const blobWindowGroups = () => OBJECT_TYPES.window.groups
+    // A screen is a video decoder per window: not for one in every box.
+    .filter((g) => !BLOB_WINDOW_SKIP_GROUPS.has(g.title) && g.custom !== 'screenSource')
+    .map((g) => ({
+        ...g,
+        title: `Windows · ${g.title}`,
+        collapsed: true,
+        when: (p) => spawning(p) && (!g.when || g.when(p)),
+        params: (g.params || []).filter((d) => !BLOB_WINDOW_SKIP_KEYS.has(d.key)),
+    }))
+    .filter((g) => g.params.length || g.custom);
+
+const { corners, ...BLOB_WINDOW_DEFAULTS } = OBJECT_TYPES.window.defaults; // eslint-disable-line no-unused-vars
+
+const labelsOn = (p) => p.showLabels !== false;
+
+OBJECT_TYPES.blobs = {
+    label: 'Blob Tracker',
+    category: 'effect',
+    defaults: {
+        ...BLOB_WINDOW_DEFAULTS,
+        // A window in a box starts out doing nothing to the picture: pick
+        // what it does (a cut, a hue shift, a sort, a quad tree).
+        cut: false,
+        ...BLOB_DEFAULTS,
+        visible: true,
+        target: 'program',
+        preview: true,
+        spawnWindows: false,
+        winPad: 0,
+    },
+    groups: [
+        {
+            title: 'Blob tracker',
+            custom: 'effectTarget',
+            hint: 'The Blob Tracker tool as an effect: finds bright (or dark) blobs in the whole program, or in one video track while it shows, and boxes them. It only sees what is behind it: the picture the effects above it in the list left, never its own windows and boxes or the effects below it, so on a paused frame the boxes settle and stay put. In the preview the boxes can trail the picture by a frame or two; exports track every frame from the start.',
+            params: [VISIBLE, bool('preview', 'Show in preview', true, { link: false })],
+        },
+        {
+            title: 'Detection',
+            params: [
+                num('threshold', 'Threshold', 0, 255, 1, BLOB_DEFAULTS.threshold),
+                bool('invert', 'Track dark', BLOB_DEFAULTS.invert),
+                num('minArea', 'Min size', 1, 120, 1, BLOB_DEFAULTS.minArea),
+                num('maxSize', 'Max size (% of frame)', 0.1, 100, 0.1, BLOB_DEFAULTS.maxSize),
+                num('maxBoxes', 'Max boxes', 1, 30, 1, BLOB_DEFAULTS.maxBoxes, { link: false }),
+                num('smoothing', 'Smoothing', 0, 0.95, 0.01, BLOB_DEFAULTS.smoothing),
+            ],
+        },
+        {
+            title: 'Boxes',
+            params: [
+                bool('showBoxes', 'Show boxes', true),
+                select('boxStyle', 'Style', [['corners', 'Corners'], ['box', 'Box'], ['cross', 'Cross']], BLOB_DEFAULTS.boxStyle),
+                color('boxColor', 'Colour', BLOB_DEFAULTS.boxColor),
+                num('lineWidth', 'Line width', 0.5, 12, 0.5, BLOB_DEFAULTS.lineWidth),
+                num('boxOpacity', 'Opacity', 0, 1, 0.01, BLOB_DEFAULTS.boxOpacity),
+                num('borderRadius', 'Radius', 0, 48, 1, BLOB_DEFAULTS.borderRadius),
+                num('glow', 'Glow', 0, 40, 1, BLOB_DEFAULTS.glow),
+                num('blur', 'Blur', 0, 10, 0.1, BLOB_DEFAULTS.blur),
+            ],
+        },
+        {
+            title: 'Labels',
+            hint: `Sizes are in pixels at 1280 wide, and scale with the frame. Numbers count in output pixels. A custom label can use ${LABEL_TOKENS}. Radius -1 follows the boxes'.`,
+            params: [
+                bool('showLabels', 'Show labels', true),
+                select('labelText', 'Says', LABEL_TEXTS.map(([id, name]) => [id, name]), BLOB_DEFAULTS.labelText, { when: labelsOn }),
+                string('labelTemplate', 'Template', BLOB_DEFAULTS.labelTemplate, { when: (p) => labelsOn(p) && p.labelText === 'custom', placeholder: '#{id}  {area}' }),
+                select('labelFont', 'Font', GLYPH_FONTS.map(([id, name]) => [id, name]), BLOB_DEFAULTS.labelFont, { when: labelsOn }),
+                string('labelFontCustom', 'Font name', '', { when: (p) => labelsOn(p) && p.labelFont === 'custom', placeholder: 'Installed font' }),
+                select('labelWeight', 'Weight', GLYPH_WEIGHTS.map((w) => [w, String(w)]), BLOB_DEFAULTS.labelWeight, { when: labelsOn }),
+                select('labelPlace', 'Place', LABEL_PLACES, BLOB_DEFAULTS.labelPlace, { when: labelsOn }),
+                num('labelSize', 'Text size', 4, 64, 0.5, BLOB_DEFAULTS.labelSize, { when: labelsOn }),
+                num('labelGap', 'Gap to box', -40, 80, 0.5, BLOB_DEFAULTS.labelGap, { when: labelsOn }),
+                num('labelPadX', 'Padding across', 0, 40, 0.5, BLOB_DEFAULTS.labelPadX, { when: labelsOn }),
+                num('labelPadY', 'Padding down', 0, 40, 0.5, BLOB_DEFAULTS.labelPadY, { when: labelsOn }),
+                num('labelRadius', 'Radius', -1, 48, 1, BLOB_DEFAULTS.labelRadius, { when: labelsOn }),
+                color('labelColor', 'Fill', BLOB_DEFAULTS.labelColor, { when: labelsOn }),
+                num('labelOpacity', 'Fill opacity', 0, 1, 0.01, BLOB_DEFAULTS.labelOpacity, { when: labelsOn }),
+                color('labelTextColor', 'Text', BLOB_DEFAULTS.labelTextColor, { when: labelsOn }),
+                bool('labelOutline', 'Outline', BLOB_DEFAULTS.labelOutline, { when: labelsOn }),
+                color('labelOutlineColor', 'Outline colour', BLOB_DEFAULTS.labelOutlineColor, { when: (p) => labelsOn(p) && p.labelOutline }),
+                num('labelOutlineWidth', 'Outline width', 0, 8, 0.25, BLOB_DEFAULTS.labelOutlineWidth, { when: (p) => labelsOn(p) && p.labelOutline }),
+                num('labelOutlineOpacity', 'Outline opacity', 0, 1, 0.01, BLOB_DEFAULTS.labelOutlineOpacity, { when: (p) => labelsOn(p) && p.labelOutline }),
+            ],
+        },
+        {
+            title: 'Connections',
+            collapsed: true,
+            params: [
+                bool('showConnections', 'Show', BLOB_DEFAULTS.showConnections),
+                color('connectionColor', 'Colour', BLOB_DEFAULTS.connectionColor, { when: (p) => p.showConnections }),
+                num('connectionCurve', 'Curvature', 0, 1, 0.01, BLOB_DEFAULTS.connectionCurve, { when: (p) => p.showConnections }),
+                num('connectionShuffle', 'Reshuffle (s)', 0, 10, 0.1, BLOB_DEFAULTS.connectionShuffle, { when: (p) => p.showConnections }),
+            ],
+        },
+        {
+            title: 'Windows',
+            hint: 'A window in every box, like a placed one: give it a cut, a hue shift, a pixel sort or a quad tree, hold it to a matte. Padding grows (or shrinks) each window past its box, in output pixels.',
+            params: [
+                bool('spawnWindows', 'Window in each box', false),
+                num('winPad', 'Padding', -200, 400, 1, 0, { when: spawning }),
+            ],
+        },
+        ...blobWindowGroups(),
+    ],
+};
+
+// A spline's defining point, as the spline's child (made and removed with
+// its points, see model/splineLabels.js): a marker where the point is and a
+// label beside it, both placed from the point. The label is a Text's.
+{
+    const T = OBJECT_TYPES.text;
+    OBJECT_TYPES.splinePoint = {
+        label: 'Point',
+        category: 'placed',
+        gizmo: 'corners',
+        child: true,
+        defaults: {
+            ...T.defaults,
+            textMode: 'latex',
+            faceCamera: true,
+            fontSize: 0.7,
+            padding: 0,
+            align: 'left',
+            valign: 'middle',
+            showMarker: true,
+            showLabel: true,
+            markerOwn: false,
+            markerShape: 'octa',
+            markerStyle: 'solid',
+            markerWire: 1.5,
+            markerSize: 0.035,
+            markerColor: '#ffffff',
+        },
+        groups: [
+            {
+                title: 'Point',
+                custom: 'pointOf',
+                params: [
+                    bool('showMarker', 'Marker', true),
+                    bool('showLabel', 'Label', true),
+                ],
+            },
+            {
+                title: 'Marker',
+                collapsed: true,
+                hint: 'Drawn as the spline\u2019s markers are, unless it has a look of its own. The spline\u2019s Show markers still hides them all.',
+                params: [
+                    bool('markerOwn', 'A look of its own', false, { link: false }),
+                    select('markerShape', 'Shape', POINT_SHAPES, 'octa', { when: (p) => p.markerOwn }),
+                    select('markerStyle', 'Drawn', POINT_STYLES, 'solid', { when: (p) => p.markerOwn }),
+                    num('markerWire', 'Edge width (px)', 0.25, 12, 0.05, 1.5, { when: (p) => p.markerOwn && p.markerStyle === 'wire' }),
+                    num('markerSize', 'Size', 0.001, 0.5, 0.001, 0.035, { when: (p) => p.markerOwn }),
+                    color('markerColor', 'Colour', '#ffffff', { when: (p) => p.markerOwn }),
+                ],
+            },
+            {
+                title: 'Label',
+                hint: 'Its corners are measured from the point, in the spline\u2019s frame. Facing the camera, it turns about the point, so it stays to the same side of it on screen. The spline\u2019s Show labels still hides them all.',
+                params: [bool('faceCamera', 'Face the camera', true, { link: false })],
+            },
+            ...T.groups.filter((g) => g.title !== 'Placement').map((g) => (g.title === 'Corners' ? { ...g, title: 'Label corners' } : g)),
+        ],
+    };
+}
+
 /** What the Add menu offers, by section. */
 export const ADDABLE = {
-    placed: ['cloud', 'curve', 'protagonist', 'sackboy', 'prop', 'window', 'text'],
+    placed: ['cloud', 'curve', 'equation', 'spline', 'protagonist', 'sackboy', 'prop', 'window', 'text'],
     camera: ['camera'],
-    effect: ['glow', 'haze', 'grade', 'quadtree'],
+    effect: ['glow', 'haze', 'grade', 'quadtree', 'pixelsort', 'blobs'],
 };
 
 // Parameters of the timeline's tracks, linkable like any object's: cutting

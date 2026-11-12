@@ -2,36 +2,18 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Play, Pause, SlidersHorizontal, X, Film, Upload, Download } from 'lucide-react';
 import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
 import VfxNumberField from './VfxNumberField';
+import ColorPicker from './ui/ColorPicker';
 import { Mp4FrameReader, drainEncoders, nextTask } from '../lib/mp4Frames';
+import {
+    ANALYSIS_WIDTH, BLOB_DEFAULTS, LABEL_TEXTS, LABEL_PLACES, LABEL_TOKENS,
+    detectBlobs, updateTracks, updateConnections, drawOverlay,
+} from '../lib/blobTracker';
+import { GLYPH_FONTS, GLYPH_WEIGHTS } from './quadtree/fonts';
 import styles from './vfx.module.css';
 
-// Width (px) of the downscaled frame the detector runs on. Small enough to
-// flood-fill every animation frame, large enough to resolve separate blobs.
-const ANALYSIS_WIDTH = 220;
-
-const DEFAULTS = {
-    // Detection
-    threshold: 70,      // luma cutoff (0-255)
-    invert: false,      // track dark blobs on light footage instead
-    minArea: 10,        // min blob size, in analysis-grid pixels
-    maxBoxes: 12,
-    smoothing: 0.65,    // 0 = raw boxes, ->1 = heavily damped
-    // Appearance
-    boxStyle: 'corners', // 'corners' | 'box' | 'cross'
-    boxColor: '#f2f0e6',
-    labelColor: '#2b4bdf',
-    labelTextColor: '#ffffff',
-    connectionColor: '#e8c56a',
-    lineWidth: 2,
-    boxOpacity: 0.9,
-    borderRadius: 4,
-    glow: 0,
-    blur: 0,
-    showLabels: true,
-    showConnections: false,
-    connectionCurve: 0.3,   // 0 = straight lines, 1 = strongly bowed
-    connectionShuffle: 0,   // seconds of video time between re-pairings (0 = never)
-};
+// Settings for the tool: the engine's (lib/blobTracker), shared with the
+// Compositor's Blob Tracker effect.
+const DEFAULTS = BLOB_DEFAULTS;
 
 const EXPORT_SCALES = [
     { id: 1, name: '1x' },
@@ -39,276 +21,6 @@ const EXPORT_SCALES = [
     { id: 3, name: '3x' },
     { id: 4, name: '4x' },
 ];
-
-// Threshold the frame on luminance, then group lit pixels into connected
-// components (8-connectivity, iterative flood fill). Returns the largest
-// components as {x, y, w, h, area, cx, cy} in analysis-grid coordinates.
-function detectBlobs(data, w, h, s) {
-    const n = w * h;
-    const mask = new Uint8Array(n);
-    for (let i = 0, p = 0; i < n; i++, p += 4) {
-        const lum = 0.2126 * data[p] + 0.7152 * data[p + 1] + 0.0722 * data[p + 2];
-        mask[i] = (s.invert ? lum < s.threshold : lum > s.threshold) ? 1 : 0;
-    }
-
-    const visited = new Uint8Array(n);
-    const stack = new Int32Array(n);
-    const blobs = [];
-
-    for (let i = 0; i < n; i++) {
-        if (!mask[i] || visited[i]) continue;
-        let top = 0;
-        stack[top++] = i;
-        visited[i] = 1;
-        let minX = w, minY = h, maxX = 0, maxY = 0, area = 0, sumX = 0, sumY = 0;
-
-        while (top > 0) {
-            const idx = stack[--top];
-            const x = idx % w;
-            const y = (idx / w) | 0;
-            area++;
-            sumX += x;
-            sumY += y;
-            if (x < minX) minX = x;
-            if (x > maxX) maxX = x;
-            if (y < minY) minY = y;
-            if (y > maxY) maxY = y;
-
-            for (let dy = -1; dy <= 1; dy++) {
-                const ny = y + dy;
-                if (ny < 0 || ny >= h) continue;
-                for (let dx = -1; dx <= 1; dx++) {
-                    const nx = x + dx;
-                    if (nx < 0 || nx >= w) continue;
-                    const nIdx = ny * w + nx;
-                    if (mask[nIdx] && !visited[nIdx]) {
-                        visited[nIdx] = 1;
-                        stack[top++] = nIdx;
-                    }
-                }
-            }
-        }
-
-        if (area >= s.minArea) {
-            blobs.push({
-                x: minX, y: minY,
-                w: maxX - minX + 1, h: maxY - minY + 1,
-                area, cx: sumX / area, cy: sumY / area,
-            });
-        }
-    }
-
-    blobs.sort((a, b) => b.area - a.area);
-    return blobs.slice(0, s.maxBoxes);
-}
-
-// Greedy nearest-centroid matching between last frame's tracks and this
-// frame's detections. Matched tracks keep their id (stable labels) and get
-// lerped toward the new box; unmatched tracks survive a few frames so
-// momentary detection dropouts don't flicker.
-function updateTracks(tracks, blobs, nextIdRef, s, maxDist) {
-    const used = new Set();
-    const alive = [];
-    const k = 1 - Math.min(0.95, Math.max(0, s.smoothing));
-
-    for (const t of tracks) {
-        let best = -1;
-        let bestD = maxDist;
-        for (let j = 0; j < blobs.length; j++) {
-            if (used.has(j)) continue;
-            const d = Math.hypot(blobs[j].cx - t.cx, blobs[j].cy - t.cy);
-            if (d < bestD) { bestD = d; best = j; }
-        }
-        if (best >= 0) {
-            used.add(best);
-            const b = blobs[best];
-            t.x += (b.x - t.x) * k;
-            t.y += (b.y - t.y) * k;
-            t.w += (b.w - t.w) * k;
-            t.h += (b.h - t.h) * k;
-            t.cx += (b.cx - t.cx) * k;
-            t.cy += (b.cy - t.cy) * k;
-            t.missed = 0;
-            alive.push(t);
-        } else {
-            t.missed++;
-            if (t.missed < 8) alive.push(t);
-        }
-    }
-
-    for (let j = 0; j < blobs.length; j++) {
-        if (used.has(j)) continue;
-        const b = blobs[j];
-        alive.push({ id: nextIdRef.current++, ...b, missed: 0 });
-    }
-
-    return alive;
-}
-
-// Random pairing of visible tracks: each box connects to at most one random
-// partner. Pairs persist while both tracks are alive so lines don't flicker;
-// newly unpaired boxes get shuffled together each frame. `state` is
-// { pairs: [{a, b, bend}], lastShuffle } and `now` is the video time (s):
-// when connectionShuffle > 0, all pairs are re-drawn from scratch every
-// `connectionShuffle` seconds of playback. `bend` (+1/-1) picks which side a
-// curved connection bows toward and stays fixed for the pair's lifetime.
-function updateConnections(state, tracks, s, now) {
-    if (s.connectionShuffle > 0) {
-        if (now < state.lastShuffle) state.lastShuffle = now; // looped / rewound
-        if (now - state.lastShuffle >= s.connectionShuffle) {
-            state.pairs = [];
-            state.lastShuffle = now;
-        }
-    }
-
-    const ids = tracks.filter((t) => t.missed < 3).map((t) => t.id);
-    const idSet = new Set(ids);
-    const kept = state.pairs.filter((p) => idSet.has(p.a) && idSet.has(p.b));
-
-    const paired = new Set();
-    for (const p of kept) { paired.add(p.a); paired.add(p.b); }
-    const free = ids.filter((id) => !paired.has(id));
-
-    for (let i = free.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        const tmp = free[i];
-        free[i] = free[j];
-        free[j] = tmp;
-    }
-    for (let i = 0; i + 1 < free.length; i += 2) {
-        kept.push({ a: free[i], b: free[i + 1], bend: Math.random() < 0.5 ? 1 : -1 });
-    }
-
-    state.pairs = kept;
-}
-
-function roundedRectPath(ctx, x, y, w, h, r) {
-    const rr = Math.min(r, w / 2, h / 2);
-    ctx.beginPath();
-    ctx.moveTo(x + rr, y);
-    ctx.arcTo(x + w, y, x + w, y + h, rr);
-    ctx.arcTo(x + w, y + h, x, y + h, rr);
-    ctx.arcTo(x, y + h, x, y, rr);
-    ctx.arcTo(x, y, x + w, y, rr);
-    ctx.closePath();
-}
-
-// Renders tracks + connections onto a canvas of vw x vh pixels. Does NOT
-// clear first, so it can composite over an already-drawn video frame (export).
-// sxy scales analysis-grid coords up to output pixels; `u` scales stroke
-// widths, radii and label text with the output resolution, which keeps the
-// overlay crisp when rendering at upscaled resolutions.
-function drawOverlay(ctx, vw, vh, aw, ah, tracks, pairs, s) {
-    const sx = vw / aw;
-    const sy = vh / ah;
-    const u = Math.max(0.75, vw / 1280);
-    const lw = Math.max(1, s.lineWidth * u);
-    const fontPx = Math.round(11 * u);
-    const radius = Math.max(0, s.borderRadius) * u;
-    const glow = Math.max(0, s.glow) * u;
-    ctx.font = `${fontPx}px "SF Mono", ui-monospace, Menlo, Monaco, monospace`;
-    ctx.filter = s.blur > 0 ? `blur(${s.blur * u}px)` : 'none';
-
-    const setGlow = (color) => {
-        if (glow > 0) {
-            ctx.shadowBlur = glow;
-            ctx.shadowColor = color;
-        } else {
-            ctx.shadowBlur = 0;
-        }
-    };
-
-    if (s.showConnections && pairs.length > 0) {
-        const byId = new Map();
-        for (const t of tracks) byId.set(t.id, t);
-        const curve = Math.max(0, s.connectionCurve || 0);
-        ctx.globalAlpha = s.boxOpacity;
-        ctx.strokeStyle = s.connectionColor;
-        ctx.lineWidth = Math.max(1, lw * 0.8);
-        setGlow(s.connectionColor);
-        ctx.beginPath();
-        for (const pair of pairs) {
-            const a = byId.get(pair.a);
-            const b = byId.get(pair.b);
-            if (!a || !b || a.missed >= 3 || b.missed >= 3) continue;
-            const x1 = a.cx * sx, y1 = a.cy * sy;
-            const x2 = b.cx * sx, y2 = b.cy * sy;
-            ctx.moveTo(x1, y1);
-            if (curve > 0) {
-                // Control point offset perpendicular to the segment midpoint;
-                // bend keeps each pair bowing to a consistent side.
-                const px = (x1 + x2) / 2 - (y2 - y1) * curve * 0.5 * pair.bend;
-                const py = (y1 + y2) / 2 + (x2 - x1) * curve * 0.5 * pair.bend;
-                ctx.quadraticCurveTo(px, py, x2, y2);
-            } else {
-                ctx.lineTo(x2, y2);
-            }
-        }
-        ctx.stroke();
-    }
-
-    for (const t of tracks) {
-        if (t.missed >= 3) continue;
-
-        const pad = 3 * u;
-        const x = t.x * sx - pad;
-        const y = t.y * sy - pad;
-        const w = t.w * sx + pad * 2;
-        const h = t.h * sy + pad * 2;
-        const cx = t.cx * sx;
-        const cy = t.cy * sy;
-
-        ctx.globalAlpha = s.boxOpacity;
-        ctx.strokeStyle = s.boxColor;
-        ctx.lineWidth = lw;
-        setGlow(s.boxColor);
-
-        if (s.boxStyle === 'box') {
-            roundedRectPath(ctx, x, y, w, h, radius);
-            ctx.stroke();
-        } else if (s.boxStyle === 'corners') {
-            const cl = Math.max(5 * u, Math.min(w, h) * 0.26);
-            ctx.beginPath();
-            ctx.moveTo(x, y + cl); ctx.lineTo(x, y); ctx.lineTo(x + cl, y);
-            ctx.moveTo(x + w - cl, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + cl);
-            ctx.moveTo(x + w, y + h - cl); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w - cl, y + h);
-            ctx.moveTo(x + cl, y + h); ctx.lineTo(x, y + h); ctx.lineTo(x, y + h - cl);
-            ctx.stroke();
-        } else {
-            const r = 6 * u;
-            ctx.beginPath();
-            ctx.moveTo(cx - r, cy); ctx.lineTo(cx + r, cy);
-            ctx.moveTo(cx, cy - r); ctx.lineTo(cx, cy + r);
-            ctx.stroke();
-        }
-
-        if (s.showLabels) {
-            const text = `${Math.round(cx)}, ${Math.round(cy)}`;
-            const tw = ctx.measureText(text).width;
-            const pillW = tw + 10 * u;
-            const pillH = fontPx + 7 * u;
-            let px = Math.min(Math.max(2, x), vw - pillW - 2);
-            let py = y - pillH - 4 * u;
-            if (py < 2) py = y + 4 * u;
-
-            ctx.fillStyle = s.labelColor;
-            setGlow(s.labelColor);
-            roundedRectPath(ctx, px, py, pillW, pillH, Math.min(radius, pillH / 2));
-            ctx.fill();
-            ctx.shadowBlur = 0;
-            ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-            ctx.lineWidth = Math.max(1, u);
-            ctx.stroke();
-            ctx.fillStyle = s.labelTextColor;
-            ctx.textBaseline = 'middle';
-            ctx.fillText(text, px + 5 * u, py + pillH / 2 + u * 0.5);
-        }
-    }
-
-    ctx.globalAlpha = 1;
-    ctx.shadowBlur = 0;
-    ctx.filter = 'none';
-}
 
 function formatTime(sec) {
     if (!Number.isFinite(sec)) return '0:00';
@@ -387,11 +99,27 @@ function BlobTracker() {
         const pctx = proc.getContext('2d', { willReadFrequently: true });
         const octx = overlay.getContext('2d');
         let raf;
+        // The frame and settings last drawn: the display refreshes faster
+        // than the video (a 120 Hz screen, a paused video), and redoing the
+        // same frame was most of the tool's work.
+        // Where the browser says when a new frame is shown, count those;
+        // otherwise go by the playhead.
+        let lastKey = null;
+        let lastSettings = null;
+        let frameSeq = 0;
+        let vfc = 0;
+        const hasVfc = !!video?.requestVideoFrameCallback;
+        const onFrame = () => { frameSeq++; vfc = video.requestVideoFrameCallback(onFrame); };
+        if (hasVfc) vfc = video.requestVideoFrameCallback(onFrame);
 
         const tick = () => {
             raf = requestAnimationFrame(tick);
-            if (exportingRef.current) return;
+            if (exportingRef.current) { lastKey = null; return; }
             if (!video || video.readyState < 2 || !video.videoWidth) return;
+            const key = hasVfc ? frameSeq : video.currentTime;
+            if (key === lastKey && settingsRef.current === lastSettings) return;
+            lastKey = key;
+            lastSettings = settingsRef.current;
 
             const vw = video.videoWidth;
             const vh = video.videoHeight;
@@ -417,7 +145,10 @@ function BlobTracker() {
         };
 
         raf = requestAnimationFrame(tick);
-        return () => cancelAnimationFrame(raf);
+        return () => {
+            cancelAnimationFrame(raf);
+            if (hasVfc) video.cancelVideoFrameCallback?.(vfc);
+        };
     }, [videoUrl]);
 
     const togglePlay = () => {
@@ -702,15 +433,26 @@ function BlobTracker() {
         </div>
     );
 
+    const selectRow = (options, key, cast = String) => (
+        <select
+            key={key}
+            className={styles.vfx_select}
+            style={{ marginBottom: 8 }}
+            value={settings[key]}
+            onChange={(e) => set(key)(cast(e.target.value))}
+        >
+            {options.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+        </select>
+    );
+
     const colorRow = (label, key) => (
         <div className={styles.vfx_row} key={key}>
             <span className={styles.vfx_label} title={label}>{label}</span>
-            <input
-                type="color"
-                className={styles.vfx_color}
+            <ColorPicker
+                title={label}
                 style={{ gridColumn: '2 / 4' }}
                 value={settings[key]}
-                onChange={(e) => set(key)(e.target.value)}
+                onChange={set(key)}
             />
         </div>
     );
@@ -856,6 +598,7 @@ function BlobTracker() {
                         <div className={styles.vfx_sectionTitle}>Detection</div>
                         {sliderRow('Threshold', 'threshold', 0, 255, 1)}
                         {sliderRow('Min Size', 'minArea', 1, 120, 1)}
+                        {sliderRow('Max Size %', 'maxSize', 0.1, 100, 0.1)}
                         {sliderRow('Max Boxes', 'maxBoxes', 1, 30, 1)}
                         {sliderRow('Smoothing', 'smoothing', 0, 0.95, 0.01)}
                         {switchRow('Track Dark', 'invert')}
@@ -876,15 +619,62 @@ function BlobTracker() {
                                 </button>
                             ))}
                         </div>
+                        {switchRow('Show Boxes', 'showBoxes')}
                         {sliderRow('Line Width', 'lineWidth', 1, 6, 0.5)}
                         {sliderRow('Opacity', 'boxOpacity', 0.1, 1, 0.05)}
                         {sliderRow('Radius', 'borderRadius', 0, 24, 1)}
                         {sliderRow('Glow', 'glow', 0, 40, 1)}
                         {sliderRow('Blur', 'blur', 0, 10, 0.1)}
                         {colorRow('Box', 'boxColor')}
-                        {colorRow('Label', 'labelColor')}
-                        {colorRow('Label Text', 'labelTextColor')}
-                        {switchRow('Coord Labels', 'showLabels')}
+                    </div>
+
+                    {/* Labels */}
+                    <div className={styles.vfx_section}>
+                        <div className={styles.vfx_sectionTitle}>Labels</div>
+                        {switchRow('Show Labels', 'showLabels')}
+                        {selectRow(LABEL_TEXTS.map(([id, name]) => [id, name]), 'labelText')}
+                        {settings.labelText === 'custom' && (
+                            <>
+                                <input
+                                    type="text"
+                                    className={styles.vfx_text}
+                                    style={{ marginBottom: 6 }}
+                                    value={settings.labelTemplate}
+                                    onChange={(e) => set('labelTemplate')(e.target.value)}
+                                    spellCheck={false}
+                                />
+                                <div className={styles.vfx_hint} style={{ marginBottom: 8 }}>{LABEL_TOKENS}</div>
+                            </>
+                        )}
+                        {selectRow(GLYPH_FONTS.map(([id, name]) => [id, name]), 'labelFont')}
+                        {settings.labelFont === 'custom' && (
+                            <input
+                                type="text"
+                                className={styles.vfx_text}
+                                style={{ marginBottom: 8 }}
+                                value={settings.labelFontCustom}
+                                placeholder="Font name"
+                                onChange={(e) => set('labelFontCustom')(e.target.value)}
+                                spellCheck={false}
+                            />
+                        )}
+                        {selectRow(GLYPH_WEIGHTS.map((w) => [w, `Weight ${w}`]), 'labelWeight', Number)}
+                        {selectRow(LABEL_PLACES, 'labelPlace')}
+                        {sliderRow('Text Size', 'labelSize', 4, 48, 0.5)}
+                        {sliderRow('Pad X', 'labelPadX', 0, 24, 0.5)}
+                        {sliderRow('Pad Y', 'labelPadY', 0, 24, 0.5)}
+                        {sliderRow('Gap', 'labelGap', -20, 40, 0.5)}
+                        {sliderRow('Radius', 'labelRadius', -1, 24, 1)}
+                        {sliderRow('Fill', 'labelOpacity', 0, 1, 0.05)}
+                        {colorRow('Fill Color', 'labelColor')}
+                        {colorRow('Text', 'labelTextColor')}
+                        {switchRow('Outline', 'labelOutline')}
+                        {settings.labelOutline && sliderRow('Outline Width', 'labelOutlineWidth', 0, 6, 0.25)}
+                        {settings.labelOutline && sliderRow('Outline Opacity', 'labelOutlineOpacity', 0, 1, 0.05)}
+                        {settings.labelOutline && colorRow('Outline', 'labelOutlineColor')}
+                        <div className={styles.vfx_hint} style={{ marginTop: 8 }}>
+                            Radius -1 follows the box&apos;s. Area and lengths are in the video&apos;s pixels.
+                        </div>
                     </div>
 
                     {/* Connections */}

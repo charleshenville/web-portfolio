@@ -11,7 +11,7 @@ import {
     OBJECT_TYPES, paramDefs, TRACK_PARAMS, AUDIO_TRACK_PARAMS,
 } from '../model/schema';
 import {
-    CONTROLLER_TYPES, CONTROLLER_COLORS, controllerValue, switchAt, isSwitch, dependsOn,
+    CONTROLLER_TYPES, CONTROLLER_COLORS, controllerValue, switchAt, isSwitch, isCut, dependsOn,
 } from '../model/controllers';
 import { LOOP_MODES, clipEnd } from '../model/timeline';
 import { linksTo } from '../model/project';
@@ -31,6 +31,10 @@ import { PUBLIC_VIDEOS } from '../../../lib/scanAssets/screenVideo';
 import { listPresets, loadPreset, readPresetFile } from '../../quadtree/presets';
 import { presetToParams } from '../../quadtree/fxParams';
 import { ParamRow, NumberBox } from './Params';
+import {
+    EquationEditor, SplineEditor, TextDynamic, CurveConvert, UsedVariables, VariableInspector, SplinePointList, PointOf,
+} from './Maths';
+import { variableLabel } from '../model/globals';
 import { useComp, useTick } from './context';
 import { ICONS } from './Sidebar';
 import styles from '../compositor.module.css';
@@ -174,9 +178,12 @@ function ScreenSource({ obj }) {
 
 function WindowMatte({ obj }) {
     const comp = useComp();
-    const scene = comp.project.scenes.find((s) => s.id === obj.sceneId);
-    const list = scene?.take ? mattesFor(scene.take) : [];
-    if (!list.length) return <p className={styles.hint}>This take has no mattes yet. Make them under Roto, in the Take&apos;s panel.</p>;
+    // A placed window holds to its own take's mattes; an effect's windows
+    // (a Blob Tracker's) to whichever take is showing, so every take's are offered.
+    const scenes = obj.sceneId ? comp.project.scenes.filter((s) => s.id === obj.sceneId) : comp.project.scenes;
+    const takes = Array.from(new Set(scenes.map((s) => s.take).filter(Boolean)));
+    const list = takes.flatMap((take) => mattesFor(take).map((m) => ({ ...m, label: takes.length > 1 ? `${take} · ${m.label || m.id}` : m.label })));
+    if (!list.length) return <p className={styles.hint}>{obj.sceneId ? 'This take has no mattes yet.' : 'No take has mattes yet.'} Make them under Roto, in the Take&apos;s panel.</p>;
     return (
         <>
             <Field label="Matte">
@@ -198,6 +205,25 @@ function WindowMatte({ obj }) {
 }
 
 /**
+ * Which picture a picture effect (a quad tree, a pixel sort) runs on: the
+ * whole program, or one video track while it shows.
+ */
+function EffectTarget({ obj, paramKey = 'target' }) {
+    const comp = useComp();
+    const tracks = comp.project.tracks.filter((t) => t.kind === 'video');
+    const target = obj.params[paramKey] || 'program';
+    return (
+        <Field label="Apply to">
+            <select className={styles.select} value={target} onChange={(e) => comp.setParam(obj.id, paramKey, e.target.value, true)}>
+                <option value="program">Whole program</option>
+                {tracks.map((t) => <option key={t.id} value={t.id}>{`Track ${t.name}`}</option>)}
+                {target !== 'program' && !tracks.some((t) => t.id === target) && <option value={target}>Missing track</option>}
+            </select>
+        </Field>
+    );
+}
+
+/**
  * A quad tree's source and look: for the effect, which picture it runs on
  * (the whole program, or one video track while it shows); for both it and a
  * window, a Quad Trees preset to load. A preset's own seed is never used: the
@@ -212,23 +238,13 @@ function QuadTreePanel({ obj }) {
     const apply = (pr, name) => {
         comp.updateObject(obj.id, (o) => ({
             ...o,
-            params: { ...o.params, ...presetToParams(pr.settings), ...(o.type === 'window' ? { qt_on: true } : {}) },
+            params: { ...o.params, ...presetToParams(pr.settings), ...(o.type !== 'quadtree' ? { qt_on: true } : {}) },
         }), true);
         setMsg(`Loaded ${name}. Links on its parameters are kept.`);
     };
-    const tracks = comp.project.tracks.filter((t) => t.kind === 'video');
-    const target = obj.params.qt_target || 'program';
     return (
         <>
-            {obj.type === 'quadtree' && (
-                <Field label="Apply to">
-                    <select className={styles.select} value={target} onChange={(e) => comp.setParam(obj.id, 'qt_target', e.target.value, true)}>
-                        <option value="program">Whole program</option>
-                        {tracks.map((t) => <option key={t.id} value={t.id}>{`Track ${t.name}`}</option>)}
-                        {target !== 'program' && !tracks.some((t) => t.id === target) && <option value={target}>Missing track</option>}
-                    </select>
-                </Field>
-            )}
+            {obj.type === 'quadtree' && <EffectTarget obj={obj} paramKey="qt_target" />}
             <Field label="Preset">
                 {presets ? (
                     <select
@@ -528,6 +544,14 @@ const CUSTOM = {
     windowCorners: WindowCorners,
     pulseShape: PulseShape,
     quadTree: QuadTreePanel,
+    effectTarget: EffectTarget,
+    equation: EquationEditor,
+    splinePoints: SplineEditor,
+    splinePointList: SplinePointList,
+    pointOf: PointOf,
+    textDynamic: TextDynamic,
+    curveConvert: CurveConvert,
+    usedVariables: UsedVariables,
 };
 
 // ---- Objects ---------------------------------------------------------------------
@@ -553,8 +577,8 @@ function ObjectInspector({ obj }) {
                 )}
                 {!type.unique && (
                     <>
-                        <button type="button" className={styles.olToggle} title="Duplicate" onClick={() => comp.duplicateObject(obj.id)}><Copy size={12} /></button>
-                        <button type="button" className={styles.olToggle} title="Delete" onClick={() => comp.removeObject(obj.id)}><Trash2 size={12} /></button>
+                        {!type.child && <button type="button" className={styles.olToggle} title="Duplicate" onClick={() => comp.duplicateObject(obj.id)}><Copy size={12} /></button>}
+                        <button type="button" className={styles.olToggle} title={type.child ? 'Delete (and the point with it)' : 'Delete'} onClick={() => comp.removeObject(obj.id)}><Trash2 size={12} /></button>
                     </>
                 )}
             </div>
@@ -634,7 +658,10 @@ function SwitchTools({ ctrl }) {
     const now = switchAt(ctrl, comp.now());
     return (
         <>
-            <Group title="States">
+            <Group title={ctrl.type === 'text' ? 'Texts' : 'States'}>
+                {ctrl.type === 'text' && (
+                    <p className={styles.hint}>Each is one piece of text; cut between them in its lane like a Switch. A text variable that follows this (under Variables) shows the one it is on, as {'{{τ}}'} in any text.</p>
+                )}
                 <Field label="Starts at">
                     <select
                         className={styles.select}
@@ -657,7 +684,7 @@ function SwitchTools({ ctrl }) {
                 </Field>
                 {ctrl.states.map((s, i) => (
                     <div key={i} className={styles.row}>
-                        <span className={styles.rowLabel}>{i === now ? '▶ ' : ''}State {i + 1}</span>
+                        <span className={styles.rowLabel}>{i === now ? '▶ ' : ''}{ctrl.type === 'text' ? 'Text' : 'State'} {i + 1}</span>
                         <input
                             className={styles.num}
                             style={{ textAlign: 'left' }}
@@ -670,7 +697,7 @@ function SwitchTools({ ctrl }) {
                     </div>
                 ))}
                 <div className={styles.wideRow}>
-                    <button type="button" className={styles.btn} onClick={() => setStates([...ctrl.states, String.fromCharCode(65 + ctrl.states.length)])}>Add state</button>
+                    <button type="button" className={styles.btn} onClick={() => setStates([...ctrl.states, ctrl.type === 'text' ? `Text ${ctrl.states.length + 1}` : String.fromCharCode(65 + ctrl.states.length)])}>{ctrl.type === 'text' ? 'Add text' : 'Add state'}</button>
                 </div>
                 <p className={styles.hint} style={{ marginTop: 8 }}>Cut at the playhead: S (or C) steps on to the next state, 1–9 picks one, while this is selected.</p>
                 <div className={styles.wideRow}>
@@ -862,24 +889,25 @@ function ControllerInspector({ ctrl }) {
                     ))}
                 </Group>
             )}
-            {ctrl.type === 'switch' && <SwitchTools ctrl={ctrl} />}
+            {isCut(ctrl) && <SwitchTools ctrl={ctrl} />}
             {ctrl.type === 'logic' && <LogicTools ctrl={ctrl} />}
             {ctrl.type === 'keys' && <KeyTools ctrl={ctrl} />}
             <Group title={`Linked (${uses.length})`}>
                 {!uses.length && <p className={styles.hint}>Nothing follows this yet. Right-click any control and pick it under Link to controller.</p>}
-                {uses.map(({ owner, key }) => {
+                {uses.map(({ owner, key, variable }) => {
                     const isTrack = !!owner.kind;
-                    const label = isTrack
-                        ? (owner.kind === 'audio' ? AUDIO_TRACK_PARAMS : TRACK_PARAMS).find((d) => d.key === key)?.label
-                        : paramDefs(owner.type).get(key)?.label;
+                    let label;
+                    if (variable) label = 'Value';
+                    else if (isTrack) label = (owner.kind === 'audio' ? AUDIO_TRACK_PARAMS : TRACK_PARAMS).find((d) => d.key === key)?.label;
+                    else label = paramDefs(owner.type).get(key)?.label;
                     return (
                         <div
                             key={`${owner.id}:${key}`}
                             className={styles.olRow}
                             style={{ '--depth': 0 }}
-                            onClick={() => comp.select({ kind: isTrack ? 'track' : 'object', id: owner.id })}
+                            onClick={() => comp.select({ kind: variable ? 'variable' : isTrack ? 'track' : 'object', id: owner.id })}
                         >
-                            <span className={styles.olName}>{owner.name}</span>
+                            <span className={styles.olName}>{variable ? `Variable ${variableLabel(owner)}` : owner.name}</span>
                             <span className={styles.olTag}>{label || key}</span>
                         </div>
                     );
@@ -1035,6 +1063,7 @@ function ClipInspector({ clip }) {
                 <span className={styles.insName} style={{ border: 'none' }}>{media?.name || 'Clip'}</span>
                 <span className={styles.insKind}>Clip</span>
                 <button type="button" className={styles.olToggle} title="Split at playhead (S)" onClick={() => comp.splitClip(clip.id)}><Scissors size={12} /></button>
+                <button type="button" className={styles.olToggle} title={media?.kind === 'stage' ? 'Duplicate, with a new stage of its own (⌘D)' : 'Duplicate (⌘D)'} onClick={() => comp.duplicateClip(clip.id)}><Copy size={12} /></button>
                 <button type="button" className={styles.olToggle} title="Delete" onClick={() => comp.removeClip(clip.id)}><Trash2 size={12} /></button>
             </div>
             <div className={styles.groupBody} style={{ paddingTop: 8 }}>
@@ -1186,6 +1215,10 @@ export default function Inspector() {
     if (sel?.kind === 'object') {
         const obj = P.objects.find((o) => o.id === sel.id);
         if (obj) return <ObjectInspector key={obj.id} obj={obj} />;
+    }
+    if (sel?.kind === 'variable') {
+        const v = (P.variables || []).find((x) => x.id === sel.id);
+        if (v) return <VariableInspector key={v.id} v={v} />;
     }
     if (sel?.kind === 'controller') {
         const c = P.controllers.find((x) => x.id === sel.id);
