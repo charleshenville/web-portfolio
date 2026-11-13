@@ -50,6 +50,16 @@ const bool = (key, label, def, extra = {}) => ({ key, label, type: 'bool', def, 
 const color = (key, label, def, extra = {}) => ({ key, label, type: 'color', def, ...extra });
 const select = (key, label, options, def, extra = {}) => ({ key, label, type: 'select', options, def, link: false, ...extra });
 const text = (key, label, def, extra = {}) => ({ key, label, type: 'text', def, link: false, ...extra });
+
+// A grade of the picture's own, for the footage and each video track: the
+// Grade effect's, without the vignette (a picture's grade is its colour).
+const graded = (p) => !!p.gradeOn;
+const PICTURE_GRADE = [
+    bool('gradeOn', 'Grade', false),
+    bool('invert', 'Invert colours', false, { when: graded }),
+    ...GRADE_PARAMS.filter((g) => g.key !== 'vignette').map((g) => num(g.key, g.label, g.min, g.max, g.step, g.def, { when: graded })),
+];
+const PICTURE_GRADE_DEFAULTS = Object.fromEntries(PICTURE_GRADE.map((d) => [d.key, d.def]));
 const string = (key, label, def, extra = {}) => ({ key, label, type: 'string', def, link: false, ...extra });
 
 // A video across a patch, as prop screens show one.
@@ -349,8 +359,11 @@ export const OBJECT_TYPES = {
         label: 'Footage',
         category: 'scene',
         unique: true,
-        defaults: { visible: true, opacity: 1 },
-        groups: [{ title: 'Footage', params: [VISIBLE, OPACITY] }],
+        defaults: { visible: true, opacity: 1, ...PICTURE_GRADE_DEFAULTS },
+        groups: [
+            { title: 'Footage', params: [VISIBLE, OPACITY] },
+            { title: 'Grade', params: PICTURE_GRADE },
+        ],
     },
 
     scanPoints: {
@@ -1436,6 +1449,7 @@ export const ADDABLE = {
 export const TRACK_PARAMS = [
     bool('visible', 'Visible', true),
     num('opacity', 'Opacity', 0, 1, 0.01, 1),
+    ...PICTURE_GRADE.map((d) => ({ ...d, group: 'Grade' })),
 ];
 export const AUDIO_TRACK_PARAMS = [
     bool('visible', 'Audible', true),

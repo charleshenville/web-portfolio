@@ -1103,6 +1103,19 @@ function ClipInspector({ clip }) {
 function TrackInspector({ track }) {
     const comp = useComp();
     const defs = track.kind === 'audio' ? AUDIO_TRACK_PARAMS : TRACK_PARAMS;
+    const params = { ...Object.fromEntries(defs.map((d) => [d.key, d.def])), ...track.params };
+    const grade = defs.filter((d) => d.group === 'Grade' && (!d.when || d.when(params)));
+    const row = (d) => (
+        <ParamRow
+            key={d.key}
+            def={d}
+            value={params[d.key]}
+            link={track.links?.[d.key]}
+            onChange={(v) => comp.updateTrack(track.id, (t) => ({ ...t, params: { ...t.params, [d.key]: v } }), false, `tp:${track.id}:${d.key}`)}
+            onLink={d.link === false ? undefined : (l) => comp.setTrackLink(track.id, d.key, l)}
+            onCommit={comp.commit}
+        />
+    );
     return (
         <>
             <div className={styles.insHead}>
@@ -1114,18 +1127,13 @@ function TrackInspector({ track }) {
                 {track.kind === 'video' && (
                     <p className={styles.hint}>Link Visible to a Switch to cut between tracks.</p>
                 )}
-                {defs.map((d) => (
-                    <ParamRow
-                        key={d.key}
-                        def={d}
-                        value={track.params[d.key] ?? d.def}
-                        link={track.links?.[d.key]}
-                        onChange={(v) => comp.updateTrack(track.id, (t) => ({ ...t, params: { ...t.params, [d.key]: v } }), false, `tp:${track.id}:${d.key}`)}
-                        onLink={d.link === false ? undefined : (l) => comp.setTrackLink(track.id, d.key, l)}
-                        onCommit={comp.commit}
-                    />
-                ))}
+                {defs.filter((d) => !d.group).map(row)}
             </div>
+            {grade.length > 0 && (
+                <Group title="Grade" id="grade" owner={track.id}>
+                    {grade.map(row)}
+                </Group>
+            )}
         </>
     );
 }

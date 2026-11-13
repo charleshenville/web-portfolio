@@ -41,7 +41,7 @@ import { makeAdapter } from './adapters';
 import { drawnSpan, knotU } from './curveObject';
 import { VideoPool } from './media';
 import {
-    GradeShader, GRADE_KEYS, MatteSnapPass, MatteTopShader,
+    GradeShader, GRADE_KEYS, MatteSnapPass, MatteTopShader, gradeMaterial, setPictureGrade,
 } from './passes';
 import QuadTreeFx from '../../quadtree/engine/threeFx';
 import SortFx from './sortFx';
@@ -77,6 +77,46 @@ void main() {
 
 const D2R = Math.PI / 180;
 const OVERLAY_ONLY = 1 << LAYER.OVERLAY;
+
+// The sun's shadow is split across several shadow maps, one per thing that
+// casts (see placeSun), so each map's texels fit that one thing and the
+// softness doesn't depend on how many there are. The first map belongs to
+// the sun itself; the rest to unlit copies of it (black, so they add no
+// light). Three shades each light by its own map only, so lit surfaces are
+// patched to darken the sun by all of them. Shadow catchers (ShadowMaterial)
+// already multiply every map. Nothing else in the site has more than one
+// shadowed directional light, which is what the patch keys on.
+export const MAX_SHADOW_MAPS = 4;
+const SHADOW_LAYER0 = 24; // object layers 24.. mark which map a caster draws into
+(() => {
+    const chunk = THREE.ShaderChunk.lights_fragment_begin;
+    if (chunk.includes('sunShadowAll')) return;
+    const decl = `	DirectionalLightShadow directionalLightShadow;
+	#endif
+`;
+    const each = '		directLight.color *= ( directLight.visible && receiveShadow ) ? getShadow( directionalShadowMap[ i ], directionalLightShadow.shadowMapSize, directionalLightShadow.shadowBias, directionalLightShadow.shadowRadius, vDirectionalShadowCoord[ i ] ) : 1.0;';
+    if (!chunk.includes(decl) || !chunk.includes(each)) {
+        console.warn('Compositor: three changed lights_fragment_begin; lit surfaces show only the first shadow map');
+        return;
+    }
+    THREE.ShaderChunk.lights_fragment_begin = chunk
+        .replace(decl, `${decl}
+	#if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 1
+	float sunShadowAll = 1.0;
+	#pragma unroll_loop_start
+	for ( int i = 0; i < NUM_DIR_LIGHT_SHADOWS; i ++ ) {
+		directionalLightShadow = directionalLightShadows[ i ];
+		sunShadowAll *= receiveShadow ? getShadow( directionalShadowMap[ i ], directionalLightShadow.shadowMapSize, directionalLightShadow.shadowBias, directionalLightShadow.shadowRadius, vDirectionalShadowCoord[ i ] ) : 1.0;
+	}
+	#pragma unroll_loop_end
+	#endif
+`)
+        .replace(each, `		#if NUM_DIR_LIGHT_SHADOWS > 1
+		directLight.color *= ( UNROLLED_LOOP_INDEX == 0 ) ? sunShadowAll : 1.0;
+		#else
+${each}
+		#endif`);
+})();
 
 /** A camera object's pose at `t`: its recorded path, or its placement. */
 export function cameraPoseAt(obj, p, t) {
@@ -222,6 +262,20 @@ export default class Engine {
         [ambient, sun, fill].forEach((l) => { l.layers.enableAll(); scene.add(l); });
         scene.add(sun.target);
         Object.assign(this, { ambient, sun, fill });
+        // The sun's shadow maps after the first (see MAX_SHADOW_MAPS), added
+        // after it so three keeps the sun's map first.
+        this.shadowSuns = [sun];
+        for (let k = 1; k < MAX_SHADOW_MAPS; k++) {
+            const l = new THREE.DirectionalLight(0x000000, 0);
+            l.shadow.bias = sun.shadow.bias;
+            l.shadow.normalBias = sun.shadow.normalBias;
+            l.shadow.mapSize.set(mapSize, mapSize);
+            l.layers.enableAll();
+            scene.add(l);
+            scene.add(l.target);
+            this.shadowSuns.push(l);
+        }
+        this.casterBits = new Map(); // adapter id -> its shadow map's layer bit
 
         this.trackedCamera = new THREE.PerspectiveCamera(50, 4 / 3, 0.01, 100);
         this.objectCamera = new THREE.PerspectiveCamera(50, 4 / 3, 0.01, 500);
@@ -242,7 +296,7 @@ export default class Engine {
         // The footage, and plain video layers over everything, as quads.
         this.bgScene = new THREE.Scene();
         this.bgCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-        this.bgQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false }));
+        this.bgQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), gradeMaterial({ transparent: true, depthWrite: false }));
         this.bgScene.add(this.bgQuad);
         this.layerScene = new THREE.Scene();
         this.layerQuads = [];
@@ -1361,7 +1415,10 @@ export default class Engine {
                 const a = S.adapters.get(o.id);
                 if (!a) return;
                 if (o.type === 'spline') a.knotOwners = owners.get(o.id) || null;
-                if (o.type === 'splinePoint') a.look = resolved.get(o.parentId) || {};
+                if (o.type === 'splinePoint') {
+                    a.look = resolved.get(o.parentId) || {};
+                    a.parentId = o.parentId;
+                }
                 this.attach(o, a, S, resolved, f);
                 a.sync(o, resolved.get(o.id), f);
                 a.update(dt, f);
@@ -1380,7 +1437,8 @@ export default class Engine {
                 if (a.model?.cutMesh) return;
                 const p = resolved.get(id);
                 const back = p?.depthLayer === 'behind';
-                const mask = 1 << (back ? LAYER.BEHIND : LAYER.FRONT);
+                // And the shadow map it casts into (a spline's points cast into their spline's).
+                const mask = (1 << (back ? LAYER.BEHIND : LAYER.FRONT)) | (this.casterBits.get(id) || this.casterBits.get(a.parentId) || 0);
                 const walk = (o) => {
                     // A child object's nodes are its own to set.
                     if (o !== a.object && o.userData.objectId && o.userData.objectId !== id) return;
@@ -1407,6 +1465,8 @@ export default class Engine {
         if (footageTex) {
             if (this.bgQuad.material.map !== footageTex) { this.bgQuad.material.map = footageTex; this.bgQuad.material.needsUpdate = true; }
             this.bgQuad.material.opacity = showFootage ? (footageP?.opacity ?? 1) : 1;
+            // Graded as it is laid down (also where a matte shows it over hidden footage).
+            setPictureGrade(this.bgQuad.material, footageP);
             this.coverQuad(this.bgQuad, rig?.track?.intrinsics, aspect);
         }
 
@@ -1417,7 +1477,9 @@ export default class Engine {
                 const tex = opts.exportFrame ? opts.exportFrame(ov.media.id) : this.pool.follow(ov.clip, ov.media, t, { playing: !!opts.playing });
                 if (!tex) return;
                 const tr = resolveTrack(ov.track, frame);
-                layers.push({ tex, opacity: tr.opacity ?? 1, media: ov.media, trackId: ov.track.id });
+                layers.push({
+                    tex, opacity: tr.opacity ?? 1, media: ov.media, trackId: ov.track.id, grade: tr,
+                });
             });
         }
         if (!exporting) {
@@ -1436,6 +1498,8 @@ export default class Engine {
             if (footageTex) {
                 this.bgQuad.scale.set(1, 1, 1);
                 this.bgQuad.material.opacity = 1;
+                // Mattes are drawn on the footage as shot.
+                setPictureGrade(this.bgQuad.material, null);
                 r0.render(this.bgScene, this.bgCamera);
             }
             this.lastTime = t;
@@ -1487,43 +1551,67 @@ export default class Engine {
         this.sun.intensity = sun.intensity;
         this.ambient.intensity = sun.ambient;
         this.fill.intensity = sun.ambient * 0.64;
-        const box = new THREE.Box3();
-        S?.adapters.forEach((a) => {
+        // Each thing that casts, and where it is.
+        const casters = [];
+        S?.adapters.forEach((a, id) => {
             if (!a.object.visible || !(a.model?.op?.castShadow ?? false)) return;
             // A curve rewrites its geometry every frame, so it says where it is itself.
             const own = a.shadowBox ? a.shadowBox() : undefined;
-            if (own) box.union(own);
-            else if (own === undefined) box.expandByObject(a.object);
+            const b = new THREE.Box3();
+            if (own) b.copy(own);
+            else if (own === undefined) b.expandByObject(a.object);
+            if (!b.isEmpty()) casters.push({ id, box: b });
         });
-        const casting = !!sun.shadows && !box.isEmpty();
-        this.sun.castShadow = casting;
+        const box = new THREE.Box3();
+        casters.forEach((c) => box.union(c.box));
+        const casting = !!sun.shadows && casters.length > 0;
         if (S?.rig?.catcher) {
             S.rig.catcher.visible = casting;
             S.rig.catcher.material.opacity = sun.shadowOpacity;
         }
         const center = box.isEmpty() ? (S?.rig?.sphere ? S.root.localToWorld(S.rig.sphere.center.clone()) : new THREE.Vector3()) : box.getCenter(new THREE.Vector3());
-        this.sun.target.position.copy(center);
-        this.sun.target.updateMatrixWorld();
-        this.sun.position.copy(center).addScaledVector(dir, 20);
-        this.sun.updateMatrixWorld();
         this.sunHelper.position.copy(center).addScaledVector(dir, 0.8);
         this.sunHelper.setDirection(dir.clone().negate());
+
+        // One shadow map per caster (the last takes any past MAX_SHADOW_MAPS),
+        // each covering just its caster as the sun sees it: a shadow falls
+        // straight behind its caster along the light, so that is all a map
+        // needs, and all its texels go on it. One map over everything spreads
+        // them over the gaps between, and once a texel is wider than the
+        // softness the shadow blurs to the texel instead.
+        const maps = [];
         if (casting) {
-            // The shadow map covers exactly what casts, as the sun sees it: a
-            // shadow falls straight behind its caster along the light, so
-            // that is all it needs, and every texel goes on the casters (a
-            // bounding sphere would waste most of them, and thin curves and
-            // small points vanish once a texel is wider than they are).
-            const c = this.sun.shadow.camera;
-            c.position.copy(this.sun.position);
-            c.lookAt(this.sun.target.position);
+            casters.forEach((c, i) => {
+                const k = Math.min(i, MAX_SHADOW_MAPS - 1);
+                if (!maps[k]) maps[k] = { box: new THREE.Box3(), ids: [] };
+                maps[k].box.union(c.box);
+                maps[k].ids.push(c.id);
+            });
+        }
+        this.casterBits.clear();
+        // Softness is a size in the scene (cm: hundredths of a scene unit),
+        // the same however much a map covers. Three's filter blurs over
+        // `radius` texels with 17 samples; past a few texels they show as
+        // separate copies, so a soft shadow gets a coarser map (and a radius
+        // of a couple of texels) rather than a wide one.
+        const unit = S ? S.root.getWorldScale(new THREE.Vector3()).x : 1;
+        const soft = Math.max(0, sun.shadowSoftness ?? 0.5) * 0.01 * unit;
+        const v = new THREE.Vector3();
+        const fits = maps.map((m, k) => {
+            const l = this.shadowSuns[k];
+            const mc = m.box.getCenter(new THREE.Vector3());
+            l.target.position.copy(mc);
+            l.target.updateMatrixWorld();
+            l.position.copy(mc).addScaledVector(dir, 20);
+            l.updateMatrixWorld();
+            const c = l.shadow.camera;
+            c.position.copy(l.position);
+            c.lookAt(l.target.position);
             c.updateMatrixWorld(true);
-            const view = c.matrixWorldInverse;
             const lo = new THREE.Vector3(Infinity, Infinity, Infinity);
             const hi = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
-            const v = new THREE.Vector3();
             for (let i = 0; i < 8; i++) {
-                v.set(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z).applyMatrix4(view);
+                v.set(i & 1 ? m.box.max.x : m.box.min.x, i & 2 ? m.box.max.y : m.box.min.y, i & 4 ? m.box.max.z : m.box.min.z).applyMatrix4(c.matrixWorldInverse);
                 lo.min(v);
                 hi.max(v);
             }
@@ -1538,23 +1626,52 @@ export default class Engine {
                 far: -lo.z + 40,
             });
             c.updateProjectionMatrix();
-            // Softness is a size in the scene (cm: hundredths of a scene unit),
-            // the same however much the map covers. Three's filter blurs over
-            // `radius` texels with 17 samples; past a few texels they show as
-            // separate copies, so a soft shadow gets a coarser map (and a
-            // radius of a couple of texels) rather than a wide one.
-            const sh = this.sun.shadow;
+            const bit = 1 << (SHADOW_LAYER0 + k);
+            c.layers.mask = bit;
+            m.ids.forEach((id) => this.casterBits.set(id, bit));
             const extent = Math.max(c.right - c.left, c.top - c.bottom);
-            const unit = S ? S.root.getWorldScale(new THREE.Vector3()).x : 1;
-            const soft = Math.max(0, sun.shadowSoftness ?? 0.5) * 0.01 * unit;
             let size = this.maxShadowSize;
             if (soft > 0) while (size > 512 && soft / (extent / size) > 2.5) size /= 2;
+            return { extent, size };
+        });
+        // At most three full-size maps' worth of memory (each 4096 map is 64 MB);
+        // past that the widest give way first.
+        const budget = 3 * this.maxShadowSize * this.maxShadowSize;
+        for (;;) {
+            const used = fits.reduce((s, f) => s + f.size * f.size, 0);
+            if (used <= budget) break;
+            const widest = fits.filter((f) => f.size > 512).sort((a, b) => b.extent / b.size - a.extent / a.size)[0];
+            if (!widest) break;
+            widest.size /= 2;
+        }
+        this.shadowSuns.forEach((l, k) => {
+            const on = k < fits.length;
+            l.castShadow = on;
+            if (k > 0) l.visible = on;
+            if (!on) return;
+            const sh = l.shadow;
+            const { extent, size } = fits[k];
             if (sh.mapSize.x !== size) {
                 sh.mapSize.set(size, size);
                 sh.map?.dispose();
                 sh.map = null;
             }
             sh.radius = soft / (extent / size);
+        });
+        // Thin lines and small dots cast at least a texel or so wide, so their shadows stay solid.
+        if (fits.length) {
+            const texelOf = new Map(fits.map((ft, k) => [1 << (SHADOW_LAYER0 + k), ft.extent / ft.size]));
+            S.adapters.forEach((a, id) => {
+                const bit = this.casterBits.get(id) || this.casterBits.get(a.parentId);
+                if (bit) a.setShadowTexel?.(texelOf.get(bit));
+            });
+        }
+        // With no casters the sun still aims at the scene.
+        if (!fits.length) {
+            this.sun.target.position.copy(center);
+            this.sun.target.updateMatrixWorld();
+            this.sun.position.copy(center).addScaledVector(dir, 20);
+            this.sun.updateMatrixWorld();
         }
     }
 
@@ -1761,13 +1878,15 @@ export default class Engine {
     /** Draw video layer `L` alone, framed as the program draws it, into the bound target. */
     drawLayerAlone(L, bufSize) {
         if (!this.soloLayer) {
-            const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ depthTest: false, depthWrite: false }));
+            const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), gradeMaterial({ depthTest: false, depthWrite: false }));
             const scene = new THREE.Scene();
             scene.add(quad);
             this.soloLayer = { quad, scene };
         }
         const { quad, scene } = this.soloLayer;
         if (quad.material.map !== L.tex) { quad.material.map = L.tex; quad.material.needsUpdate = true; }
+        // Graded before its track's quad trees and pixel sorts, as it is when drawn without them.
+        setPictureGrade(quad.material, L.grade);
         this.layerScale(L, quad, bufSize);
         this.renderer.render(scene, this.bgCamera);
     }
@@ -2162,7 +2281,7 @@ export default class Engine {
         if (layers.length) {
             r.setRenderTarget(out);
             while (this.layerQuads.length < layers.length) {
-                const q = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ transparent: true, depthTest: false, depthWrite: false }));
+                const q = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), gradeMaterial({ transparent: true, depthTest: false, depthWrite: false }));
                 this.layerQuads.push(q);
                 this.layerScene.add(q);
             }
@@ -2173,6 +2292,7 @@ export default class Engine {
                 const map = L.qt || L.tex;
                 if (q.material.map !== map) { q.material.map = map; q.material.needsUpdate = true; }
                 q.material.opacity = L.opacity;
+                setPictureGrade(q.material, L.qt ? null : L.grade);
                 q.renderOrder = i;
                 if (L.qt) q.scale.set(1, 1, 1);
                 else layerScale(L, q);

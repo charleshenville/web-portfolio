@@ -428,6 +428,11 @@ class SplinePointAdapter {
 
     update(dt, f) { this.label.update(dt, f); }
 
+    /** As its spline's (CurveAdapter.setShadowTexel). */
+    setShadowTexel(texel) {
+        this.marker.shadowMin.value = 0.75 * texel;
+    }
+
     setScanDepth(tex, size) { this.label.setScanDepth(tex, size); }
 
     dispose() {

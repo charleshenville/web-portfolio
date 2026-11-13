@@ -46,6 +46,9 @@ const RIBBON_VERT = /* glsl */`
 uniform vec2 uRes;
 uniform float uPixels;
 uniform float uScale;
+#ifdef SHADOW_DEPTH
+uniform float uMinWidth;
+#endif
 attribute vec3 aPrev;
 attribute vec3 aNext;
 attribute float aSide;
@@ -82,8 +85,12 @@ void main() {
     vec2 nrm = vec2(-dir.y, dir.x);
     // Half the width, in the frame's height units (the frame is 2 tall).
 #ifdef SHADOW_DEPTH
-    // From the sun: always a width in the scene (uScale turns aWidth into scene units).
-    float hw = 0.5 * aWidth * uScale * projectionMatrix[1][1] / max(1e-6, abs(c.w));
+    // From the sun: always a width in the scene (uScale turns aWidth into scene units),
+    // and never thinner than the shadow map can hold (uMinWidth), or it falls
+    // between its texels and the shadow breaks up and pales.
+    float ww = aWidth * uScale;
+    if (ww > 0.0) ww = max(ww, uMinWidth);
+    float hw = 0.5 * ww * projectionMatrix[1][1] / max(1e-6, abs(c.w));
 #else
     float hw = uPixels > 0.5 ? aWidth / 1080.0 : 0.5 * aWidth * uScale * projectionMatrix[1][1] / max(1e-6, abs(c.w));
 #endif
@@ -142,6 +149,7 @@ class Ribbon {
                 uRes: { value: new THREE.Vector2(1, 1) },
                 uPixels: { value: 0 },
                 uScale: { value: 1 },
+                uMinWidth: { value: 0 },
                 uOpacity: this.material.uniforms.uOpacity,
             },
             defines: { SHADOW_DEPTH: '' },
@@ -277,6 +285,46 @@ export class Dots {
         this.axis = new THREE.Vector3();
         this.tmpQ = new THREE.Quaternion();
         this.wire = null;
+        // The least radius a dot casts its shadow at, in the scene (see shadowDepth).
+        this.shadowMin = { value: 0 };
+    }
+
+    /**
+     * What the dots draw into the sun's shadow map with: their depth, each
+     * dot at least shadowMin across (in the scene), or one smaller than a
+     * texel of the map falls between them and its shadow breaks up and
+     * pales. Flat dots face the camera, so the sun would see them edge on
+     * and they would cast slivers; in the shadow they face the sun instead.
+     */
+    shadowDepth(flat) {
+        return new THREE.ShaderMaterial({
+            uniforms: { uMinR: this.shadowMin },
+            defines: flat ? { FLAT: '' } : {},
+            vertexShader: /* glsl */`
+uniform float uMinR;
+void main() {
+#ifdef USE_INSTANCING
+    mat4 m = modelMatrix * instanceMatrix;
+#else
+    mat4 m = modelMatrix;
+#endif
+    vec3 c = (m * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+    float r = length((m * vec4(1.0, 0.0, 0.0, 0.0)).xyz);
+    float k = max(r, uMinR);
+#ifdef FLAT
+    vec3 right = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
+    vec3 up = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
+    vec3 wp = c + (right * position.x + up * position.y) * k;
+#else
+    vec3 wp = c + (m * vec4(position, 0.0)).xyz * (k / max(1e-9, r));
+#endif
+    gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
+}`,
+            fragmentShader: /* glsl */`
+#include <packing>
+void main() { gl_FragColor = packDepthToRGBA(gl_FragCoord.z); }`,
+            side: THREE.DoubleSide,
+        });
     }
 
     /** The wide lines a wireframe is drawn with, made on first use. */
@@ -321,6 +369,7 @@ export class Dots {
         this.alpha = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1).setUsage(THREE.DynamicDrawUsage);
         geo.setAttribute('instanceAlpha', this.alpha);
         this.mesh.frustumCulled = false;
+        this.mesh.customDepthMaterial = this.shadowDepth(FLAT_SHAPES.has(shape));
         this.mesh.count = 0;
         this.object.add(this.mesh);
     }
@@ -449,6 +498,7 @@ export class Dots {
             this.mesh.removeFromParent();
             this.mesh.geometry.dispose();
             this.mesh.material.dispose();
+            this.mesh.customDepthMaterial?.dispose();
             this.mesh.dispose?.();
             this.mesh = null;
         }
@@ -701,6 +751,16 @@ export default class CurveAdapter {
             if (v - r < b.min[lo]) b.min[lo] = v - r;
             if (v + r > b.max[lo]) b.max[lo] = v + r;
         }
+    }
+
+    /**
+     * The size of a texel of the shadow map it casts into, in the scene: its
+     * lines and dots cast at least about that wide (1.5 texels), so however
+     * coarse the map gets they keep a solid shadow rather than breaking up.
+     */
+    setShadowTexel(texel) {
+        this.ribbon.depth.uniforms.uMinWidth.value = 1.5 * texel;
+        [this.dots, this.knots, this.head].forEach((d) => { d.shadowMin.value = 0.75 * texel; });
     }
 
     /** Where it was drawn this frame, in the world, or null if nothing was (what the sun aims its shadow at). */
