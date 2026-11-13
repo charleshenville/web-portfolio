@@ -40,7 +40,9 @@ import { TakeRig, poseAt, applyIntrinsics } from './takeRig';
 import { makeAdapter } from './adapters';
 import { drawnSpan, knotU } from './curveObject';
 import { VideoPool } from './media';
-import { GradeShader, GRADE_KEYS } from './passes';
+import {
+    GradeShader, GRADE_KEYS, MatteSnapPass, MatteTopShader,
+} from './passes';
 import QuadTreeFx from '../../quadtree/engine/threeFx';
 import SortFx from './sortFx';
 import BlobFx from './blobFx';
@@ -113,6 +115,36 @@ function setOrtho(cam, height, aspect, near, far) {
     cam.updateProjectionMatrix();
 }
 
+// ---- Scene views, kept in this browser ------------------------------------------
+
+const VIEWS_KEY = 'compositor.sceneViews.v1';
+const MAX_VIEWS = 300;
+
+/** The views kept for scenes (sceneId -> view), or none if storage is unavailable. */
+function loadViews() {
+    try {
+        const raw = window.localStorage.getItem(VIEWS_KEY);
+        const obj = raw ? JSON.parse(raw) : null;
+        return new Map(obj && typeof obj === 'object' ? Object.entries(obj) : []);
+    } catch (e) {
+        return new Map();
+    }
+}
+
+function saveViews(views) {
+    try {
+        let entries = Array.from(views.entries());
+        if (entries.length > MAX_VIEWS) {
+            entries = entries.sort((a, b) => (b[1].at || 0) - (a[1].at || 0)).slice(0, MAX_VIEWS);
+            views.clear();
+            entries.forEach(([k, v]) => views.set(k, v));
+        }
+        window.localStorage.setItem(VIEWS_KEY, JSON.stringify(Object.fromEntries(entries)));
+    } catch (e) {
+        // Private browsing, or storage full: views last as long as the page.
+    }
+}
+
 export default class Engine {
     constructor() {
         this.project = null;
@@ -177,9 +209,14 @@ export default class Engine {
         this.scene = scene;
         const ambient = new THREE.AmbientLight(0xffffff, 0.55);
         const sun = new THREE.DirectionalLight(0xffffff, 1.1);
-        sun.shadow.mapSize.set(2048, 2048);
+        // Thin curves and small points need fine texels; as fine as the GPU allows, up to 4096.
+        const mapSize = Math.min(4096, renderer.capabilities.maxTextureSize || 2048);
+        sun.shadow.mapSize.set(mapSize, mapSize);
+        this.maxShadowSize = mapSize;
         sun.shadow.bias = -0.0004;
         sun.shadow.normalBias = 0.015;
+        // Things drawn behind the footage cast shadows too (the shadow camera sees only layer 0 by default).
+        sun.shadow.camera.layers.enable(LAYER.BEHIND);
         const fill = new THREE.DirectionalLight(0xffffff, 0.35);
         fill.position.set(-2, -1, -2);
         [ambient, sun, fill].forEach((l) => { l.layers.enableAll(); scene.add(l); });
@@ -194,6 +231,13 @@ export default class Engine {
         this.controls = new OrbitControls(this.freeCamera, renderer.domElement);
         this.controls.enableDamping = true;
         this.controls.enabled = false;
+        // Where the free camera was left in each scene (sceneId -> view), so
+        // coming back to a scene comes back to that view; kept in this
+        // browser, not the project. viewScene is the scene the camera's
+        // view now belongs to.
+        this.sceneViews = loadViews();
+        this.viewScene = null;
+        this.viewKept = { key: '', at: 0 };
 
         // The footage, and plain video layers over everything, as quads.
         this.bgScene = new THREE.Scene();
@@ -211,6 +255,11 @@ export default class Engine {
         // Within each group they run in the outliner's order.
         this.gamma = new ShaderPass(GammaCorrectionShader);
         this.composer.addPass(this.gamma);
+        // Mattes over the glows: the frame before them, laid back where a matte is.
+        this.matteSnap = new MatteSnapPass();
+        this.matteTop = new ShaderPass(MatteTopShader);
+        this.matteSnap.enabled = false;
+        this.matteTop.enabled = false;
         this.glowPasses = []; // [{ id, bloom, point }]
         this.postPasses = []; // [{ id, type, pass }]
 
@@ -243,6 +292,8 @@ export default class Engine {
         this.gizmo.addEventListener('dragging-changed', (e) => {
             this.controls.enabled = !e.value && this.mode !== 'preview';
             this.dragging = e.value;
+            // What it holds isn't reset from the project mid-drag (a spline's handle).
+            if (this.gizmo.object) this.gizmo.object.userData.dragging = e.value;
             const ct = this.cornerTargetNow;
             if (e.value) {
                 // Where the corners were as the drag began: every step of it,
@@ -353,6 +404,9 @@ export default class Engine {
         this.pool?.dispose();
         this.gizmo?.detach();
         this.gizmo?.dispose();
+        this.rememberView();
+        this.matteSnap?.dispose();
+        this.matteTop?.dispose?.();
         this.controls?.dispose();
         this.windows?.dispose();
         this.holdout?.dispose();
@@ -415,8 +469,52 @@ export default class Engine {
     setMode(mode) {
         this.mode = mode;
         this.controls.enabled = mode !== 'preview';
-        if (mode !== 'preview' && !this.framed) this.frameActive();
+        if (mode !== 'preview') this.viewActive();
         this.dirty = true;
+    }
+
+    /** The free camera's view now: where it is, what it orbits, its lens and fly speed. */
+    currentView() {
+        const r = (v) => Math.round(v * 1e5) / 1e5;
+        return {
+            p: this.freeCamera.position.toArray().map(r),
+            t: this.controls.target.toArray().map(r),
+            fov: this.freeCamera.fov,
+            fly: this.flySpeed,
+            at: Date.now(),
+        };
+    }
+
+    /** Keep the free camera's view as scene `id`'s (if the view is that scene's). */
+    rememberView(id = this.activeSceneId) {
+        if (!id || this.viewScene !== id) return;
+        this.sceneViews.set(id, this.currentView());
+        saveViews(this.sceneViews);
+    }
+
+    /** Put the free camera back where it was left in scene `id`; false if it never was. */
+    restoreView(id) {
+        const v = id && this.sceneViews.get(id);
+        if (!v || !Array.isArray(v.p) || !Array.isArray(v.t)) return false;
+        this.freeCamera.position.fromArray(v.p);
+        this.controls.target.fromArray(v.t);
+        if (Number.isFinite(v.fov) && v.fov !== this.freeCamera.fov) {
+            this.freeCamera.fov = v.fov;
+            this.freeCamera.updateProjectionMatrix();
+        }
+        if (Number.isFinite(v.fly)) this.flySpeed = v.fly;
+        this.controls.update();
+        this.framed = true;
+        this.viewScene = id;
+        return true;
+    }
+
+    /** The active scene's view on the free camera: where it was left, else (editing) framed on its scan. */
+    viewActive() {
+        const id = this.activeSceneId;
+        if (!id || this.viewScene === id) return;
+        if (this.restoreView(id)) return;
+        if (this.mode !== 'preview') this.frameActive();
     }
 
     setSelection(id) {
@@ -509,6 +607,7 @@ export default class Engine {
         [...c.passes].forEach((pass) => c.removePass(pass));
         this.glowPasses.forEach((g) => { g.bloom.dispose(); g.point.dispose(); });
         this.postPasses.forEach(({ pass }) => pass.dispose?.());
+        c.addPass(this.matteSnap);
         this.glowPasses = effects.filter((e) => e.type === 'glow').map((e) => {
             const point = new PointGlowPass();
             const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0, 0.6, 0.5);
@@ -518,6 +617,7 @@ export default class Engine {
             c.addPass(bloom);
             return { id: e.id, point, bloom };
         });
+        c.addPass(this.matteTop);
         c.addPass(this.gamma);
         this.postPasses = effects.filter((e) => e.type !== 'glow' && !NOT_PASSES.has(e.type)).map((e) => {
             const pass = new ShaderPass(e.type === 'grade' ? GradeShader : DreamHazeShader);
@@ -538,9 +638,12 @@ export default class Engine {
             // Resolved, so a glow whose visibility follows a controller turns on and off with it.
             const glow = obj ? resolveObject(obj, frame) : null;
             const on = fx && !!glow && glow.visible !== false;
-            const pointsOnly = on && glow.source === 'points';
-            bloom.enabled = on && !pointsOnly && glow.strength > 0;
-            point.enabled = pointsOnly && (glow.strength > 0 || glow.bleed > 0);
+            // Points only, or the 3D objects only: their own source, bloomed and laid over the frame.
+            const own = on && (glow.source === 'points' || glow.source === 'scene');
+            bloom.enabled = on && !own && glow.strength > 0;
+            point.enabled = own && (glow.strength > 0 || glow.bleed > 0);
+            point.mode = glow?.source === 'scene' ? 'scene' : 'points';
+            point.threshold = point.mode === 'scene' ? (glow.threshold ?? 0.8) : 0;
             if (on) {
                 bloom.strength = glow.strength;
                 bloom.radius = glow.radius;
@@ -566,6 +669,7 @@ export default class Engine {
                 u.time.value = frame.t;
             } else {
                 GRADE_KEYS.forEach((k) => { u[k].value = p[k]; });
+                u.invert.value = p.invert ? 1 : 0;
                 u.aspect.value = size.x / Math.max(1, size.y);
             }
             any = any || pass.enabled;
@@ -731,6 +835,7 @@ export default class Engine {
                 const m = this.cornerProxy.matrix;
                 corners = from.corners.map((c) => new THREE.Vector3().fromArray(c).sub(from.mid).applyMatrix4(m).toArray().map((v) => r(v)));
             }
+            if (t.toOwn) corners = corners.map(t.toOwn);
             this.emit('corners', {
                 objectId: t.obj.id, kind: t.kind, key: t.key, entryId: t.entry?.id, corners, done, handle: h,
             });
@@ -834,10 +939,24 @@ export default class Engine {
         if (obj.type === 'spline') {
             // Where its points are now (expressions worked out), in its own frame.
             const a = S.adapters.get(obj.id);
+            // Edited in the scene's frame (its X, Y and Z, whatever the spline's
+            // rotation, scale or spin), and written back in the spline's own.
             const pts = a?.splineState?.points;
             if (!pts?.length) return null;
+            S.root.updateMatrixWorld(true);
+            a.object.updateMatrixWorld(true);
+            const toScene = new THREE.Matrix4().copy(S.root.matrixWorld).invert().multiply(a.group.matrixWorld);
+            const toOwn = toScene.clone().invert();
+            const v = new THREE.Vector3();
+            const r = (x) => Math.round(x * 1e4) / 1e4;
             return {
-                obj, kind: 'spline', corners: pts.map((pt) => pt.map((v) => (Number.isFinite(v) ? v : 0))), space: a.group, path: true, closed: obj.params.ends === 'closed',
+                obj,
+                kind: 'spline',
+                corners: pts.map((pt) => v.set(...pt.map((x) => (Number.isFinite(x) ? x : 0))).applyMatrix4(toScene).toArray()),
+                toOwn: (c) => v.fromArray(c).applyMatrix4(toOwn).toArray().map(r),
+                space: S.root,
+                path: true,
+                closed: obj.params.ends === 'closed',
             };
         }
         if (obj.type === 'scanPoints' && S.rig?.cloud) {
@@ -976,6 +1095,7 @@ export default class Engine {
         const sphere = s?.rig?.sphere;
         if (!sphere) return;
         this.framed = true;
+        this.viewScene = this.activeSceneId;
         const c = s.root.localToWorld(sphere.center.clone());
         this.controls.target.copy(c);
         this.freeCamera.position.set(c.x, c.y + sphere.radius * 0.6, c.z + sphere.radius * 2.6);
@@ -1109,8 +1229,20 @@ export default class Engine {
             sceneId = sel?.sceneId || this.activeSceneId;
         }
         if (sceneId !== this.activeSceneId) {
+            // The scene left keeps its view; the one come to gets its own back.
+            this.rememberView(this.activeSceneId);
             this.activeSceneId = sceneId;
-            if (this.mode !== 'preview') this.frameActive();
+        }
+        // (Again each frame until it takes: a scene whose scan is still loading can't be framed yet.)
+        this.viewActive();
+        // While editing, the view is kept as it moves too (a second apart at most), so a reload comes back to it.
+        if (this.mode !== 'preview' && sceneId && this.viewScene === sceneId) {
+            const v = this.currentView();
+            const key = `${v.p.join(',')}|${v.t.join(',')}|${v.fov}`;
+            if (key !== this.viewKept.key && v.at - this.viewKept.at > 1000) {
+                this.viewKept = { key, at: v.at };
+                this.rememberView(sceneId);
+            }
         }
         this.scenes.forEach((s, id) => { s.root.visible = id === sceneId; });
         const S = this.scenes.get(sceneId);
@@ -1206,6 +1338,10 @@ export default class Engine {
         const f = {
             // What expressions read now: variables and splines.
             globals: globalsOf(frame, P),
+            // What links read at other times (a spline's spin adds its rates up from 0 s).
+            frame,
+            // A spline whose points are being dragged holds its spin still, so they go where they're pulled.
+            holdSpin: this.dragging && this.cornerTargetNow?.kind === 'spline' ? this.cornerTargetNow.obj.id : null,
             music, time: t, take: takeTime, freq, live, drawSize, renderer: this.renderer, scene: this.scene, camera: cam,
             exporting, playing: !!opts.playing, envReady: !!rig?.envMesh,
             // A window shows at its drawn size while one of its corners is dragged.
@@ -1342,7 +1478,7 @@ export default class Engine {
     }
 
     placeSun(S, p) {
-        const sun = p || { azimuth: 45, elevation: 47, intensity: 1.1, color: '#ffffff', ambient: 0.55, shadows: false, shadowOpacity: 0.4, shadowSoftness: 2 };
+        const sun = p || { azimuth: 45, elevation: 47, intensity: 1.1, color: '#ffffff', ambient: 0.55, shadows: false, shadowOpacity: 0.4, shadowSoftness: 0.5 };
         const az = sun.azimuth * D2R;
         const el = sun.elevation * D2R;
         const dir = new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az));
@@ -1353,7 +1489,11 @@ export default class Engine {
         this.fill.intensity = sun.ambient * 0.64;
         const box = new THREE.Box3();
         S?.adapters.forEach((a) => {
-            if (a.object.visible && (a.model?.op?.castShadow ?? false)) box.expandByObject(a.object);
+            if (!a.object.visible || !(a.model?.op?.castShadow ?? false)) return;
+            // A curve rewrites its geometry every frame, so it says where it is itself.
+            const own = a.shadowBox ? a.shadowBox() : undefined;
+            if (own) box.union(own);
+            else if (own === undefined) box.expandByObject(a.object);
         });
         const casting = !!sun.shadows && !box.isEmpty();
         this.sun.castShadow = casting;
@@ -1369,13 +1509,52 @@ export default class Engine {
         this.sunHelper.position.copy(center).addScaledVector(dir, 0.8);
         this.sunHelper.setDirection(dir.clone().negate());
         if (casting) {
-            const r = box.getBoundingSphere(new THREE.Sphere()).radius;
-            const tall = box.max.y - box.min.y;
-            const reach = r * 1.2 + Math.min(12, tall / Math.max(0.08, Math.tan(el)));
+            // The shadow map covers exactly what casts, as the sun sees it: a
+            // shadow falls straight behind its caster along the light, so
+            // that is all it needs, and every texel goes on the casters (a
+            // bounding sphere would waste most of them, and thin curves and
+            // small points vanish once a texel is wider than they are).
             const c = this.sun.shadow.camera;
-            Object.assign(c, { left: -reach, right: reach, top: reach, bottom: -reach, near: 1, far: 40 });
+            c.position.copy(this.sun.position);
+            c.lookAt(this.sun.target.position);
+            c.updateMatrixWorld(true);
+            const view = c.matrixWorldInverse;
+            const lo = new THREE.Vector3(Infinity, Infinity, Infinity);
+            const hi = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+            const v = new THREE.Vector3();
+            for (let i = 0; i < 8; i++) {
+                v.set(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z).applyMatrix4(view);
+                lo.min(v);
+                hi.max(v);
+            }
+            const pad = Math.max(0.02, 0.04 * Math.max(hi.x - lo.x, hi.y - lo.y));
+            Object.assign(c, {
+                left: lo.x - pad,
+                right: hi.x + pad,
+                bottom: lo.y - pad,
+                top: hi.y + pad,
+                // From just before the nearest caster to well past the farthest, where its shadow lands.
+                near: Math.max(0.01, -hi.z - 1),
+                far: -lo.z + 40,
+            });
             c.updateProjectionMatrix();
-            this.sun.shadow.radius = sun.shadowSoftness;
+            // Softness is a size in the scene (cm: hundredths of a scene unit),
+            // the same however much the map covers. Three's filter blurs over
+            // `radius` texels with 17 samples; past a few texels they show as
+            // separate copies, so a soft shadow gets a coarser map (and a
+            // radius of a couple of texels) rather than a wide one.
+            const sh = this.sun.shadow;
+            const extent = Math.max(c.right - c.left, c.top - c.bottom);
+            const unit = S ? S.root.getWorldScale(new THREE.Vector3()).x : 1;
+            const soft = Math.max(0, sun.shadowSoftness ?? 0.5) * 0.01 * unit;
+            let size = this.maxShadowSize;
+            if (soft > 0) while (size > 512 && soft / (extent / size) > 2.5) size /= 2;
+            if (sh.mapSize.x !== size) {
+                sh.mapSize.set(size, size);
+                sh.map?.dispose();
+                sh.map = null;
+            }
+            sh.radius = soft / (extent / size);
         }
     }
 
@@ -1462,6 +1641,31 @@ export default class Engine {
         }
     }
 
+    /**
+     * The 3D-objects glow's source: everything in the scene in front of the
+     * footage, over black. The footage and video layers are drawn apart from
+     * the scene, so they are not in it; text laid over the frame is set aside.
+     */
+    drawSceneSource(r, cam) {
+        const flat = [];
+        this.scene.traverseVisible((o) => { if (o.userData.frame2D) flat.push(o); });
+        flat.forEach((o) => { o.visible = false; });
+        cam.layers.set(LAYER.FRONT);
+        r.render(this.scene, cam);
+        flat.forEach((o) => { o.visible = true; });
+        this.holdOutSource();
+    }
+
+    /** A held-out (matted) object stands in front of everything drawn: nothing behind it glows through it or lights it. */
+    holdOutSource() {
+        if (!this.pointHold) return;
+        if (!this.blackTex) {
+            this.blackTex = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+            this.blackTex.needsUpdate = true;
+        }
+        this.holdout.apply(this.blackTex);
+    }
+
     /** The points-only glow's source: points in front of the footage, solids still writing depth. */
     drawPointSource(r, cam) {
         const points = [];
@@ -1486,15 +1690,7 @@ export default class Engine {
         r.render(this.scene, cam);
         solids.forEach((o) => { o.visible = true; });
         lines.forEach((o) => { o.visible = true; });
-        // A held-out (matted) object stands in front of everything drawn,
-        // so the points behind it must neither glow through it nor light it.
-        if (this.pointHold) {
-            if (!this.blackTex) {
-                this.blackTex = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
-                this.blackTex.needsUpdate = true;
-            }
-            this.holdout.apply(this.blackTex);
-        }
+        this.holdOutSource();
     }
 
     /**
@@ -1779,7 +1975,8 @@ export default class Engine {
         const bgColor = (takeObj ? resolveObject(takeObj, frame) : null)?.bgColor || '#000000';
         const fx = this.applyEffects(frame);
         this.glowPasses.forEach(({ point }) => {
-            point.drawSource = point.enabled ? (rr) => this.drawPointSource(rr, cam) : null;
+            if (!point.enabled) point.drawSource = null;
+            else point.drawSource = point.mode === 'scene' ? (rr) => this.drawSceneSource(rr, cam) : (rr) => this.drawPointSource(rr, cam);
         });
         const out = fx ? this.composer.readBuffer : null;
         const drawScene = !!S;
@@ -1825,6 +2022,16 @@ export default class Engine {
         // scene show through the person; firm it up so only the outline is soft.
         if (hold) this.holdout.build(holdTex, size, crop, matteFootage ? [0.25, 0.45] : null);
         this.pointHold = hold;
+        // With a glow on, the matted part of the frame goes back over it afterwards.
+        const glowing = this.glowPasses.some((g) => g.point.enabled || g.bloom.enabled);
+        this.matteSnap.enabled = hold && !!out && glowing;
+        this.matteTop.enabled = this.matteSnap.enabled;
+        if (this.matteTop.enabled) {
+            this.matteTop.uniforms.tBase.value = this.matteSnap.snap.texture;
+            this.matteTop.uniforms.tHold.value = this.holdout.holdRT.texture;
+        }
+        // The glow's halo and light stay off the held-out objects too, not just its points.
+        this.glowPasses.forEach(({ point }) => { point.hold = hold ? this.holdout.holdRT.texture : null; });
 
         // Windows that work on everything (3D too) wait for the finished
         // frame, after the scene in front is drawn; the rest work on the

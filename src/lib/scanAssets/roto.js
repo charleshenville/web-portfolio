@@ -281,6 +281,15 @@ void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
  * front pass through it - so whatever 3D was drawn in front of the video
  * disappears behind the real object, glow and window effects untouched.
  */
+/**
+ * Where a matte ramps from out (0) to in (1). Mattes are H.264 with limited
+ * range (in is level 235, out 16) and no range flag, so a browser may hand
+ * them over stretched (in = 1.0) or not (in = 235/255 = 0.92). Both must read
+ * as fully in: a holdout at 99% lets 1% of the 3D through, which compositing
+ * in linear light turns into a ghost a few percent bright on screen.
+ */
+export const MATTE_RAMP = [0.08, 0.86];
+
 export class HoldoutPass {
     constructor(renderer) {
         this.renderer = renderer;
@@ -291,7 +300,7 @@ export class HoldoutPass {
         this.cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
         this.maxMat = new THREE.ShaderMaterial({
             uniforms: {
-                tMatte: { value: null }, invert: { value: 0 }, crop: { value: new THREE.Vector2(1, 1) }, edge: { value: new THREE.Vector2(0.03, 0.97) },
+                tMatte: { value: null }, invert: { value: 0 }, crop: { value: new THREE.Vector2(1, 1) }, edge: { value: new THREE.Vector2(...MATTE_RAMP) },
             },
             vertexShader: QUAD_VERT,
             fragmentShader: /* glsl */`
@@ -355,7 +364,7 @@ export class HoldoutPass {
         if (crop) this.maxMat.uniforms.crop.value.copy(crop); else this.maxMat.uniforms.crop.value.set(1, 1);
         // `edge` [lo, hi]: a firmer matte (a narrower ramp) where nothing
         // matching sits underneath it to hide a half-on interior.
-        this.maxMat.uniforms.edge.value.set(edge ? edge[0] : 0.03, edge ? edge[1] : 0.97);
+        this.maxMat.uniforms.edge.value.set(edge ? edge[0] : MATTE_RAMP[0], edge ? edge[1] : MATTE_RAMP[1]);
         textures.forEach((tex) => {
             this.maxMat.uniforms.tMatte.value = tex;
             r.render(this.scene, this.cam);

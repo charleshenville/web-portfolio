@@ -8,7 +8,7 @@ import {
     Eye, EyeOff, Move3d, Box, Camera, Sun, Sparkles, Activity, Plus, Trash2, Copy,
     ChevronDown, ChevronRight, Spline, PersonStanding, Square, Monitor, AlertTriangle, Clapperboard,
     Circle, Layers, ArrowUp, ArrowDown, Shapes, Frame, Type, LayoutGrid, ArrowDownWideNarrow, ScanSearch,
-    SquareFunction, Waypoints, Variable, CircleDot,
+    SquareFunction, Waypoints, Variable, CircleDot, Orbit,
 } from 'lucide-react';
 import { Film, Music } from './icons';
 import { OBJECT_TYPES, ADDABLE, paramDefs } from '../model/schema';
@@ -34,6 +34,7 @@ const ICONS = {
     curve: Spline,
     equation: SquareFunction,
     spline: Waypoints,
+    manifold: Orbit,
     splinePoint: CircleDot,
     stage: Box,
     variable: Variable,
@@ -243,7 +244,7 @@ function Outliner() {
                         >
                             <span className={styles.olIcon}><Icon size={12} /></span>
                             <span className={styles.olName}>{m.name}</span>
-                            {missing.has(m.id) && <span className={styles.warn} title="File not found — relocate it"><AlertTriangle size={12} /></span>}
+                            {missing.has(m.id) && <span className={styles.warn} title="File not found. Relocate it."><AlertTriangle size={12} /></span>}
                             <span className={styles.olTag}>{m.kind === 'stage' ? '3D' : Number.isFinite(m.duration) ? `${m.duration.toFixed(1)}s` : ''}</span>
                         </div>
                     );

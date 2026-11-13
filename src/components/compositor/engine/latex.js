@@ -48,14 +48,74 @@ export function texLayout(tex) {
     return box;
 }
 
-/** Draw `box` with its baseline's left end at (x, y), `em` pixels to the em, in `color`. */
-export function drawTex(g, box, x, y, em, color) {
+/**
+ * The outline under `box`: every glyph, rule and line stroked `outline.width`
+ * pixels out from its edge, in `outline.color`, drawn before any of the
+ * letters so no outline covers one.
+ */
+function drawTexOutline(g, box, s, outline) {
+    g.save();
+    g.lineJoin = 'round';
+    g.lineCap = 'round';
+    g.miterLimit = 2;
+    g.strokeStyle = outline.color;
+    g.fillStyle = outline.color;
+    box.ops.forEach((op) => {
+        g.save();
+        g.transform(...op.m);
+        // The outline's width in this op's own units (its transform scales it).
+        const [a, b, c, d] = op.m;
+        const k = s * Math.sqrt(Math.abs(a * d - b * c)) || s;
+        const w = (2 * outline.width) / k;
+        if (op.path) {
+            const stroked = op.sw > 0 && op.stroke && op.stroke !== 'none';
+            if (op.fill !== 'none' || stroked) {
+                g.lineWidth = w + (stroked ? op.sw : 0);
+                g.stroke(op.p2d);
+            }
+        } else if (op.rect) {
+            if (op.fill !== 'none') {
+                g.lineWidth = w;
+                g.strokeRect(op.rect[0], op.rect[1], op.rect[2], op.rect[3]);
+            }
+        } else if (op.frame || op.line) {
+            if (op.stroke !== 'none') {
+                g.lineWidth = w + (op.sw || 0);
+                if (op.frame) g.strokeRect(op.frame[0], op.frame[1], op.frame[2], op.frame[3]);
+                else {
+                    g.beginPath();
+                    g.moveTo(op.line[0], op.line[1]);
+                    g.lineTo(op.line[2], op.line[3]);
+                    g.stroke();
+                }
+            }
+        } else if (op.text) {
+            g.font = op.font;
+            g.lineWidth = w;
+            g.strokeText(op.text, 0, 0);
+        }
+        g.restore();
+    });
+    g.restore();
+}
+
+/**
+ * Draw `box` with its baseline's left end at (x, y), `em` pixels to the em,
+ * in `color`. With `outline` ({ width, color }, width in pixels) it draws
+ * only that outline, for drawing every line's outline before any letters.
+ */
+export function drawTex(g, box, x, y, em, color, outline = null) {
     const paint = (v) => (!v || v === 'currentColor' ? color : v);
     g.save();
     g.translate(x, y);
     const s = em / 1000;
     g.scale(s, s);
     g.translate(-(box.x0 || 0), 0);
+    if (outline) {
+        drawTexOutline(g, box, s, outline);
+        g.restore();
+        return;
+    }
     box.ops.forEach((op) => {
         g.save();
         g.transform(...op.m);

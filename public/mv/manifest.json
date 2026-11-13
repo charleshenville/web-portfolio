@@ -62,5 +62,17 @@
     {
         "id": "onetwo",
         "label": "One Two"
+    },
+    {
+        "id": "myhal_1",
+        "label": "Myhal Atrium 1"
+    },
+    {
+        "id": "myhal_2",
+        "label": "Myhal Atrium 2"
+    },
+    {
+        "id": "myhal_3",
+        "label": "Myhal Atrium 3"
     }
 ]

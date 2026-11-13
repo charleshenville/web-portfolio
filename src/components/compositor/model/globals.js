@@ -87,6 +87,9 @@ export function variableValue(v, frame) {
 /** The symbol of a Spline object, as its params have it. */
 export const splineSymbol = (o) => o.params?.symbol || 'P';
 
+/** Whether `o` is drawn through defining points and named by a symbol: a Spline, or a Manifold (whose points come from a sound). */
+export const isSplineObject = (o) => o?.type === 'spline' || o?.type === 'manifold';
+
 // ---- Scope: which names exist -------------------------------------------------------------
 
 /**
@@ -110,7 +113,7 @@ export function scopeOf(project) {
     const varList = [];
     const splineList = [];
     const dupes = new Set();
-    objects.filter((o) => o.type === 'spline').forEach((o) => {
+    objects.filter(isSplineObject).forEach((o) => {
         const s = splineSymbol(o);
         if (splineMap.has(s)) { dupes.add(o.id); return; }
         splineMap.set(s, splineList.length);

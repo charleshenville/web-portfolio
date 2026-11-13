@@ -34,13 +34,24 @@ import { ParamRow, NumberBox } from './Params';
 import {
     EquationEditor, SplineEditor, TextDynamic, CurveConvert, UsedVariables, VariableInspector, SplinePointList, PointOf,
 } from './Maths';
+import ManifoldEditor from './Manifold';
 import { variableLabel } from '../model/globals';
 import { useComp, useTick } from './context';
 import { ICONS } from './Sidebar';
 import styles from '../compositor.module.css';
 
-function Group({ title, collapsed, children, hint }) {
-    const [open, setOpen] = useState(!collapsed);
+/**
+ * A collapsible group of controls. Every group starts collapsed; one opened
+ * stays open for that object (`owner`) until it is closed, kept with the
+ * project (see Compositor's groupOpen). `id` names it when its title changes.
+ */
+function Group({
+    title, id, owner, children, hint,
+}) {
+    const comp = useComp();
+    const key = `${owner || 'any'}:${id || title}`;
+    const [open, setOpenState] = useState(() => comp.groupOpen(key));
+    const setOpen = (v) => { setOpenState(v); comp.setGroupOpen(key, v); };
     return (
         <div className={styles.group}>
             <button type="button" className={styles.groupHead} onClick={() => setOpen(!open)}>
@@ -75,11 +86,7 @@ function CameraPath({ obj }) {
     const span = path.length ? `${path[0].t.toFixed(2)}s – ${path[path.length - 1].t.toFixed(2)}s` : 'none';
     return (
         <>
-            <p className={styles.hint}>
-                Fly the orbit camera (drag, WASD, Q / E for down / up, shift for speed) while the timeline plays,
-                and the flight is written into this camera&apos;s path, position and orientation both.
-                Recording over part of a path replaces only that stretch.
-            </p>
+            <p className={styles.hint}>Fly the orbit camera while playing to record its path (WASD, Q/E, shift).</p>
             <Field label="Recorded">{`${path.length} samples · ${span}`}</Field>
             <div className={styles.wideRow}>
                 <button type="button" className={`${styles.btn} ${recording ? styles.btnRecOn : styles.btnRec}`} onClick={() => comp.toggleRecord(obj.id)}>
@@ -183,7 +190,7 @@ function WindowMatte({ obj }) {
     const scenes = obj.sceneId ? comp.project.scenes.filter((s) => s.id === obj.sceneId) : comp.project.scenes;
     const takes = Array.from(new Set(scenes.map((s) => s.take).filter(Boolean)));
     const list = takes.flatMap((take) => mattesFor(take).map((m) => ({ ...m, label: takes.length > 1 ? `${take} · ${m.label || m.id}` : m.label })));
-    if (!list.length) return <p className={styles.hint}>{obj.sceneId ? 'This take has no mattes yet.' : 'No take has mattes yet.'} Make them under Roto, in the Take&apos;s panel.</p>;
+    if (!list.length) return <p className={styles.hint}>{obj.sceneId ? 'No mattes yet.' : 'No take has mattes yet.'} Make them under Roto in the Take.</p>;
     return (
         <>
             <Field label="Matte">
@@ -299,10 +306,7 @@ const QUAD_HANDLES = [[0, 'TL'], [1, 'TR'], [2, 'BR'], [3, 'BL'], [4, 'All']];
 function WindowCorners() {
     return (
         <>
-            <p className={styles.hint}>
-                Drag the gizmo, or click a marker in the viewport to pick it: orange is picked, blue in the middle moves the
-                whole window. Top-left, top-right, bottom-right, bottom-left as it should read.
-            </p>
+            <p className={styles.hint}>Click a marker to pick it; blue moves them all.</p>
             <HandlePick labels={QUAD_HANDLES} />
         </>
     );
@@ -329,7 +333,7 @@ function PulseShape({ obj }) {
         : [['upright', 'Upright'], ['across', 'Across frame'], ['into', 'Into frame']];
     return (
         <>
-            <p className={styles.hint}>Set from the camera as it is now, in the scan&apos;s own frame. Then fine-tune the handles in the viewport.</p>
+            <p className={styles.hint}>Set from the current camera.</p>
             <div className={styles.wideRow}>
                 {presets.map(([id, label]) => <button key={id} type="button" className={styles.btn} onClick={() => place(id)}>{label}</button>)}
             </div>
@@ -371,8 +375,7 @@ function LibraryPanel({ obj }) {
             {screen && obj.params.assetId && (
                 <>
                     <p className={styles.hint} style={{ marginTop: 8 }}>
-                        The library is the asset itself, not this shot: changes here apply to every copy of
-                        {` ${entry.name}`}, and save into the repo under npm start.
+                        {`Changes apply to every ${entry.name}.`}
                         {entry.credit ? ` ${entry.credit}.` : ''}
                     </p>
                     <Field label="Category">
@@ -473,7 +476,6 @@ function ScanLook({ obj }) {
                     </div>
                 </div>
             ))}
-            <p className={styles.hint} style={{ marginTop: 6 }}>The points&apos; correction shows when their colour is the scan&apos;s.</p>
             {note && <p className={styles.hint} style={{ marginTop: 6 }}>{note}</p>}
         </>
     );
@@ -505,7 +507,7 @@ function RotoSection({ obj }) {
             {mattesOff && (
                 <div className={styles.warnBox}>
                     <p className={styles.hint} style={{ margin: 0 }}>
-                        Use mattes is off for this take, so no holdout or window matte applies.
+                        Mattes are off for this take.
                     </p>
                     <button type="button" className={styles.btn} onClick={() => comp.setParam(obj.id, 'mattesOn', true, true)}>Turn on</button>
                 </div>
@@ -552,6 +554,7 @@ const CUSTOM = {
     textDynamic: TextDynamic,
     curveConvert: CurveConvert,
     usedVariables: UsedVariables,
+    manifold: ManifoldEditor,
 };
 
 // ---- Objects ---------------------------------------------------------------------
@@ -589,7 +592,7 @@ function ObjectInspector({ obj }) {
                 const Custom = g.custom ? CUSTOM[g.custom] : null;
                 if (!params.length && !Custom) return null;
                 return (
-                    <Group key={`${obj.id}:${g.title}`} title={g.title} collapsed={g.collapsed} hint={g.hint}>
+                    <Group key={`${obj.id}:${g.title}`} owner={obj.id} title={g.title} hint={g.hint}>
                         {Custom && <Custom obj={obj} />}
                         {params.map((d) => (
                             <ParamRow
@@ -658,9 +661,9 @@ function SwitchTools({ ctrl }) {
     const now = switchAt(ctrl, comp.now());
     return (
         <>
-            <Group title={ctrl.type === 'text' ? 'Texts' : 'States'}>
+            <Group owner={ctrl.id} id="states" title={ctrl.type === 'text' ? 'Texts' : 'States'}>
                 {ctrl.type === 'text' && (
-                    <p className={styles.hint}>Each is one piece of text; cut between them in its lane like a Switch. A text variable that follows this (under Variables) shows the one it is on, as {'{{τ}}'} in any text.</p>
+                    <p className={styles.hint}>Cut between texts in its lane. Show the current one with a text variable, as {'{{τ}}'}.</p>
                 )}
                 <Field label="Starts at">
                     <select
@@ -699,7 +702,7 @@ function SwitchTools({ ctrl }) {
                 <div className={styles.wideRow}>
                     <button type="button" className={styles.btn} onClick={() => setStates([...ctrl.states, ctrl.type === 'text' ? `Text ${ctrl.states.length + 1}` : String.fromCharCode(65 + ctrl.states.length)])}>{ctrl.type === 'text' ? 'Add text' : 'Add state'}</button>
                 </div>
-                <p className={styles.hint} style={{ marginTop: 8 }}>Cut at the playhead: S (or C) steps on to the next state, 1–9 picks one, while this is selected.</p>
+                <p className={styles.hint} style={{ marginTop: 8 }}>At the playhead: S for the next state, 1-9 for one.</p>
                 <div className={styles.wideRow}>
                     {ctrl.states.map((s, i) => (
                         <button key={i} type="button" className={styles.btn} onClick={() => comp.cutSwitch(ctrl.id, i)}>
@@ -708,8 +711,7 @@ function SwitchTools({ ctrl }) {
                     ))}
                 </div>
             </Group>
-            <Group title="Auto-cut" collapsed>
-                <p className={styles.hint}>Fills the switch from the soundtrack, like the track editor did.</p>
+            <Group owner={ctrl.id} title="Auto-cut">
                 <Field label="From">
                     <select className={styles.select} value={src} onChange={(e) => setSrc(e.target.value)}>
                         {kicks.map((k) => <option key={k.id} value={k.id}>Kicks · {k.name}</option>)}
@@ -759,8 +761,8 @@ function KeyTools({ ctrl }) {
     const comp = useComp();
     const [v, setV] = useState(1);
     return (
-        <Group title="Keys">
-            <p className={styles.hint}>Click in the lane to add a key, drag keys to move them (up / down sets the value), double-click one to delete it.</p>
+        <Group owner={ctrl.id} title="Keys">
+            <p className={styles.hint}>Click the lane to add, drag to move, double-click to delete.</p>
             <ParamRow
                 def={{ key: 'v', label: 'Value', type: 'number', min: 0, max: 1, step: 0.01, link: false }}
                 value={v}
@@ -794,11 +796,8 @@ function LogicTools({ ctrl }) {
     };
     const word = OP_WORD[ctrl.params.op] || 'AND';
     return (
-        <Group title="Inputs">
-            <p className={styles.hint}>
-                On when its inputs, combined as above, are true. Each is a Switch (or another Logic) being in a state;
-                NOT flips it. Link anything to this as you would a Switch.
-            </p>
+        <Group owner={ctrl.id} title="Inputs">
+            <p className={styles.hint}>Each input is a Switch in a state; NOT flips it.</p>
             {inputs.map((inp, i) => {
                 const c = lookup(inp.controller);
                 return (
@@ -840,8 +839,8 @@ function LogicTools({ ctrl }) {
             <div className={styles.wideRow}>
                 <button type="button" className={styles.btn} disabled={!choices.length} onClick={add}>Add input</button>
             </div>
-            {!choices.length && <p className={styles.hint}>Make a Switch first: a Logic combines Switches.</p>}
-            {choices.length > 0 && inputs.length < 2 && <p className={styles.hint}>Give it two or more inputs to combine.</p>}
+            {!choices.length && <p className={styles.hint}>Make a Switch first.</p>}
+            {choices.length > 0 && inputs.length < 2 && <p className={styles.hint}>Needs two or more inputs.</p>}
         </Group>
     );
 }
@@ -874,9 +873,9 @@ function ControllerInspector({ ctrl }) {
                 </div>
             </div>
             {params.length > 0 && (
-                <Group title="Signal">
+                <Group owner={ctrl.id} title="Signal">
                     {(ctrl.type === 'kick' || ctrl.type === 'band') && !comp.analysis?.music && (
-                        <p className={styles.hint}>Listens to the audio tracks. Put some music on one.</p>
+                        <p className={styles.hint}>Put music on an audio track.</p>
                     )}
                     {params.map((d) => (
                         <ParamRow
@@ -892,8 +891,8 @@ function ControllerInspector({ ctrl }) {
             {isCut(ctrl) && <SwitchTools ctrl={ctrl} />}
             {ctrl.type === 'logic' && <LogicTools ctrl={ctrl} />}
             {ctrl.type === 'keys' && <KeyTools ctrl={ctrl} />}
-            <Group title={`Linked (${uses.length})`}>
-                {!uses.length && <p className={styles.hint}>Nothing follows this yet. Right-click any control and pick it under Link to controller.</p>}
+            <Group owner={ctrl.id} id="linked" title={`Linked (${uses.length})`}>
+                {!uses.length && <p className={styles.hint}>Nothing linked. Right-click a control to link it.</p>}
                 {uses.map(({ owner, key, variable }) => {
                     const isTrack = !!owner.kind;
                     let label;
@@ -1113,10 +1112,7 @@ function TrackInspector({ track }) {
             </div>
             <div className={styles.groupBody} style={{ paddingTop: 8 }}>
                 {track.kind === 'video' && (
-                    <p className={styles.hint}>
-                        To cut between parallel videos, put them on separate tracks and link each track&apos;s
-                        Visible to the same Switch, each on its own state.
-                    </p>
+                    <p className={styles.hint}>Link Visible to a Switch to cut between tracks.</p>
                 )}
                 {defs.map((d) => (
                     <ParamRow
@@ -1152,7 +1148,7 @@ function MediaInspector({ media }) {
             <div className={styles.groupBody} style={{ paddingTop: 8 }}>
                 {missing && (
                     <p className={`${styles.hint} ${styles.warn}`}>
-                        This file isn&apos;t here. It was linked from another browser or has moved. Relocate it to put it back.
+                        File not found. Relocate it.
                     </p>
                 )}
                 <Field label="Source"><span style={{ overflowWrap: 'anywhere', color: 'var(--dim)' }}>{where}</span></Field>
@@ -1192,7 +1188,6 @@ function OutputInspector() {
                 <span className={styles.insKind}>Project</span>
             </div>
             <div className={styles.groupBody} style={{ paddingTop: 8 }}>
-                <p className={styles.hint}>The frame the program is drawn at. A take whose shape differs is cropped to cover it, the solve&apos;s camera with it.</p>
                 <Field label="Width"><NumberBox value={o.width} step={2} onCommit={(v) => set({ width: Math.max(16, Math.round(v / 2) * 2) })} /></Field>
                 <Field label="Height"><NumberBox value={o.height} step={2} onCommit={(v) => set({ height: Math.max(16, Math.round(v / 2) * 2) })} /></Field>
                 <Field label="Frame rate"><NumberBox value={o.fps} step={0.001} onCommit={(v) => set({ fps: Math.max(1, Math.min(240, v)) })} /></Field>

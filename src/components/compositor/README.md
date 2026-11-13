@@ -11,6 +11,7 @@ model/      plain data and pure functions, no three.js, no React
   expr.js         the maths language: x(t) = cos θ t, P_2.x, {{ω_1}} in text
   spline.js       interpolating splines of degree 1-5, C^(k-1) at every point
   globals.js      variables (project.variables) and splines, valued at a frame
+  acoustics.js    a sound's features (STFT, once per sound) and a Manifold's keypoints from them
   curvePresets.js ready-made equations (the Curve's shapes among them)
   splineLabels.js a spline's points as child objects (marker + LaTeX label), kept in step with its points
   stageCopy.js    copying clips; a 3D stage's clip copies its whole stage as a new one
@@ -29,7 +30,7 @@ engine/     three.js and media, no React
   transport.js    the clock (the audio hardware's while sound plays)
   exporter.js     offline frame-exact MP4 export (WebCodecs)
 ui/         React: Sidebar (outliner) + Inspector, Timeline, Params (link menu),
-            Maths (expression fields, spline points, variables)
+            Maths (expression fields, spline points, variables), Manifold (its sound and keypoints)
 ```
 
 Rules of the road:

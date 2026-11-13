@@ -11,7 +11,7 @@
 
 import { newId } from './project';
 import { firstFit } from './timeline';
-import { splineSymbol, variableKey } from './globals';
+import { splineSymbol, variableKey, isSplineObject } from './globals';
 import { SPLINE_LETTERS, renameSymbols, renameInTemplate } from './expr';
 
 export const CLIP_COPY_FORMAT = 'compositor-clip';
@@ -75,11 +75,11 @@ export function pasteClip(project, payload, at) {
         const ctrlIds = new Set(project.controllers.map((c) => c.id));
         // Fresh spline letters: none a spline or variable here already has.
         const taken = new Set([
-            ...project.objects.filter((o) => o.type === 'spline').map(splineSymbol),
+            ...project.objects.filter(isSplineObject).map(splineSymbol),
             ...(project.variables || []).map((v) => v.symbol),
         ]);
         const letters = {};
-        stage.objects.filter((o) => o.type === 'spline').forEach((o) => {
+        stage.objects.filter(isSplineObject).forEach((o) => {
             const s = splineSymbol(o);
             if (letters[s]) return;
             const free = SPLINE_LETTERS.find(([c]) => !taken.has(c));
@@ -94,7 +94,7 @@ export function pasteClip(project, payload, at) {
                 ...(o.parentId ? { parentId: ids.get(o.parentId) } : {}),
                 links: Object.fromEntries(Object.entries(o.links || {}).filter(([, l]) => ctrlIds.has(l.controller))),
             };
-            if (obj.type === 'spline') obj.params = { ...obj.params, symbol: letters[splineSymbol(o)] };
+            if (isSplineObject(obj)) obj.params = { ...obj.params, symbol: letters[splineSymbol(o)] };
             obj = renameIn(obj, letters);
             return obj;
         });

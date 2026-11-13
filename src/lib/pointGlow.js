@@ -26,6 +26,8 @@ uniform sampler2D tHalo;
 uniform sampler2D tMip2;
 uniform sampler2D tMip3;
 uniform sampler2D tMip4;
+uniform sampler2D tHold;
+uniform float holdOn;
 uniform float halo;
 uniform float bleed;
 uniform float reach;
@@ -70,7 +72,12 @@ void main() {
     // while the surface's colour still tints it.
     vec3 surface = sqrt(max(base.rgb, 0.0));
     vec3 lit = surface * light * bleed;
-    gl_FragColor = vec4(base.rgb + glow * halo + lit, base.a);
+    // A held-out object (a matte) stands in front of every point: none of
+    // their glow or light lands on it, however near its edge they are. Its
+    // soft edges (motion blur) let the 3D partly through, but not the glow:
+    // a strong Bleed through even half a matte reads as light on the object.
+    float front = holdOn > 0.5 ? smoothstep(0.02, 0.35, texture2D(tHold, vUv).r) : 0.0;
+    gl_FragColor = vec4(base.rgb + (glow * halo + lit) * (1.0 - front), base.a);
 }`;
 
 export class PointGlowPass extends Pass {
@@ -89,6 +96,8 @@ export class PointGlowPass extends Pass {
                 tMip2: { value: null },
                 tMip3: { value: null },
                 tMip4: { value: null },
+                tHold: { value: null },
+                holdOn: { value: 0 },
                 halo: { value: 1 },
                 bleed: { value: 0 },
                 reach: { value: 0.5 },
@@ -104,8 +113,13 @@ export class PointGlowPass extends Pass {
         this.bleed = 0;
         this.reach = 0.5;
         this.spread = 0.6;
+        // Brightness the source must pass to bloom: 0 for points (a dim one
+        // still lights its surroundings); a floor for a whole scene's objects.
+        this.threshold = 0;
         // Set by the host each frame: draws the points into the bound target.
         this.drawSource = null;
+        // And where held-out objects (mattes) stand in front, 0..1 in its red, or null.
+        this.hold = null;
         this.black = new THREE.Color(0, 0, 0);
         this.prevClear = new THREE.Color();
     }
@@ -128,7 +142,7 @@ export class PointGlowPass extends Pass {
         // here, which nothing reads afterwards, so it is left to do so.
         this.bloom.strength = 1;
         this.bloom.radius = this.spread;
-        this.bloom.threshold = 0;
+        this.bloom.threshold = this.threshold;
         this.bloom.render(renderer, null, this.source, 0, false);
 
         const u = this.material.uniforms;
@@ -140,6 +154,8 @@ export class PointGlowPass extends Pass {
         u.halo.value = this.halo;
         u.bleed.value = this.bleed;
         u.reach.value = this.reach;
+        u.tHold.value = this.hold;
+        u.holdOn.value = this.hold ? 1 : 0;
         u.aspect.value = readBuffer.width / Math.max(1, readBuffer.height);
         renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
         this.quad.render(renderer);

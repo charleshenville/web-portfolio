@@ -24,8 +24,18 @@ export const isPointOf = (o, splineId) => o.type === 'splinePoint' && o.parentId
 /** What point `i` of `spline` says, in LaTeX. */
 export function labelTex(spline, i) {
     const p = spline.params || {};
-    const name = symbolTex(splineSymbol(spline), String(i));
+    const sym = splineSymbol(spline);
+    const name = symbolTex(sym, String(i));
     if (p.labelShow === 'name') return name;
+    if (p.labelShow === 'value') {
+        // Its coordinates worked out now, as numbers: templates the label fills in every frame.
+        // In the spline's own frame (as its points are written), or the scene's
+        // ({{world.x}}: where the point is once the spline is placed, turned,
+        // scaled and spun; the engine fills those in, see engine/adapters.js).
+        const d = Math.max(0, Math.min(10, Math.round(p.labelDigits ?? 2)));
+        const c = ['x', 'y', 'z'].map((k) => (p.labelFrame === 'world' ? `{{world.${k}:${d}}}` : `{{${sym}_${i}.${k}:${d}}}`));
+        return `${name} = \\left(${c.join(',\\ ')}\\right)`;
+    }
     const pt = p.points?.[i] || [];
     const c = [0, 1, 2].map((d) => toTex(String(pt[d] ?? '').trim() || '0') ?? '?');
     return `${name} = \\left(${c.join(',\\ ')}\\right)`;

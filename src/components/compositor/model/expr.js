@@ -561,7 +561,7 @@ export function compile(src, scope = {}) {
 export function formatValue(v, digits = 2) {
     const d = Math.max(0, Math.min(10, Math.round(digits)));
     const one = (x) => {
-        if (!Number.isFinite(x)) return Number.isNaN(x) ? '—' : (x > 0 ? '∞' : '−∞');
+        if (!Number.isFinite(x)) return Number.isNaN(x) ? 'NaN' : (x > 0 ? '∞' : '−∞');
         const s = x.toFixed(d);
         // No "-0.00".
         return /^-0\.?0*$/.test(s) ? s.slice(1) : s;

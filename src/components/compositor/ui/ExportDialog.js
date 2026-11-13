@@ -81,7 +81,7 @@ export default function ExportDialog({
                     <span className={styles.rowLabel}>To (s)</span>
                     <span style={{ gridColumn: '2 / 4' }}><NumberBox value={t1} step={0.01} onCommit={(v) => setT1(Math.max(t0 + 0.05, v))} /></span>
                 </div>
-                <p className={styles.hint}>{`${w}×${h}, ${(t1 - t0).toFixed(2)}s, ${Math.round((t1 - t0) * fps)} frames. Rendered offline, frame-exact; supersampled below 4K.`}</p>
+                <p className={styles.hint}>{`${w}×${h}, ${(t1 - t0).toFixed(2)}s, ${Math.round((t1 - t0) * fps)} frames.`}</p>
                 {busy && (
                     <>
                         <div className={styles.progress}><div className={styles.progressBar} style={{ width: `${progress * 100}%` }} /></div>

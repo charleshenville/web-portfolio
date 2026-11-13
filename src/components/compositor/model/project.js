@@ -168,13 +168,40 @@ export function serializeProject(project) {
     return JSON.stringify(out, null, 2);
 }
 
+/**
+ * A Sun's softness was in shadow-map texels, so it changed with whatever
+ * cast a shadow; it is now centimetres in the scene. Older files convert
+ * once, at about 2.5 mm a texel (what a typical scene's texels were).
+ */
+export function migrateSun(o) {
+    if (o.type !== 'sun' || !o.params || o.params.shadowSoftUnits) return o;
+    const k = 0.25;
+    const params = { ...o.params, shadowSoftUnits: 'cm' };
+    if (Number.isFinite(params.shadowSoftness)) params.shadowSoftness = Math.round(params.shadowSoftness * k * 100) / 100;
+    const links = { ...(o.links || {}) };
+    const l = links.shadowSoftness;
+    if (l) links.shadowSoftness = { ...l, from: (l.from ?? 0) * k, to: (l.to ?? 1) * k };
+    return { ...o, params, links };
+}
+
+/** `project` with its Suns' softness in centimetres; the same project if they already are. */
+export function migrateSuns(project) {
+    let changed = false;
+    const objects = project.objects.map((o) => {
+        const m = migrateSun(o);
+        if (m !== o) changed = true;
+        return m;
+    });
+    return changed ? { ...project, objects } : project;
+}
+
 /** A project read back from a file, with anything missing filled in. Throws on a file that is not one. */
 export function parseProject(text) {
     const data = typeof text === 'string' ? JSON.parse(text) : text;
     if (!data || data.format !== PROJECT_FORMAT) throw new Error('not a compositor project');
     if (data.version > PROJECT_VERSION) throw new Error(`made by a newer version (v${data.version})`);
     const base = createProject(data.name || 'Untitled');
-    const objects = (data.objects || []).filter((o) => o && OBJECT_TYPES[o.type]).map((o) => ({
+    const objects = (data.objects || []).filter((o) => o && OBJECT_TYPES[o.type]).map(migrateSun).map((o) => ({
         ...o,
         params: { ...defaultParams(o.type), ...(o.params || {}) },
         links: o.links || {},

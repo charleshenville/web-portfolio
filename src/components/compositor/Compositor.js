@@ -24,10 +24,10 @@ import {
     mixProject, analyse, importFile, probe, mediaUrl, decodeUrl,
 } from './engine/media';
 import {
-    createProject, ensureTakeScene, addStageScene, takeMedia, makeObject, newId, pruneScenes, removeScenes as dropScenes,
+    createProject, ensureTakeScene, addStageScene, takeMedia, makeObject, newId, pruneScenes, removeScenes as dropScenes, migrateSuns,
 } from './model/project';
 import { makeController, isCut } from './model/controllers';
-import { makeVariable, splineSymbol } from './model/globals';
+import { makeVariable, splineSymbol, isSplineObject } from './model/globals';
 import { VARIABLE_LETTERS, SPLINE_LETTERS } from './model/expr';
 import { CURVE_FORMULAS } from './model/curvePresets';
 import { ALL_POINTS } from './model/spline';
@@ -178,16 +178,35 @@ export default function Compositor() {
     const savedRef = useRef(projRef.current);
     const isDirty = () => projRef.current !== savedRef.current;
 
+    // Which inspector groups are open ('ownerId:group'): all start closed, and
+    // one opened stays open. Kept with the project when it is saved, but not
+    // part of its history, so opening one is neither undone nor unsaved work.
+    const openGroups = useRef(new Set(projRef.current.ui?.openGroups || []));
+    const groupOpen = useCallback((key) => openGroups.current.has(key), []);
+    const setGroupOpen = useCallback((key, on) => {
+        if (on) openGroups.current.add(key); else openGroups.current.delete(key);
+    }, []);
+    /** `p` as written to a file: with the open groups of things it still has. */
+    const withUi = (p) => {
+        const owners = new Set([...p.objects, ...p.controllers, ...(p.variables || [])].map((o) => o.id));
+        const open = Array.from(openGroups.current).filter((k) => owners.has(k.slice(0, k.indexOf(':'))));
+        return { ...p, ui: { ...(p.ui || {}), openGroups: open } };
+    };
+
     const replaceProject = useCallback((p0) => {
         // Spline points as objects, for files from before they were.
         const p = syncSplineLabels(p0);
         history.current = { past: [], future: [], coalesce: null, at: 0 };
         projRef.current = p;
         savedRef.current = p;
+        openGroups.current = new Set(p.ui?.openGroups || []);
         transportRef.current.seek(0);
         setSelection(null);
         setRev((r) => r + 1);
     }, []);
+
+    // A project open before the Sun's softness became centimetres converts once, as a file would on opening.
+    useEffect(() => { apply((p) => migrateSuns(p), true); }, [apply]);
 
     // ---- Engine ---------------------------------------------------------------------
 
@@ -578,7 +597,7 @@ export default function Compositor() {
             if (type === 'cloud') params = { ...at, radius: r * 1.4, pointSize: Math.max(0.0015, r * 0.004), maxPoints: 40000, samples: 20000 };
             if (type === 'curve') params = { ...at, curveScale: r * 1.2, dotSize: Math.max(0.01, r * 0.02) };
             // Written in their own units (a unit circle, a spline across -1..1), scaled to the scene.
-            if (type === 'equation' || type === 'spline') params = { ...at, scale: Math.round(r * 0.6 * 1000) / 1000 || 1 };
+            if (type === 'equation' || type === 'spline' || type === 'manifold') params = { ...at, scale: Math.round(r * 0.6 * 1000) / 1000 || 1 };
             if (type === 'protagonist') {
                 const it = makeModelItem('x', at, 'stand');
                 params = { ...it.op };
@@ -615,10 +634,10 @@ export default function Compositor() {
                 if (corners) params = { corners };
             }
         }
-        if (type === 'spline') {
-            // A symbol of its own: the next capital no spline has.
-            const used = new Set(projRef.current.objects.filter((o) => o.type === 'spline').map(splineSymbol));
-            const free = SPLINE_LETTERS.find(([c]) => !used.has(c));
+        if (type === 'spline' || type === 'manifold') {
+            // A symbol of its own: the next capital no spline has (a Manifold's M if it's free).
+            const used = new Set(projRef.current.objects.filter(isSplineObject).map(splineSymbol));
+            const free = type === 'manifold' && !used.has('M') ? ['M'] : SPLINE_LETTERS.find(([c]) => !used.has(c));
             if (free) params = { ...params, symbol: free[0] };
         }
         const obj = makeObject(type, sceneId, { params, extra });
@@ -1081,6 +1100,20 @@ export default function Compositor() {
         listUploads().then(setUploads);
     }, [apply, placeMedia]);
 
+    /** A sound file kept in the project's media but not placed on the timeline (for a Manifold to read); its media id. */
+    const importAudio = useCallback(async (file) => {
+        setStatus(`Importing ${file.name}…`);
+        const src = await importFile(file);
+        const url = URL.createObjectURL(file);
+        const info = await probe(url, 'audio');
+        URL.revokeObjectURL(url);
+        const media = { id: newId('med'), kind: 'audio', name: file.name, src, duration: info?.duration || 0 };
+        apply((p) => ({ ...p, media: [...p.media, media] }), true);
+        setStatus('');
+        listUploads().then(setUploads);
+        return media.id;
+    }, [apply]);
+
     const relocateMedia = useCallback(async (id, file) => {
         const src = await importFile(file);
         const url = URL.createObjectURL(file);
@@ -1192,14 +1225,14 @@ export default function Compositor() {
     const save = useCallback(async () => {
         const p = projRef.current;
         if (repoProjects === null) {
-            downloadProject(p);
+            downloadProject(withUi(p));
             savedRef.current = p;
             setStatus('Downloaded (no dev server to save into)');
             setRev((r) => r + 1);
             return true;
         }
         try {
-            const path = await saveProject(p.name || 'Untitled', p);
+            const path = await saveProject(p.name || 'Untitled', withUi(p));
             savedRef.current = p;
             setStatus(`Saved to ${path}`);
             setRev((r) => r + 1);
@@ -1436,6 +1469,9 @@ export default function Compositor() {
         relocateMedia,
         placeMedia,
         addMedia,
+        importAudio,
+        groupOpen,
+        setGroupOpen,
         uploadScreenVideo,
         setOutput: (patch) => apply((p) => ({ ...p, output: { ...p.output, ...patch } }), true),
         toggleRecord,
@@ -1474,7 +1510,7 @@ export default function Compositor() {
                         <button type="button" className={styles.btn} title="New project" onClick={newProject}><FilePlus size={14} /></button>
                         <button type="button" className={styles.btn} title="Open…" onClick={() => { listProjects().then(setRepoProjects); setDialog('open'); }}><FolderOpen size={14} /></button>
                         <button type="button" className={styles.btn} title={repoProjects === null ? 'Save (download)' : 'Save to compositor-projects/ (⌘S)'} onClick={save}><Save size={14} /></button>
-                        <button type="button" className={styles.btn} title="Download project file" onClick={() => downloadProject(projRef.current)}><Download size={14} /></button>
+                        <button type="button" className={styles.btn} title="Download project file" onClick={() => downloadProject(withUi(projRef.current))}><Download size={14} /></button>
                         <button type="button" className={styles.btn} title="Undo (⌘Z)" disabled={!history.current.past.length} onClick={undo}><Undo2 size={14} /></button>
                         <button type="button" className={styles.btn} title="Redo (⇧⌘Z)" disabled={!history.current.future.length} onClick={redo}><Redo2 size={14} /></button>
                     </div>

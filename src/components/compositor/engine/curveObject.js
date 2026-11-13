@@ -20,7 +20,8 @@ import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { bassLevel } from '../../../lib/audioScene';
 import { isSeries, isPointsMode } from '../model/schema';
 import { splineAt } from '../model/spline';
-import { solveLoose } from '../model/globals';
+import { solveLoose, isSplineObject } from '../model/globals';
+import { spinAt } from '../model/spin';
 
 const D2R = Math.PI / 180;
 
@@ -80,7 +81,12 @@ void main() {
     }
     vec2 nrm = vec2(-dir.y, dir.x);
     // Half the width, in the frame's height units (the frame is 2 tall).
+#ifdef SHADOW_DEPTH
+    // From the sun: always a width in the scene (uScale turns aWidth into scene units).
+    float hw = 0.5 * aWidth * uScale * projectionMatrix[1][1] / max(1e-6, abs(c.w));
+#else
     float hw = uPixels > 0.5 ? aWidth / 1080.0 : 0.5 * aWidth * uScale * projectionMatrix[1][1] / max(1e-6, abs(c.w));
+#endif
     vec2 off = nrm * aSide * hw * miter;
     off.x /= aspect;
     c.xy += off * c.w;
@@ -102,6 +108,17 @@ void main() {
     #include <encodings_fragment>
 }`;
 
+// The ribbon as the sun sees it, for its shadow: the same strip, facing the
+// light, written as depth. Faint parts (below a third opacity) cast nothing.
+const RIBBON_DEPTH_FRAG = /* glsl */`
+#include <packing>
+uniform float uOpacity;
+varying vec4 vColor;
+void main() {
+    if (vColor.a * uOpacity < 0.35) discard;
+    gl_FragColor = packDepthToRGBA(gl_FragCoord.z);
+}`;
+
 class Ribbon {
     constructor() {
         this.material = new THREE.ShaderMaterial({
@@ -120,6 +137,19 @@ class Ribbon {
         this.geometry = new THREE.BufferGeometry();
         this.mesh = new THREE.Mesh(this.geometry, this.material);
         this.mesh.frustumCulled = false;
+        this.depth = new THREE.ShaderMaterial({
+            uniforms: {
+                uRes: { value: new THREE.Vector2(1, 1) },
+                uPixels: { value: 0 },
+                uScale: { value: 1 },
+                uOpacity: this.material.uniforms.uOpacity,
+            },
+            defines: { SHADOW_DEPTH: '' },
+            vertexShader: RIBBON_VERT,
+            fragmentShader: RIBBON_DEPTH_FRAG,
+            side: THREE.DoubleSide,
+        });
+        this.mesh.customDepthMaterial = this.depth;
         this.capacity = 0;
     }
 
@@ -198,6 +228,7 @@ class Ribbon {
     dispose() {
         this.geometry.dispose();
         this.material.dispose();
+        this.depth.dispose();
         this.mesh.removeFromParent();
     }
 }
@@ -306,6 +337,7 @@ export class Dots {
         this.seed = opts.seed || 0;
         this.ensure(shape, lit, n);
         const mesh = this.mesh;
+        mesh.castShadow = !!opts.castShadow;
         const flat = FLAT_SHAPES.has(shape);
         const col = mesh.instanceColor.array;
         const al = this.alpha.array;
@@ -495,17 +527,69 @@ export function knotU(sol) {
     return Array.from({ length: n }, (_, i) => sol.knots[i] / total);
 }
 
+/**
+ * The u span a Manifold coming in with the music draws at timeline `time`:
+ * up to where the sound is now, from where it was `trail` seconds ago (or
+ * the start). `{ lo, hi, started }`, started once the sound has reached its
+ * first keypoint; null for a static one, all of which is drawn.
+ */
+export function musicSpan(p, sol, time) {
+    const g = p.gen;
+    if (p.timing === 'static' || !g || !(g.to > g.from)) return null;
+    const us = knotU(sol);
+    const n = us.length;
+    if (n < 2) return null;
+    const toU = (s) => {
+        const x = ((s - g.from) / (g.to - g.from)) * (n - 1);
+        if (x <= 0) return 0;
+        if (x >= n - 1) return sol.closed ? us[n - 1] : 1;
+        const i = Math.floor(x);
+        return us[i] + (us[i + 1] - us[i]) * (x - i);
+    };
+    const s = (time || 0) - (p.timeOffset || 0);
+    return { lo: p.trail > 0 ? toU(s - p.trail) : 0, hi: toU(s), started: s >= g.from };
+}
+
+/** [lo, hi] cut to a music span (null when nothing of it is left). */
+function withinMusic(lo, hi, ms) {
+    if (!ms) return [lo, hi];
+    if (!ms.started) return null;
+    const a = Math.max(lo, ms.lo);
+    const b = Math.min(hi, ms.hi);
+    return b > a ? [a, b] : null;
+}
+
 export default class CurveAdapter {
     constructor(obj, parent) {
+        // The spin turns this about the defining points' middle; inside it,
+        // the group carries the object's own position, rotation and scale,
+        // and is what the gizmo holds, so dragging never writes the spin in.
+        this.spinNode = new THREE.Group();
+        this.object = this.spinNode;
+        parent.add(this.spinNode);
         this.group = new THREE.Group();
-        this.object = this.group;
-        parent.add(this.group);
+        this.spinNode.add(this.group);
+        // What the gizmo holds: the object's own position, rotation and scale
+        // in the scene's frame, beside the spin rather than inside it, so a
+        // drag moves it along the scene's axes however it is spinning (the
+        // spin turns about the points' centre, which the drag moves with it).
+        this.handle = new THREE.Object3D();
+        this.gizmoTarget = this.handle;
+        this.spinQ = new THREE.Quaternion();
+        this.spinC = new THREE.Vector3();
         this.ribbon = new Ribbon();
         this.group.add(this.ribbon.mesh);
         this.dots = new Dots();
         this.group.add(this.dots.object);
         this.knots = new Dots();
         this.group.add(this.knots.object);
+        // A Manifold's marker at where the music is.
+        this.head = new Dots();
+        this.group.add(this.head.object);
+        this.span = null;
+        // Where it was drawn this frame, in its own frame, for the sun to aim its shadow at.
+        this.bounds = new THREE.Box3();
+        this.worldBounds = new THREE.Box3();
         // What the sun reads to decide whether this casts a shadow.
         this.model = { op: {} };
         this.ca = new THREE.Color();
@@ -520,7 +604,7 @@ export default class CurveAdapter {
 
     /** A function putting the curve at parameter x for copy k into out, or null (with this.error). */
     sampler(obj, p, g) {
-        if (obj.type === 'spline') {
+        if (isSplineObject(obj)) {
             const st = g.spline(obj.id) || solveLoose(obj, g);
             this.splineState = st;
             if (!st?.sol || (!st.sol.N && !st.sol.single)) { this.error = st?.sol?.error || 'No points'; return null; }
@@ -549,15 +633,27 @@ export default class CurveAdapter {
         g.position.set(p.posX || 0, p.posY || 0, p.posZ || 0);
         g.rotation.set((p.rotX || 0) * D2R, (p.rotY || 0) * D2R, (p.rotZ || 0) * D2R);
         g.scale.setScalar(p.scale ?? 1);
+        if (this.spinNode.parent && this.handle.parent !== this.spinNode.parent) this.spinNode.parent.add(this.handle);
+        if (!this.handle.userData.dragging) {
+            this.handle.position.copy(g.position);
+            this.handle.rotation.copy(g.rotation);
+            this.handle.scale.copy(g.scale);
+        }
+        this.bounds.makeEmpty();
+        this.ribbon.mesh.castShadow = !!p.castShadow;
         // Hidden, its children (a spline's points) go too; faded out, only the curve does.
         g.visible = p.visible !== false;
+        this.object.visible = g.visible;
         if (!g.visible || !f?.globals) return;
-        if ((p.opacity ?? 1) <= 0.002) { this.ribbon.mesh.visible = false; this.dots.hide(); this.knots.hide(); return; }
+        if ((p.opacity ?? 1) <= 0.002) { this.ribbon.mesh.visible = false; this.dots.hide(); this.knots.hide(); this.head.hide(); return; }
         this.error = null;
         f.renderer?.getDrawingBufferSize(this.size);
         const fn = this.sampler(obj, p, f.globals);
-        if (!fn) { this.ribbon.mesh.visible = false; this.dots.hide(); this.knots.hide(); return; }
-        g.updateMatrixWorld(true);
+        if (!fn) { this.ribbon.mesh.visible = false; this.dots.hide(); this.knots.hide(); this.head.hide(); this.applySpin(null); return; }
+        // (Held as it is while its points are dragged.)
+        if (f.holdSpin !== obj.id) this.applySpin(isSplineObject(obj) && f.frame ? spinAt(obj, f.time, f.frame.project, f.frame.analysis) : null);
+        this.span = obj.type === 'manifold' ? musicSpan(p, this.splineState?.sol, f.time) : null;
+        this.object.updateMatrixWorld(true);
         if (isPointsMode(p)) {
             this.ribbon.mesh.visible = false;
             this.drawDots(p, f, fn);
@@ -566,9 +662,64 @@ export default class CurveAdapter {
             this.drawLine(p, f, fn);
         }
         this.drawKnots(obj, p, f);
+        this.drawHead(obj, p, f);
     }
 
     copies(p) { return isSeries(p) ? Math.max(1, Math.min(64, Math.round(p.seriesCount || 1))) : 1; }
+
+    /**
+     * Turned by `q` ([x, y, z, w], in the scene's frame, or null for not at
+     * all) about the middle of its defining points where they are now.
+     */
+    applySpin(q) {
+        const sn = this.spinNode;
+        if (!q) { sn.position.set(0, 0, 0); sn.quaternion.identity(); return; }
+        const pts = this.splineState?.points || [];
+        const c = this.spinC.set(0, 0, 0);
+        let n = 0;
+        pts.forEach((pt) => {
+            if (!pt.every(Number.isFinite)) return;
+            c.x += pt[0]; c.y += pt[1]; c.z += pt[2];
+            n++;
+        });
+        if (n) c.divideScalar(n);
+        // The middle in the scene's frame, held still while the rest turns about it.
+        this.group.updateMatrix();
+        c.applyMatrix4(this.group.matrix);
+        const R = this.spinQ.set(q[0], q[1], q[2], q[3]);
+        sn.quaternion.copy(R);
+        sn.position.copy(c).sub(c.clone().applyQuaternion(R));
+    }
+
+    /** Grow this frame's bounds by the point at xyz[o..o+2], r around it. */
+    grow(xyz, o, r) {
+        const b = this.bounds;
+        for (let d = 0; d < 3; d++) {
+            const v = xyz[o + d];
+            if (!Number.isFinite(v)) return;
+            const lo = d === 0 ? 'x' : d === 1 ? 'y' : 'z';
+            if (v - r < b.min[lo]) b.min[lo] = v - r;
+            if (v + r > b.max[lo]) b.max[lo] = v + r;
+        }
+    }
+
+    /** Where it was drawn this frame, in the world, or null if nothing was (what the sun aims its shadow at). */
+    shadowBox() {
+        if (this.bounds.isEmpty()) return null;
+        this.object.updateMatrixWorld(true);
+        return this.worldBounds.copy(this.bounds).applyMatrix4(this.group.matrixWorld);
+    }
+
+    /** Scene units per pixel of a 1080-tall frame where the curve is, as `camera` sees it. */
+    worldPerPixel(camera) {
+        if (!camera) return 0.002;
+        if (camera.isOrthographicCamera) return (camera.top - camera.bottom) / (camera.zoom || 1) / 1080;
+        const at = this.group.getWorldPosition(this.v1 || (this.v1 = new THREE.Vector3()));
+        const eye = camera.getWorldPosition(this.v2 || (this.v2 = new THREE.Vector3()));
+        const fwd = camera.getWorldDirection(this.v3 || (this.v3 = new THREE.Vector3()));
+        const depth = Math.max(0.01, at.sub(eye).dot(fwd));
+        return (2 * depth * Math.tan(((camera.fov || 50) * D2R) / 2)) / 1080;
+    }
 
     /** Copy k's offset, and its colour (or null to colour along the curve). */
     copyLook(p, k, C) {
@@ -599,11 +750,14 @@ export default class CurveAdapter {
         const out = [0, 0, 0];
         const ws = p.widthStart ?? 1;
         const we = p.widthEnd ?? 1;
+        const pixels = p.thicknessUnits === 'pixels';
         for (let k = 0; k < C; k++) {
             const [a, b] = copyRange(p, k);
             const frac = drawnFraction(p, k, f.time || 0);
             if (frac <= 0 || a === b) continue;
-            const [lo, hi] = drawnRange(p, a, b, frac);
+            const cut = withinMusic(...drawnRange(p, a, b, frac), this.span);
+            if (!cut) continue;
+            const [lo, hi] = cut;
             const { off, solid } = this.copyLook(p, k, C);
             const n = S + 1;
             const s = this.strip(k, n);
@@ -617,6 +771,7 @@ export default class CurveAdapter {
                 s.xyz[i * 3 + 2] = out[2] + off[2];
                 const u = (x - a) / (b - a);
                 s.width[i] = Math.max(0, (p.thickness ?? 0.02) * (ws + (we - ws) * u));
+                if (ok) this.grow(s.xyz, i * 3, pixels ? 0 : s.width[i] / 2);
                 this.shade(p, u, solid, s.rgba, i * 4);
             }
             strips.push(s);
@@ -630,6 +785,9 @@ export default class CurveAdapter {
         if (p.thicknessUnits === 'pixels') u.uScale.value = 1;
         else u.uScale.value = this.group.getWorldScale(this.ws).x;
         u.uOpacity.value = Math.max(0, Math.min(1, p.opacity ?? 1));
+        // From the sun the ribbon is as wide in the scene as it looks: pixels become scene units where it is.
+        r.depth.uniforms.uScale.value = pixels ? this.worldPerPixel(f.camera) : u.uScale.value;
+        if (pixels && p.castShadow) this.bounds.expandByScalar(((p.thickness ?? 0.02) * Math.max(ws, we) * r.depth.uniforms.uScale.value) / Math.max(1e-6, u.uScale.value || 1));
         r.material.depthWrite = (p.opacity ?? 1) >= 0.999 && (p.fadeStart ?? 1) >= 0.999 && (p.fadeEnd ?? 1) >= 0.999;
     }
 
@@ -681,7 +839,9 @@ export default class CurveAdapter {
             const [a, b] = copyRange(p, k);
             const frac = drawnFraction(p, k, time);
             if (frac <= 0) continue;
-            const [lo, hi] = drawnRange(p, a, b, frac);
+            const cut = withinMusic(...drawnRange(p, a, b, frac), this.span);
+            if (!cut) continue;
+            const [lo, hi] = cut;
             const { off, solid } = this.copyLook(p, k, C);
             for (let i = 0; i < N; i++) {
                 // Still, the dots span the drawn range end to end; flowing,
@@ -696,6 +856,7 @@ export default class CurveAdapter {
                 B.xyz[o + 2] = out[2] + off[2] + (hash3(i, k, 2) * 2 - 1) * jitter;
                 const u = b !== a ? (x - a) / (b - a) : 0;
                 B.size[j] = Math.max(0, (p.dotSize ?? 0.04) * (ws + (we - ws) * u));
+                this.grow(B.xyz, o, B.size[j]);
                 B.spin[j] = spinRate * time + hash3(i, k, 3) * Math.PI * 2;
                 this.shade(p, u, solid, B.rgba, j * 4);
                 j++;
@@ -710,15 +871,36 @@ export default class CurveAdapter {
             wire: p.pointStyle === 'wire',
             wireWidth: p.pointWire,
             resolution: this.size,
+            castShadow: !!p.castShadow,
         });
     }
 
     /** A spline's defining points, where they are now. */
     drawKnots(obj, p, f) {
-        const st = obj.type === 'spline' ? this.splineState : null;
+        const st = isSplineObject(obj) ? this.splineState : null;
         if (!st || !p.showKnots || !st.points.length) { this.knots.hide(); return; }
         // Points that are objects of their own (the spline's children) draw their own markers.
-        const idx = st.points.map((pt, i) => i).filter((i) => !this.knotOwners?.has(i));
+        let idx = st.points.map((pt, i) => i).filter((i) => !this.knotOwners?.has(i));
+        // A Manifold's keypoints: once the music (or the drawn u) has reached them.
+        const grow = new Map();
+        if (obj.type === 'manifold' && (this.span || p.pointsByU)) {
+            const span = drawnSpan(p, f.time);
+            const cut = span && withinMusic(span[0], span[1], this.span);
+            const us = knotU(st.sol);
+            const over = Math.max(0, p.pointsAppear || 0);
+            const eps = 1e-6;
+            idx = cut ? idx.filter((i) => {
+                const u = us[i];
+                if (!(u >= cut[0] - eps && u <= cut[1] + eps)) return false;
+                if (over > 0) {
+                    const lead = !this.span && p.revealFrom === 'end' ? u - cut[0]
+                        : !this.span && p.revealFrom === 'centre' ? Math.min(u - cut[0], cut[1] - u) : cut[1] - u;
+                    const x = Math.max(0, Math.min(1, lead / over));
+                    grow.set(i, x * x * (3 - 2 * x));
+                }
+                return true;
+            }) : [];
+        }
         if (!idx.length) { this.knots.hide(); return; }
         const n = idx.length;
         const xyz = new Float32Array(n * 3);
@@ -728,7 +910,8 @@ export default class CurveAdapter {
         const c = this.ca.set(p.knotColor || '#ffffff');
         idx.forEach((k, i) => {
             xyz.set(st.points[k], i * 3);
-            size[i] = p.knotSize ?? 0.035;
+            size[i] = (p.knotSize ?? 0.035) * (grow.has(k) ? grow.get(k) : 1);
+            this.grow(xyz, i * 3, size[i]);
             rgba.set([c.r, c.g, c.b, 1], i * 4);
             if (spin) spin[i] = knotAngle(p, k, f.time);
         });
@@ -742,6 +925,31 @@ export default class CurveAdapter {
             wire: p.knotStyle === 'wire',
             wireWidth: p.knotWire,
             resolution: this.size,
+            castShadow: !!p.castShadow,
+        });
+    }
+
+    /** A Manifold coming in with the music: a marker where the sound is now. */
+    drawHead(obj, p, f) {
+        const ms = this.span;
+        const sol = this.splineState?.sol;
+        const span = ms && p.headOn ? drawnSpan(p, f.time) : null;
+        const cut = span && withinMusic(span[0], span[1], ms);
+        if (!cut || !sol) { this.head.hide(); return; }
+        const at = splineAt(sol, cut[1], [0, 0, 0]);
+        if (!at.every(Number.isFinite)) { this.head.hide(); return; }
+        const c = this.ca.set(p.headColor || '#ffffff');
+        const xyz = Float32Array.from(at);
+        this.grow(xyz, 0, p.headSize ?? 0.05);
+        this.head.write(1, xyz, Float32Array.of(p.headSize ?? 0.05), Float32Array.of(c.r, c.g, c.b, 1), {
+            shape: p.headShape || 'sphere',
+            lit: false,
+            face: this.facing(f),
+            spin: null,
+            opacity: p.opacity ?? 1,
+            wire: false,
+            resolution: this.size,
+            castShadow: !!p.castShadow,
         });
     }
 
@@ -751,6 +959,8 @@ export default class CurveAdapter {
         this.ribbon.dispose();
         this.dots.dispose();
         this.knots.dispose();
-        this.group.removeFromParent();
+        this.head.dispose();
+        this.spinNode.removeFromParent();
+        this.handle.removeFromParent();
     }
 }

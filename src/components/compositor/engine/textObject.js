@@ -233,6 +233,8 @@ export default class TextObject {
         // Turned square to the camera in update; otherwise placed by its corners.
         if (!flat && !p.faceCamera) this.unplace2D();
         this.mesh.renderOrder = flat ? 100000 : 0;
+        // Not part of the 3D scene, as a glow from the 3D objects alone sees it.
+        this.mesh.userData.frame2D = flat;
         [this.lit, this.basic].forEach((m) => { m.opacity = Math.max(0, Math.min(1, p.opacity ?? 1)); });
         const n = this.noise;
         n.textSoft.value = Math.max(0, p.softness || 0);
@@ -261,7 +263,7 @@ export default class TextObject {
         const family = fontStack(p);
         const latex = p.textMode === 'latex' && !texFailed();
         const key = JSON.stringify([w, h, p.text, family, p.fontSize, p.weight, p.italic, p.color, p.align, p.valign,
-            p.letterSpacing, p.lineHeight, p.bgColor, p.bgOpacity, p.padding, this.fontTick, latex]);
+            p.letterSpacing, p.lineHeight, p.bgColor, p.bgOpacity, p.padding, this.fontTick, latex, p.outline, p.outlineColor]);
         if (key === this.drawKey) return;
         this.drawKey = key;
         const c = this.canvas;
@@ -292,9 +294,13 @@ export default class TextObject {
         g.font = font;
         g.fillStyle = p.color || '#ffffff';
         g.textBaseline = 'alphabetic';
-        const pad = (p.padding || 0) * REF;
+        // An outline round the letters (and its colour), as a fraction of the
+        // font size; the letters move in by it, so it isn't cut off at the box.
+        const ow = Math.max(0, p.outline || 0) * px;
+        const outline = ow > 0 ? { width: ow, color: p.outlineColor || '#000000' } : null;
+        const pad = (p.padding || 0) * REF + ow;
         if (latex) {
-            this.drawLatex(g, p, px, pad, W0, REF);
+            this.drawLatex(g, p, px, pad, W0, REF, outline);
             g.setTransform(1, 0, 0, 1, 0, 0);
             this.tex.needsUpdate = true;
             return;
@@ -308,6 +314,16 @@ export default class TextObject {
         y += lh * 0.5 + px * 0.35; // baseline within the first line
         g.textAlign = p.align || 'center';
         const x = p.align === 'left' ? pad : p.align === 'right' ? W0 - pad : W0 / 2;
+        // Every line's outline first, then the letters, so no outline covers a letter.
+        if (outline) {
+            g.save();
+            g.lineJoin = 'round';
+            g.miterLimit = 2;
+            g.lineWidth = outline.width * 2;
+            g.strokeStyle = outline.color;
+            lines.forEach((line, i) => g.strokeText(line, x, y + i * lh));
+            g.restore();
+        }
         lines.forEach((line) => { g.fillText(line, x, y); y += lh; });
         g.setTransform(1, 0, 0, 1, 0, 0);
         this.tex.needsUpdate = true;
@@ -417,7 +433,7 @@ export default class TextObject {
      * style and stacked: line height spaces them as it would plain lines,
      * but a tall line (a fraction, a matrix) gets the room it needs.
      */
-    drawLatex(g, p, em, pad, W, H) {
+    drawLatex(g, p, em, pad, W, H, outline = null) {
         const lines = String(p.text || '').split('\n');
         const boxes = lines.map((l) => (l.trim() ? texLayout(l) : { width: 0, ascent: 0.75, descent: 0.25, ops: [] }));
         if (boxes.some((b) => !b)) {
@@ -428,13 +444,17 @@ export default class TextObject {
         const gap = Math.max(0, (p.lineHeight || 1.15) - 1) * em;
         const block = boxes.reduce((a, b) => a + (b.ascent + b.descent) * em, 0) + gap * Math.max(0, boxes.length - 1);
         let y = p.valign === 'top' ? pad : p.valign === 'bottom' ? H - pad - block : (H - block) / 2;
-        boxes.forEach((b) => {
+        const at = boxes.map((b) => {
             y += b.ascent * em;
             const w = b.width * em;
             const x = p.align === 'left' ? pad : p.align === 'right' ? W - pad - w : (W - w) / 2;
-            drawTex(g, b, x, y, em, p.color || '#ffffff');
+            const here = [x, y];
             y += b.descent * em + gap;
+            return here;
         });
+        // Every line's outline first, then the letters, so no outline covers a letter.
+        if (outline) boxes.forEach((b, i) => drawTex(g, b, at[i][0], at[i][1], em, p.color || '#ffffff', outline));
+        boxes.forEach((b, i) => drawTex(g, b, at[i][0], at[i][1], em, p.color || '#ffffff'));
     }
 
     /** The timeline's time, for grain that moves. */

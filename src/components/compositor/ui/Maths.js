@@ -15,7 +15,7 @@ import {
 import { isSwitch } from '../model/controllers';
 import { makeFrame } from '../model/resolve';
 import {
-    symbolLabel, symbolTex, VARIABLE_LETTERS, SPLINE_LETTERS, formatValue, letterName, TEMPLATE_SRC,
+    symbolLabel, symbolTex, VARIABLE_LETTERS, SPLINE_LETTERS, formatValue, TEMPLATE_SRC,
 } from '../model/expr';
 import { endOrders, orderName, ALL_POINTS } from '../model/spline';
 import { EQUATION_PRESETS } from '../model/curvePresets';
@@ -96,7 +96,8 @@ export function sourcesOf(obj) {
         if (p.ends === 'clamped') ['start', 'end'].forEach((side) => Object.values(p.clamp?.[side] || {}).forEach((v) => (v || []).forEach((x) => out.push(x))));
         return out;
     }
-    if (obj.type === 'text' || obj.type === 'splinePoint') return Array.from(String(p.text || '').matchAll(TEMPLATE), (m) => m[1]);
+    // (A spline point label's {{world.x}} is the engine's to fill, not an expression.)
+    if (obj.type === 'text' || obj.type === 'splinePoint') return Array.from(String(p.text || '').matchAll(TEMPLATE), (m) => m[1]).filter((src) => !/^\s*world\.[xyz]\s*$/.test(src));
     return [];
 }
 
@@ -251,7 +252,7 @@ export function UsedVariables({ obj }) {
             )}
             {used.map((v) => <VariableValue key={v.id} v={v} />)}
             {usedTexts.map((v) => <TextVariableValue key={v.id} v={v} label={variableLabel(v)} />)}
-            {used.length > 0 && <p className={styles.hint} style={{ margin: '2px 0 6px' }}>Right-click a value to drive it with a controller. These are global: the same everywhere they are used.</p>}
+            {used.length > 0 && <p className={styles.hint} style={{ margin: '2px 0 6px' }}>Global. Right-click to link.</p>}
             {missing.size > 0 && (
                 <>
                     <p className={styles.subTitle}>Not defined yet</p>
@@ -447,10 +448,7 @@ export function SplineEditor({ obj }) {
                     ))}
                 </select>
             </div>
-            {dupe && <p className={`${styles.hint} ${styles.warn}`}>Another spline is already {sym}, so expressions read that one. Pick another symbol.</p>}
-            <p className={styles.hint} style={{ margin: '4px 0' }}>
-                {`${sym}_0 … ${sym}_${Math.max(0, pts.length - 1)} are its points, ${sym}(u) its curve (u from 0 to 1). Each coordinate can be a number or an expression.`}
-            </p>
+            {dupe && <p className={`${styles.hint} ${styles.warn}`}>{sym} is taken. Pick another symbol.</p>}
             <ParamRow
                 def={{ key: 'edit', label: 'Edit in viewport', type: 'bool', link: false }}
                 value={editing}
@@ -459,8 +457,8 @@ export function SplineEditor({ obj }) {
             {editing && (
                 <>
                     <p className={styles.hint} style={{ margin: '2px 0 4px' }}>
-                        Click a marker in the viewport (or a point&apos;s name below) and drag the gizmo; blue in the middle moves them all.
-                        {written ? ' A point written as an expression becomes plain numbers once dragged.' : ''}
+                        Click a marker; blue moves them all.
+                        {written ? ' Dragging turns expressions into numbers.' : ''}
                     </p>
                     <div className={styles.chips}>
                         <button type="button" className={`${styles.chip} ${picked === null ? styles.btnOn : ''}`} onClick={() => comp.setCornerHandle(ALL_POINTS)}>All</button>
@@ -473,7 +471,7 @@ export function SplineEditor({ obj }) {
                     </div>
                 </>
             )}
-            {obj.gizmo === false && editing && <p className={`${styles.hint} ${styles.warn}`}>Turn the gizmo on for this spline (in the outliner) to drag its points.</p>}
+            {obj.gizmo === false && editing && <p className={`${styles.hint} ${styles.warn}`}>Turn its gizmo on in the outliner.</p>}
             <div className={styles.pointRow} style={{ color: 'var(--dim)', fontSize: 10 }}>
                 <span />
                 <span>x</span>
@@ -509,9 +507,7 @@ export function SplineEditor({ obj }) {
             {p.ends === 'clamped' && (
                 <>
                     <p className={styles.subTitle}>Ends</p>
-                    <p className={styles.hint} style={{ margin: '2px 0 4px' }}>
-                        {`A ${['', 'linear', 'quadratic', 'cubic', 'quartic', 'quintic'][p.degree] || ''} spline needs these. Measured along the end stretch (0 to 1 across it). Left blank, a velocity follows the end stretch's chord and the rest are 0.`}
-                    </p>
+                    <p className={styles.hint} style={{ margin: '2px 0 4px' }}>Blank: velocity follows the end chord, the rest are 0.</p>
                     {[['start', 'Start'], ['end', 'End']].map(([side, label]) => orders[side].map((r) => (
                         <div key={`${side}${r}`} className={styles.pointRow} style={{ gridTemplateColumns: '64px repeat(3, minmax(0, 1fr))' }}>
                             <span className={styles.rowLabel} style={{ fontSize: 10 }}>{`${label} ${orderName(r)}`}</span>
@@ -540,9 +536,9 @@ export function TextDynamic({ obj }) {
         <>
             <p className={styles.hint}>
                 {latex
-                    ? 'Each line is typeset as maths, as LaTeX: x(t) = \\cos\\theta_1 t. Use \\text{…} for words. '
+                    ? 'Use \\text{…} for words. '
                     : ''}
-                {'Put {{θ}} (or any expression: {{2ω_1:3}} to 3 decimals) in the text to show a value as it changes.'}
+                {'{{θ}} shows a value; {{2ω_1:3}} to 3 decimals.'}
             </p>
             {(scope.varList.length > 0 || scope.splineList.length > 0 || scope.textList.length > 0) && (
                 <div className={styles.row}>
@@ -577,7 +573,8 @@ export function TextDynamic({ obj }) {
                         </optgroup>
                         {scope.splineList.length > 0 && (
                             <optgroup label="Spline points">
-                                {scope.splineList.flatMap((o) => (o.params.points || []).map((_, i) => {
+                                {/* A Manifold's keypoints are too many to list. */}
+                                {scope.splineList.filter((o) => o.type === 'spline').flatMap((o) => (o.params.points || []).map((_, i) => {
                                     const s = splineSymbol(o);
                                     // eslint-disable-next-line react/no-array-index-key
                                     return <option key={`${o.id}${i}`} value={`{{${s}_${i}}}`}>{symbolLabel(s, String(i))}</option>;
@@ -597,7 +594,6 @@ export function CurveConvert({ obj }) {
     const comp = useComp();
     return (
         <>
-            <p className={styles.hint}>An Equation can draw this exactly (as points, flowing and pulsing the same), and more. This Curve stays where it is.</p>
             <div className={styles.wideRow}>
                 <button type="button" className={styles.btn} onClick={() => comp.curveToEquation(obj.id)}>Make an Equation from this</button>
             </div>
@@ -615,7 +611,7 @@ export function VariableInspector({ v }) {
     const readout = useRef(null);
     useTick((t, frame) => {
         const g = frame && globalsOf(frame);
-        if (readout.current && g) readout.current.textContent = dupe ? '—' : formatValue(g.value(key), v.set === 'int' ? 0 : 4);
+        if (readout.current && g) readout.current.textContent = dupe ? '-' : formatValue(g.value(key), v.set === 'int' ? 0 : 4);
     });
     const set = (patch) => comp.updateVariable(v.id, (o) => ({ ...o, ...patch }), true);
     const isText = v.set === 'text';
@@ -633,7 +629,7 @@ export function VariableInspector({ v }) {
                 <button type="button" className={styles.olToggle} title="Delete" onClick={() => comp.removeVariable(v.id)}><Trash2 size={12} /></button>
             </div>
             <div className={styles.groupBody} style={{ paddingTop: 8 }}>
-                {dupe && <p className={`${styles.hint} ${styles.warn}`}>Another variable (or a spline) already has this name, so expressions read that one. Change the letter or subscript.</p>}
+                {dupe && <p className={`${styles.hint} ${styles.warn}`}>Name taken. Change the letter or subscript.</p>}
                 <div className={styles.row}>
                     <span className={styles.rowLabel}>Letter</span>
                     <span style={{ gridColumn: '2 / 4', display: 'flex', gap: 4 }}>
@@ -672,7 +668,7 @@ export function VariableInspector({ v }) {
                     <>
                         <TextVariableValue v={v} />
                         <p className={styles.hint}>
-                            {`Show it in any text as {{${v.sub ? `${v.symbol}_{${v.sub}}` : v.symbol}}}, on its own between the braces. Have it follow a Text controller to cut between texts in that controller's lane, like a Switch (S at the playhead, or 1–9 for one). In LaTeX, words want \\text{…} round them: \\text{{{${v.sub ? `${v.symbol}_{${v.sub}}` : v.symbol}}}}.`}
+                            {`Show it as {{${v.sub ? `${v.symbol}_{${v.sub}}` : v.symbol}}}.`}
                         </p>
                     </>
                 )}
@@ -699,7 +695,7 @@ export function VariableInspector({ v }) {
                             </div>
                         )}
                         <p className={styles.hint}>
-                            {`Write it as ${v.sub ? `${v.symbol}_${v.sub}, ${v.symbol}_{${v.sub}} or \\${letterName(v.symbol)}_{${v.sub}}` : `${v.symbol}, ${letterName(v.symbol)} or \\${letterName(v.symbol)}`}. Right-click Value to drive it with a controller (a Keyframes one to animate it by hand).`}
+                            {`Write it as ${v.sub ? `${v.symbol}_${v.sub}` : v.symbol}. Right-click Value to link it.`}
                         </p>
                     </>
                 )}
@@ -756,7 +752,7 @@ export function SplinePointList({ obj }) {
                 </div>
             )}
             {!kids.length && obj.params.showKnots === false && !on && (
-                <p className={styles.hint}>Show markers or labels and each point becomes an object of its own, under this spline.</p>
+                <p className={styles.hint}>Turn on markers or labels to list them.</p>
             )}
         </>
     );
@@ -768,12 +764,13 @@ export function PointOf({ obj }) {
     const parent = comp.project.objects.find((o) => o.id === obj.parentId);
     if (!parent || !obj.pointLabel) return null;
     const auto = obj.params.text === obj.pointLabel.text;
-    const name = symbolLabel(splineSymbol(parent), String(obj.pointLabel.index));
     return (
         <>
-            <p className={styles.hint} style={{ margin: '2px 0 6px' }}>
-                {`${name}, a point of ${parent.name}: its marker and its label, which go wherever the point does. Deleting it deletes the point. ${auto ? 'The label says what the point is, and keeps up as that changes; rewrite it and it keeps your words.' : 'You have rewritten its label, so it keeps your words.'}${parent.params.labels ? '' : ' Labels are off for the spline (Show labels, under its Defining points).'}`}
-            </p>
+            {(!auto || !parent.params.labels) && (
+                <p className={styles.hint} style={{ margin: '2px 0 6px' }}>
+                    {`${auto ? '' : 'Label rewritten by hand. '}${parent.params.labels ? '' : 'Labels are off on the spline.'}`}
+                </p>
+            )}
             <div className={styles.wideRow}>
                 <button type="button" className={styles.btn} onClick={() => comp.select({ kind: 'object', id: parent.id })}>{`Select ${parent.name}`}</button>
                 <button

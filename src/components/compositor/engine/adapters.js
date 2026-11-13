@@ -30,7 +30,10 @@ import { ENV_LAYER } from './takeRig';
 import PatchScreen from './patchScreen';
 import TextObject from './textObject';
 import CurveAdapter, { Dots, knotAngle } from './curveObject';
-import { isTemplate, fillTemplate } from '../model/expr';
+import { isTemplate, fillTemplate, formatValue } from '../model/expr';
+
+// A spline point label's {{world.x}} / {{world.y:3}}: the point's coordinate in its scene's frame.
+const WORLD_TEMPLATE = /\{\{\s*world\.(x|y|z)\s*(?::(\d+))?\}\}/g;
 
 const plyCache = new Map();
 
@@ -355,6 +358,22 @@ class SplinePointAdapter {
         this.wq = new THREE.Quaternion();
         this.cq = new THREE.Quaternion();
         this.col = new THREE.Color();
+        this.wp = new THREE.Vector3();
+    }
+
+    /**
+     * `text` with each {{world.x}} (y, z; :digits for decimals) filled in:
+     * where this point is in its scene's frame, which is where the engine
+     * has just hung it (on its spline, placed, turned, scaled and spun).
+     */
+    fillWorld(text) {
+        if (typeof text !== 'string' || !text.includes('world.')) return text;
+        let root = this.object;
+        while (root.parent && !root.parent.isScene) root = root.parent;
+        const w = this.object.getWorldPosition(this.wp);
+        root.updateWorldMatrix(true, false);
+        root.worldToLocal(w);
+        return text.replace(WORLD_TEMPLATE, (all, axis, digits) => formatValue(w[axis], digits !== undefined ? parseInt(digits, 10) : 2));
     }
 
     /** The label's own node: its corners are in its frame. */
@@ -366,7 +385,11 @@ class SplinePointAdapter {
         this.object.visible = p.visible !== false;
         // The label: a Text, in the scene, hidden with the spline's labels.
         const labelOn = L.labels === true && p.showLabel !== false;
-        this.label.sync(obj, { ...p, space: 'scene', visible: labelOn }, f);
+        // The spline's label outline, unless this label has one of its own.
+        const outline = (p.outline || 0) > 0 ? {} : { outline: L.labelOutline || 0, outlineColor: L.labelOutlineColor };
+        this.label.sync(obj, {
+            ...p, ...outline, text: labelOn ? this.fillWorld(p.text) : p.text, space: 'scene', visible: labelOn,
+        }, f);
         this.drawMarker(p, f, L.showKnots !== false && p.showMarker !== false, obj.pointLabel?.index ?? 0);
     }
 
@@ -398,6 +421,8 @@ class SplinePointAdapter {
             wire: style === 'wire',
             wireWidth: own ? p.markerWire : L.knotWire,
             resolution: this.size,
+            // Casting as its spline does.
+            castShadow: !!L.castShadow,
         });
     }
 
@@ -423,7 +448,8 @@ export function makeAdapter(obj, parent, ctx) {
         case 'text': return new TextAdapter(obj, parent);
         case 'splinePoint': return new SplinePointAdapter(obj, parent);
         case 'equation':
-        case 'spline': return new CurveAdapter(obj, parent);
+        case 'spline':
+        case 'manifold': return new CurveAdapter(obj, parent);
         default: return null;
     }
 }

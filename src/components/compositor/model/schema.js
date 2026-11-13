@@ -29,6 +29,7 @@ import {
 } from '../../../lib/blobTracker';
 import { GLYPH_FONTS, GLYPH_WEIGHTS } from '../../quadtree/fonts';
 import { SPLINE_DEGREES, SPLINE_ENDS, SPLINE_SPACING } from './spline';
+import { MANIFOLD_FEATURES, MAX_KEYPOINTS } from './acoustics';
 
 // The colour grade's parameters (the track editor's, which this replaces).
 const GRADE_PARAMS = [
@@ -129,6 +130,9 @@ const VIEWS = (pointMax, sizeMax) => ({
     ],
 });
 
+// A Manifold's axes, as it starts: time across, loudness up, brightness in depth.
+const MANIFOLD_AXIS_DEFAULTS = { axisX: 'time', axisY: 'loudness', axisZ: 'centroid' };
+
 // ---- Equations and splines: how a curve is drawn ---------------------------------------
 //
 // Shared by the Equation and Spline types (engine/curveObject.js draws both).
@@ -167,6 +171,7 @@ const CURVE_LOOK_DEFAULTS = {
     fadeStart: 1,
     fadeEnd: 1,
     depthLayer: 'front',
+    castShadow: false,
     colorStart: '#ffffff',
     colorEnd: '#ffffff',
     reveal: 1,
@@ -189,12 +194,25 @@ const CURVE_LOOK_DEFAULTS = {
     posX: 0, posY: 0, posZ: 0, rotX: 0, rotY: 0, rotZ: 0, scale: 1,
 };
 
+// A spline's spin: turning about the middle of its defining points, about the
+// scene's own axes, at rates a controller can drive (model/spin.js).
+const SPIN_DEFAULTS = { spinX: 0, spinY: 0, spinZ: 0 };
+const SPIN_GROUP = {
+    title: 'Spin',
+    hint: 'Degrees a second about the scene\u2019s axes, around the points\u2019 centre. Linked rates ease rather than jump.',
+    params: [
+        num('spinX', 'About X (\u00b0/s)', -720, 720, 0.5, 0),
+        num('spinY', 'About Y (\u00b0/s)', -720, 720, 0.5, 0),
+        num('spinZ', 'About Z (\u00b0/s)', -720, 720, 0.5, 0),
+    ],
+};
+
 /** The groups that say how a curve is drawn; `v` is its parameter's name (t or u). */
 function curveLookGroups(v) {
     return [
         {
             title: 'Draw as',
-            hint: 'Sizes are in the curve\u2019s own units, so they scale with it. Start and end \u00d7 scale the width (or point size) and opacity along the curve.',
+            hint: 'Sizes are in the curve\u2019s own units.',
             params: [
                 VISIBLE,
                 select('mode', 'Mode', CURVE_MODES, 'solid'),
@@ -216,6 +234,7 @@ function curveLookGroups(v) {
                 OPACITY,
                 num('fadeStart', 'Start opacity \u00d7', 0, 1, 0.01, 1),
                 num('fadeEnd', 'End opacity \u00d7', 0, 1, 0.01, 1),
+                bool('castShadow', 'Casts a shadow', false),
                 LAYER,
             ],
         },
@@ -232,7 +251,7 @@ function curveLookGroups(v) {
         {
             title: 'Series',
             when: isSeries,
-            hint: `Copies of the curve, each a step on from the last. k in the equations is the copy (0 for the first). Length change grows (or shrinks) each copy's ${v} range by that much more than the one before.`,
+            hint: 'k is the copy number (0 first) in equations.',
             params: [
                 num('seriesCount', 'Copies', 1, 64, 1, 6, { link: false }),
                 num('seriesDX', 'Step X', -5, 5, 0.001, 0),
@@ -246,7 +265,6 @@ function curveLookGroups(v) {
         },
         {
             title: 'Growth',
-            hint: 'How much of the curve is drawn. Link Drawn to a Keyframes controller to grow it by hand, or let it grow over time.',
             params: [
                 num('reveal', 'Drawn', 0, 1, 0.001, 1),
                 select('revealFrom', 'Grows from', [['start', 'The start'], ['end', 'The end'], ['centre', 'The middle']], 'start'),
@@ -275,7 +293,7 @@ export const OBJECT_TYPES = {
         groups: [
             {
                 title: 'Alignment nudge',
-                hint: 'Moves the whole scan against its own footage, for a solve that sits a little off.',
+                hint: 'Nudges the scan against its footage.',
                 params: [
                     num('offsetX', 'Offset X', -0.5, 0.5, 0.001, 0),
                     num('offsetY', 'Offset Y', -0.5, 0.5, 0.001, 0),
@@ -288,7 +306,6 @@ export const OBJECT_TYPES = {
             },
             {
                 title: 'Overlays',
-                hint: 'Lifts the scan points and wireframe off the mesh, or slides them bodily.',
                 collapsed: true,
                 params: [
                     num('overscale', 'Swell', 1, 1.08, 0.0005, 1),
@@ -310,7 +327,7 @@ export const OBJECT_TYPES = {
                 title: 'Scan colour',
                 custom: 'scanLook',
                 collapsed: true,
-                hint: 'Corrects the scan\u2019s own texture (textured mesh, scan-coloured points) to match the footage. Saved with the take, not the project.',
+                hint: 'Saved with the take, not the project.',
             },
             { title: 'Roto', custom: 'roto', collapsed: true },
         ],
@@ -324,7 +341,6 @@ export const OBJECT_TYPES = {
         defaults: { bgColor: '#000000' },
         groups: [{
             title: 'Stage',
-            hint: 'What shows behind everything in this stage. Link it to a controller to change it over time.',
             params: [color('bgColor', 'Backdrop', '#000000')],
         }],
     },
@@ -363,7 +379,6 @@ export const OBJECT_TYPES = {
             },
             {
                 title: 'Spectrum pulse',
-                hint: 'Each point is pushed by its own slice of the spectrum, out from the pulse origin.',
                 params: [
                     num('react', 'Amount', 0, 3, 0.01, 0),
                     num('scatter', 'Scatter', 0, 1, 0.001, 0.002),
@@ -418,7 +433,6 @@ export const OBJECT_TYPES = {
             ],
         }, {
             title: 'Glow',
-            hint: 'The lines give off light of their own: a hotter core and a soft halo round each line. Only the wireframe glows.',
             params: [
                 num('glow', 'Glow', 0, 4, 0.01, 0),
                 num('glowSpread', 'Glow spread', 1, 30, 0.1, 6, { when: (p) => p.glow > 0 }),
@@ -433,11 +447,11 @@ export const OBJECT_TYPES = {
         gizmo: 'sun',
         defaults: {
             azimuth: 45, elevation: 47, intensity: 1.1, color: '#ffffff', ambient: 0.55,
-            shadows: true, shadowOpacity: 0.4, shadowSoftness: 2,
+            shadows: true, shadowOpacity: 0.4, shadowSoftness: 0.5, shadowSoftUnits: 'cm',
         },
         groups: [{
             title: 'Sun',
-            hint: 'A directional light in the scan’s frame. Lights the placed models; their shadows land on the scan.',
+            hint: 'Shadows land on the scan.',
             params: [
                 num('azimuth', 'Azimuth', -180, 180, 1, 45),
                 num('elevation', 'Elevation', 2, 90, 0.5, 47),
@@ -446,7 +460,7 @@ export const OBJECT_TYPES = {
                 num('ambient', 'Sky fill', 0, 2, 0.01, 0.55),
                 bool('shadows', 'Shadows on the scan', true),
                 num('shadowOpacity', 'Darkness', 0, 1, 0.01, 0.4, { when: (p) => p.shadows }),
-                num('shadowSoftness', 'Softness', 0, 8, 0.1, 2, { when: (p) => p.shadows }),
+                num('shadowSoftness', 'Softness (cm)', 0, 20, 0.05, 0.5, { when: (p) => p.shadows }),
             ],
         }],
     },
@@ -462,7 +476,7 @@ export const OBJECT_TYPES = {
         groups: [
             {
                 title: 'Camera',
-                hint: 'Orthographic draws without perspective: parallel lines stay parallel and size doesn\u2019t change with distance. View height is how much of the scene fits top to bottom.',
+                hint: 'View height: how much fits top to bottom.',
                 params: [
                     select('projection', 'Projection', [['perspective', 'Perspective'], ['orthographic', 'Orthographic']], 'perspective'),
                     num('fov', 'Field of view', 5, 140, 0.5, 50, { when: (p) => p.projection !== 'orthographic' }),
@@ -473,7 +487,7 @@ export const OBJECT_TYPES = {
             { title: 'Path', custom: 'cameraPath' },
             {
                 title: 'Placement',
-                hint: 'Used where there is no recorded path, or with the path off.',
+                hint: 'Used when there is no recorded path.',
                 collapsed: true,
                 params: transform(20, 0.01).params.filter((p) => p.key !== 'scale'),
             },
@@ -648,7 +662,7 @@ export const OBJECT_TYPES = {
             {
                 title: 'Mouth',
                 collapsed: true,
-                hint: 'Link Opens to a band controller (Mids works) to have him sing along.',
+                hint: 'Link Opens to a band controller to lip-sync.',
                 params: [num('mouthDepth', 'Opens (°)', 0, 45, 0.5, 18)],
             },
         ],
@@ -747,7 +761,7 @@ export const OBJECT_TYPES = {
                 title: 'Quad tree',
                 collapsed: true,
                 custom: 'quadTree',
-                hint: 'Load a Quad Trees preset, or set it up here. The picture under the window is the seed. On the window plane the quads lie on the window in perspective, re-subdivided every frame; Plane size is the plane\'s resolution in quad-tree pixels (gaps, outlines and min size are in these). Turn off Show in preview if it slows the preview: exports always include it.',
+                hint: 'Plane size is in quad-tree pixels. Exports always include it.',
                 params: [
                     bool('qt_on', 'On', false),
                     num('qt_mix', 'Mix', 0, 1, 0.01, 1, { when: (p) => p.qt_on }),
@@ -803,6 +817,8 @@ export const OBJECT_TYPES = {
             weight: 600,
             italic: false,
             color: '#ffffff',
+            outline: 0,
+            outlineColor: '#000000',
             opacity: 1,
             align: 'center',
             valign: 'middle',
@@ -827,7 +843,7 @@ export const OBJECT_TYPES = {
         groups: [
             {
                 title: 'Placement',
-                hint: 'In the scene, the text is a patch between four corners, in 3D; facing the camera, it turns about its middle (a spline\u2019s label, about its point) to stay square to the view. In the frame, it is laid flat over the picture (2D), wherever the camera looks: X and Y place its middle (0 to 1 across and down the frame), width and height are fractions of the frame\u2019s.',
+                hint: 'In the frame: X and Y place its centre (0 to 1); width and height are fractions of the frame.',
                 params: [
                     select('space', 'Placed in', [['scene', 'The scene (3D)'], ['frame', 'The frame (2D)']], 'scene'),
                     num('frameX', 'X', -0.5, 1.5, 0.001, 0.5, { when: (p) => p.space === 'frame' }),
@@ -851,6 +867,8 @@ export const OBJECT_TYPES = {
                     select('weight', 'Weight', [100, 200, 300, 400, 500, 600, 700, 800, 900].map((w) => [w, String(w)]), 600, { when: (p) => p.textMode !== 'latex' }),
                     bool('italic', 'Italic', false, { link: false, when: (p) => p.textMode !== 'latex' }),
                     color('color', 'Colour', '#ffffff'),
+                    num('outline', 'Outline', 0, 0.3, 0.005, 0, { link: false }),
+                    color('outlineColor', 'Outline colour', '#000000', { link: false, when: (p) => p.outline > 0 }),
                     OPACITY,
                     select('blend', 'Blend', TEXT_BLENDS, 'normal'),
                     select('align', 'Align', [['left', 'Left'], ['center', 'Centre'], ['right', 'Right']], 'center'),
@@ -863,7 +881,6 @@ export const OBJECT_TYPES = {
             { title: 'Variables', custom: 'usedVariables', collapsed: true },
             {
                 title: 'Surface',
-                hint: 'To sit text in the footage: soften it to the shot\'s focus, add grain like the video\'s, and mottle or wear it. Pairs well with Blend: Screen or Multiply.',
                 params: [
                     num('softness', 'Softness', 0, 5, 0.05, 0),
                     num('grain', 'Grain', 0, 1, 0.01, 0),
@@ -876,7 +893,6 @@ export const OBJECT_TYPES = {
             {
                 title: 'Box',
                 collapsed: true,
-                hint: 'Letters are rasterised at the size they are drawn on screen, in the preview and in exports (up to 4096 px); Min sharpness is the least they get.',
                 params: [
                     color('bgColor', 'Fill', '#000000'),
                     num('bgOpacity', 'Fill opacity', 0, 1, 0.01, 0),
@@ -912,7 +928,7 @@ export const OBJECT_TYPES = {
             {
                 title: 'Equation',
                 custom: 'equation',
-                hint: 'x(t), y(t) and z(t) are worked out for every t from the start to the end. They can use variables (lowercase greek letters, with a subscript if you like: θ, θ_1, ω_k), defined under Variables, which a controller can drive; k is the copy in a series, time the timeline in seconds.',
+                hint: 'Can use variables (θ, ω_1), k for the copy and time in seconds.',
                 params: [
                     num('rangeFrom', 't from', -50, 50, 0.001, 0),
                     num('rangeTo', 't to', -50, 50, 0.001, 6.2832),
@@ -930,6 +946,7 @@ export const OBJECT_TYPES = {
         gizmo: 'transform',
         defaults: {
             ...CURVE_LOOK_DEFAULTS,
+            ...SPIN_DEFAULTS,
             symbol: 'P',
             points: [['-1', '0', '0'], ['-0.33', '0.6', '0'], ['0.33', '-0.6', '0'], ['1', '0', '0']],
             degree: 3,
@@ -946,8 +963,12 @@ export const OBJECT_TYPES = {
             knotWire: 1.5,
             labels: false,
             labelShow: 'point',
+            labelDigits: 2,
+            labelFrame: 'local',
             labelSize: 0.1,
             labelColor: '#ffffff',
+            labelOutline: 0,
+            labelOutlineColor: '#000000',
             knotSpin: 0,
             knotSpinAxis: 'random',
             knotSpinTogether: false,
@@ -958,7 +979,7 @@ export const OBJECT_TYPES = {
             {
                 title: 'Spline',
                 custom: 'splinePoints',
-                hint: 'Through its points in order. Every derivative below the degree matches on both sides of every point (a cubic\u2019s slope and curvature), and the ends settle the rest. Its symbol is a global: P_0 or P[i] is a point, P(u) the curve at u from 0 to 1, with .x .y .z for a coordinate.',
+                hint: 'The symbol is global: P_0 is a point, P(u) the curve, .x .y .z a coordinate.',
                 params: [
                     select('degree', 'Degree', SPLINE_DEGREES, 3),
                     select('ends', 'Ends', SPLINE_ENDS, 'natural'),
@@ -971,7 +992,7 @@ export const OBJECT_TYPES = {
                 title: 'Defining points',
                 collapsed: true,
                 custom: 'splinePointList',
-                hint: 'Each point is a child of the spline (under it in the outliner) with a marker and a LaTeX label, placed where the point is and going with it. Select one to move, size or rewrite its label, hide its marker or label, or give it a look of its own; deleting one deletes the point. A label you rewrite keeps your words; the rest say what their point is. Edge widths are in pixels of a 1080-tall frame. Spin turns every marker (own look or not) at that rate, on the timeline\u2019s clock; flat ones turn in their plane, and In step starts them all at the same angle. Only visible once u reaches them: a point shows when the drawn part of the curve (its u range, as it grows) has got to it.',
+                hint: 'Select a point to edit its label or look.',
                 params: [
                     bool('showKnots', 'Show markers', true),
                     select('knotShape', 'Shape', POINT_SHAPES, 'octa', { when: (p) => p.showKnots }),
@@ -984,13 +1005,142 @@ export const OBJECT_TYPES = {
                     bool('knotSpinTogether', 'In step', false, { when: (p) => p.showKnots && !!p.knotSpin }),
                     bool('pointsByU', 'Only visible once u reaches them', false),
                     num('pointsAppear', 'Grow in over (u)', 0, 0.5, 0.001, 0, { when: (p) => p.pointsByU }),
-                    select('labelShow', 'Labels say', [['point', 'Name and point: P\u2080 = (x, y, z)'], ['name', 'Name: P\u2080']], 'point', { when: (p) => p.labels }),
+                    select('labelShow', 'Labels say', [
+                        ['point', 'Name and point, as written: P\u2080 = (2\u03b8, 0, 1)'],
+                        ['value', 'Name and its value now: P\u2080 = (1.57, 0.00, 1.00)'],
+                        ['name', 'Name: P\u2080'],
+                    ], 'point', { when: (p) => p.labels }),
+                    num('labelDigits', 'Decimals', 0, 10, 1, 2, { link: false, when: (p) => p.labels && p.labelShow === 'value' }),
+                    select('labelFrame', 'Values in', [
+                        ['local', 'The spline\u2019s own frame (as its points are written)'],
+                        ['world', 'The scene\u2019s frame (placed, turned, scaled and spun)'],
+                    ], 'local', { when: (p) => p.labels && p.labelShow === 'value' }),
                     num('labelSize', 'New label size', 0.005, 2, 0.001, 0.1, { when: (p) => p.labels }),
                     color('labelColor', 'New label colour', '#ffffff', { when: (p) => p.labels }),
+                    num('labelOutline', 'Label outline', 0, 0.3, 0.005, 0, { link: false, when: (p) => p.labels }),
+                    color('labelOutlineColor', 'Outline colour', '#000000', { link: false, when: (p) => p.labels && p.labelOutline > 0 }),
                 ],
             },
             { title: 'Variables', custom: 'usedVariables' },
             ...curveLookGroups('u'),
+            SPIN_GROUP,
+            transform(),
+        ],
+    },
+
+    manifold: {
+        label: 'Manifold',
+        category: 'placed',
+        gizmo: 'transform',
+        defaults: {
+            ...CURVE_LOOK_DEFAULTS,
+            ...MANIFOLD_AXIS_DEFAULTS,
+            ...SPIN_DEFAULTS,
+            samples: 1600,
+            thickness: 0.012,
+            colorStart: '#6fd3ff',
+            colorEnd: '#ff5ad1',
+            symbol: 'M',
+            points: [],
+            source: 'music',
+            gen: null,
+            autoGen: true,
+            keypoints: 96,
+            timeFrom: 0,
+            timeTo: 0,
+            window: 1,
+            timing: 'music',
+            timeOffset: 0,
+            trail: 0,
+            headOn: true,
+            headShape: 'sphere',
+            headSize: 0.05,
+            headColor: '#ffffff',
+            degree: 3,
+            ends: 'natural',
+            spacing: 'uniform',
+            clamp: { start: {}, end: {} },
+            rangeFrom: 0,
+            rangeTo: 1,
+            showKnots: true,
+            knotSize: 0.018,
+            knotColor: '#ffffff',
+            knotShape: 'octa',
+            knotStyle: 'solid',
+            knotWire: 1.5,
+            knotSpin: 0,
+            knotSpinAxis: 'random',
+            knotSpinTogether: false,
+            pointsByU: false,
+            pointsAppear: 0,
+        },
+        groups: [
+            {
+                title: 'Sound',
+                custom: 'manifold',
+                hint: 'Keypoints are kept with the project; generate again after changing the sound. M(u) is the curve.',
+                params: [
+                    select('timing', 'Shown', [['music', 'Comes in with the music'], ['static', 'A static graph']], 'music'),
+                    num('timeOffset', 'Sound starts at (s)', -600, 600, 0.01, 0, { link: false, when: (p) => p.timing !== 'static' }),
+                    num('trail', 'Trail (s)', 0, 600, 0.1, 0, { when: (p) => p.timing !== 'static' }),
+                    bool('headOn', 'Marker at now', true, { when: (p) => p.timing !== 'static' }),
+                    select('headShape', 'Its shape', POINT_SHAPES, 'sphere', { when: (p) => p.timing !== 'static' && p.headOn }),
+                    num('headSize', 'Its size', 0.001, 0.5, 0.001, 0.05, { when: (p) => p.timing !== 'static' && p.headOn }),
+                    color('headColor', 'Its colour', '#ffffff', { when: (p) => p.timing !== 'static' && p.headOn }),
+                ],
+            },
+            {
+                title: 'Keypoints',
+                hint: 'To at 0 means the end. Window smooths the path.',
+                params: [
+                    num('keypoints', 'Keypoints', 2, MAX_KEYPOINTS, 1, 96, { link: false }),
+                    num('timeFrom', 'From (s)', 0, 3600, 0.01, 0, { link: false }),
+                    num('timeTo', 'To (s)', 0, 3600, 0.01, 0, { link: false }),
+                    num('window', 'Window (× spacing)', 0.1, 8, 0.05, 1, { link: false }),
+                    bool('autoGen', 'Generate again as settings change', true, { link: false }),
+                ],
+            },
+            {
+                title: 'Axes',
+                hint: 'Each axis fits ± its size (negative flips). Delay reads the feature that much earlier.',
+                params: ['X', 'Y', 'Z'].flatMap((A) => [
+                    select(`axis${A}`, A, MANIFOLD_FEATURES, MANIFOLD_AXIS_DEFAULTS[`axis${A}`]),
+                    num(`axis${A}Low`, `${A} band from (Hz)`, 20, 20000, 1, 2000, { link: false, when: (p) => p[`axis${A}`] === 'band' }),
+                    num(`axis${A}High`, `${A} band to (Hz)`, 20, 20000, 1, 5000, { link: false, when: (p) => p[`axis${A}`] === 'band' }),
+                    num(`axis${A}Lag`, `${A} delay (s)`, 0, 30, 0.01, 0, { link: false, when: (p) => p[`axis${A}`] !== 'time' }),
+                    num(`axis${A}Size`, `${A} size`, -10, 10, 0.01, 1, { link: false }),
+                ]),
+            },
+            {
+                title: 'Spline',
+                hint: 'Uniform spacing keeps u in step with time.',
+                params: [
+                    select('degree', 'Degree', SPLINE_DEGREES, 3),
+                    select('ends', 'Ends', SPLINE_ENDS.filter(([k]) => k !== 'clamped'), 'natural'),
+                    select('spacing', 'Spacing', SPLINE_SPACING, 'uniform'),
+                    num('rangeFrom', 'u from', 0, 1, 0.001, 0),
+                    num('rangeTo', 'u to', 0, 1, 0.001, 1),
+                ],
+            },
+            {
+                title: 'Keypoint markers',
+                collapsed: true,
+                params: [
+                    bool('showKnots', 'Show markers', true),
+                    select('knotShape', 'Shape', POINT_SHAPES, 'octa', { when: (p) => p.showKnots }),
+                    select('knotStyle', 'Drawn', POINT_STYLES, 'solid', { when: (p) => p.showKnots }),
+                    num('knotWire', 'Edge width (px)', 0.25, 12, 0.05, 1.5, { when: (p) => p.showKnots && p.knotStyle === 'wire' }),
+                    num('knotSize', 'Size', 0.001, 0.5, 0.001, 0.018, { when: (p) => p.showKnots }),
+                    color('knotColor', 'Colour', '#ffffff', { when: (p) => p.showKnots }),
+                    num('knotSpin', 'Spin (°/s)', -720, 720, 1, 0, { when: (p) => p.showKnots }),
+                    select('knotSpinAxis', 'Spin about', [['random', 'An axis of each one’s own'], ['x', 'X'], ['y', 'Y'], ['z', 'Z']], 'random', { when: (p) => p.showKnots && !!p.knotSpin }),
+                    bool('knotSpinTogether', 'In step', false, { when: (p) => p.showKnots && !!p.knotSpin }),
+                    bool('pointsByU', 'Only visible once u reaches them', false, { when: (p) => p.showKnots }),
+                    num('pointsAppear', 'Grow in over (u)', 0, 0.5, 0.001, 0, { when: (p) => p.showKnots && (p.pointsByU || p.timing !== 'static') }),
+                ],
+            },
+            ...curveLookGroups('u'),
+            SPIN_GROUP,
             transform(),
         ],
     },
@@ -1003,15 +1153,15 @@ export const OBJECT_TYPES = {
         defaults: { visible: true, source: 'all', strength: 0.6, radius: 0.6, threshold: 0.8, bleed: 0, reach: 0.5 },
         groups: [{
             title: 'Glow',
-            hint: 'Everything blooms over its floor, or only the points do (and can light what is round them).',
+            hint: '3D objects only leaves out footage, video layers and 2D text.',
             params: [
                 VISIBLE,
-                select('source', 'Source', [['all', 'Whole frame'], ['points', 'Points only']], 'all'),
+                select('source', 'Source', [['all', 'Whole frame'], ['scene', '3D objects only'], ['points', 'Points only']], 'all'),
                 num('strength', 'Strength', 0, 3, 0.01, 0.6),
                 num('radius', 'Spread', 0, 2, 0.01, 0.6),
                 num('threshold', 'Floor', 0, 1, 0.01, 0.8, { when: (p) => p.source !== 'points' }),
-                num('bleed', 'Bleed', 0, 4, 0.01, 0, { when: (p) => p.source === 'points' }),
-                num('reach', 'Bleed reach', 0, 1, 0.01, 0.5, { when: (p) => p.source === 'points' }),
+                num('bleed', 'Bleed', 0, 4, 0.01, 0, { when: (p) => p.source === 'points' || p.source === 'scene' }),
+                num('reach', 'Bleed reach', 0, 1, 0.01, 0.5, { when: (p) => p.source === 'points' || p.source === 'scene' }),
             ],
         }],
     },
@@ -1031,7 +1181,7 @@ export const OBJECT_TYPES = {
             {
                 title: 'Quad tree',
                 custom: 'quadTree',
-                hint: 'The Quad Trees tool as an effect: over the whole program, or over one video track (a take or a video) while it shows. The picture is the seed; a preset brings its look.',
+                hint: 'The picture is the seed.',
                 params: [VISIBLE, num('qt_mix', 'Mix', 0, 1, 0.01, 1), bool('qt_preview', 'Show in preview', true, { link: false })],
             },
             ...QT_GROUPS,
@@ -1060,7 +1210,7 @@ export const OBJECT_TYPES = {
             {
                 title: 'Pixel sort',
                 custom: 'effectTarget',
-                hint: 'The Pixel Sorter as an effect: over the whole program, or over one video track (a take or a video) while it shows. In the preview it shows the last sort that finished, so it can trail the picture a little; exports sort every frame. Lengths are in output pixels.',
+                hint: 'The preview can trail; exports sort every frame.',
                 params: [
                     VISIBLE,
                     num('sortMix', 'Mix', 0, 1, 0.01, 1),
@@ -1082,10 +1232,14 @@ export const OBJECT_TYPES = {
     grade: {
         label: 'Grade',
         category: 'effect',
-        defaults: { visible: true, ...Object.fromEntries(GRADE_PARAMS.map((p) => [p.key, p.def])) },
+        defaults: { visible: true, invert: false, ...Object.fromEntries(GRADE_PARAMS.map((p) => [p.key, p.def])) },
         groups: [{
             title: 'Grade',
-            params: [VISIBLE, ...GRADE_PARAMS.map((p) => num(p.key, p.label, p.min, p.max, p.step, p.def))],
+            params: [
+                VISIBLE,
+                bool('invert', 'Invert colours', false),
+                ...GRADE_PARAMS.map((p) => num(p.key, p.label, p.min, p.max, p.step, p.def)),
+            ],
         }],
     },
 };
@@ -1138,7 +1292,7 @@ OBJECT_TYPES.blobs = {
         {
             title: 'Blob tracker',
             custom: 'effectTarget',
-            hint: 'The Blob Tracker tool as an effect: finds bright (or dark) blobs in the whole program, or in one video track while it shows, and boxes them. It only sees what is behind it: the picture the effects above it in the list left, never its own windows and boxes or the effects below it, so on a paused frame the boxes settle and stay put. In the preview the boxes can trail the picture by a frame or two; exports track every frame from the start.',
+            hint: 'Sees only the effects above it. The preview can trail; exports track every frame.',
             params: [VISIBLE, bool('preview', 'Show in preview', true, { link: false })],
         },
         {
@@ -1167,7 +1321,7 @@ OBJECT_TYPES.blobs = {
         },
         {
             title: 'Labels',
-            hint: `Sizes are in pixels at 1280 wide, and scale with the frame. Numbers count in output pixels. A custom label can use ${LABEL_TOKENS}. Radius -1 follows the boxes'.`,
+            hint: `Sizes are pixels at 1280 wide. Labels can use ${LABEL_TOKENS}.`,
             params: [
                 bool('showLabels', 'Show labels', true),
                 select('labelText', 'Says', LABEL_TEXTS.map(([id, name]) => [id, name]), BLOB_DEFAULTS.labelText, { when: labelsOn }),
@@ -1202,7 +1356,7 @@ OBJECT_TYPES.blobs = {
         },
         {
             title: 'Windows',
-            hint: 'A window in every box, like a placed one: give it a cut, a hue shift, a pixel sort or a quad tree, hold it to a matte. Padding grows (or shrinks) each window past its box, in output pixels.',
+            hint: 'Padding is in output pixels.',
             params: [
                 bool('spawnWindows', 'Window in each box', false),
                 num('winPad', 'Padding', -200, 400, 1, 0, { when: spawning }),
@@ -1251,7 +1405,6 @@ OBJECT_TYPES.blobs = {
             {
                 title: 'Marker',
                 collapsed: true,
-                hint: 'Drawn as the spline\u2019s markers are, unless it has a look of its own. The spline\u2019s Show markers still hides them all.',
                 params: [
                     bool('markerOwn', 'A look of its own', false, { link: false }),
                     select('markerShape', 'Shape', POINT_SHAPES, 'octa', { when: (p) => p.markerOwn }),
@@ -1263,7 +1416,7 @@ OBJECT_TYPES.blobs = {
             },
             {
                 title: 'Label',
-                hint: 'Its corners are measured from the point, in the spline\u2019s frame. Facing the camera, it turns about the point, so it stays to the same side of it on screen. The spline\u2019s Show labels still hides them all.',
+                hint: 'Corners are measured from the point.',
                 params: [bool('faceCamera', 'Face the camera', true, { link: false })],
             },
             ...T.groups.filter((g) => g.title !== 'Placement').map((g) => (g.title === 'Corners' ? { ...g, title: 'Label corners' } : g)),
@@ -1273,7 +1426,7 @@ OBJECT_TYPES.blobs = {
 
 /** What the Add menu offers, by section. */
 export const ADDABLE = {
-    placed: ['cloud', 'curve', 'equation', 'spline', 'protagonist', 'sackboy', 'prop', 'window', 'text'],
+    placed: ['cloud', 'curve', 'equation', 'spline', 'manifold', 'protagonist', 'sackboy', 'prop', 'window', 'text'],
     camera: ['camera'],
     effect: ['glow', 'haze', 'grade', 'quadtree', 'pixelsort', 'blobs'],
 };

@@ -23,6 +23,7 @@ import { MOD_DEFAULTS, modulate } from './modulate';
 import { bilinear, patchGeometry } from './props';
 import { sortPixels } from '../pixelSort';
 import { createSortPool } from '../pixelSortPool';
+import { MATTE_RAMP } from './roto';
 
 /** Camera layers. 1 is the models' reflection capture. */
 export const LAYER = {
@@ -166,7 +167,7 @@ float edgeMask(vec2 uv) {
     if (scanOcclude > 0.5 && gl_FragCoord.z > texture2D(tScanDepth, gl_FragCoord.xy / matteRes).r + 1e-5) return 0.0;
     if (matteMode != 0.0) {
         vec2 mu = (gl_FragCoord.xy / matteRes - 0.5) * matteCrop + 0.5;
-        float k = smoothstep(0.03, 0.97, texture2D(tMatte, mu).r);
+        float k = smoothstep(${MATTE_RAMP[0].toFixed(3)}, ${MATTE_RAMP[1].toFixed(3)}, texture2D(tMatte, mu).r);
         m *= matteMode > 0.0 ? k : 1.0 - k;
     }
     return m;

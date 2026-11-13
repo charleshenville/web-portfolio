@@ -628,6 +628,12 @@ def matte_frame(masks: list[np.ndarray | None], weights: list[float], strokes,
     from frame to frame; the result is pulled back to a firm edge, the
     frame's own strokes are painted on top so a brushed pixel is exact, and
     the edge is feathered last.
+
+    The frame's own mask is the floor: averaging may add coverage (filling a
+    pixel the model dropped for one frame) but never takes any away. A
+    fast-moving part (a fingertip) covered in this frame and in neither
+    neighbour would otherwise average to half, and the 3D behind it would
+    show through the object at half strength.
     """
     acc = np.zeros(shape, np.float32)
     wsum = 0.0
@@ -640,6 +646,9 @@ def matte_frame(masks: list[np.ndarray | None], weights: list[float], strokes,
     # Re-firm the edge around the model's own 0.5, shifted by the choke.
     c = 0.5 + 0.35 * float(np.clip(choke, -1, 1))
     p = smoothstep(c - 0.15, c + 0.15, p)
+    own = masks[len(masks) // 2]
+    if own is not None:
+        p = np.maximum(p, smoothstep(c - 0.15, c + 0.15, own.astype(np.float32) / 255.0))
     out = (p * 255.0 + 0.5).astype(np.uint8)
     out = paint_strokes(out, strokes or [])
     if feather > 0:
