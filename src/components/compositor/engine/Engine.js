@@ -27,7 +27,10 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { GammaCorrectionShader } from 'three/examples/jsm/shaders/GammaCorrectionShader.js';
 import DreamHazeShader from '../../../lib/dreamHaze';
 import { PointGlowPass } from '../../../lib/pointGlow';
-import { WindowCompositor, LAYER, cornersFacing } from '../../../lib/scanAssets/windows';
+import {
+    WindowCompositor, LAYER, cornersFacing, MESH_CUT, cutByWindows,
+} from '../../../lib/scanAssets/windows';
+import { MeshEditor } from './meshEditor';
 import { MatteSet, HoldoutPass, mattesFor } from '../../../lib/scanAssets/roto';
 import { DEFAULT_SCREEN } from '../../../lib/scanAssets/library';
 import { makeFrame, resolveObject, resolveTrack } from '../model/resolve';
@@ -196,6 +199,7 @@ export default class Engine {
         this.activeSceneId = null;
         this.listeners = {
             edit: new Set(), pick: new Set(), change: new Set(), cornerPick: new Set(), corners: new Set(),
+            meshEdit: new Set(), meshEditExit: new Set(),
         };
         this.size = new THREE.Vector2(1, 1);
         this.outputAspect = 4 / 3;
@@ -392,6 +396,10 @@ export default class Engine {
         this.cornerHandles.add(this.cornerMid);
         this.pool = new VideoPool((missing) => { this.dirty = true; if (missing) this.emit('change'); });
 
+        // Mesh edit mode's tools and overlay (engine/meshEditor.js).
+        this.meshEditor = new MeshEditor(this);
+        this.meshEditor.mount(this.stage);
+
         this.onPointerDown = (e) => this.pick(e);
         // The viewport is never a source of text selection or native drags
         // (a stray selection would otherwise be dragged off as a clipping
@@ -453,6 +461,7 @@ export default class Engine {
         window.removeEventListener('blur', this.dropKeys);
         document.removeEventListener('visibilitychange', this.dropKeys);
         this.renderer?.domElement.removeEventListener('pointerdown', this.onPointerDown);
+        this.meshEditor?.dispose();
         this.scenes.forEach((s) => this.dropScene(s));
         this.scenes.clear();
         this.pool?.dispose();
@@ -466,6 +475,7 @@ export default class Engine {
         this.holdout?.dispose();
         this.footRT?.dispose();
         this.scanDepthRT?.dispose();
+        this.scanDepthCutRT?.dispose();
         this.blackTex?.dispose();
         this.mattes?.dispose();
         this.composer?.dispose();
@@ -513,6 +523,15 @@ export default class Engine {
         if ((roto?.on ? roto.aspect : null) !== was) this.fit();
         this.dirty = true;
     }
+
+    /** Mesh edit mode: `{ on, sceneId }`, the scene whose scan is being edited. */
+    setMeshEdit(edit) {
+        this.meshEdit = edit;
+        this.dirty = true;
+    }
+
+    /** Where to read every scan's mesh edits from: `() => ({ [fingerprint]: { doc } })`. */
+    setMeshEdits(fn) { this.meshEdits = fn; this.dirty = true; }
 
     /** Corner editing: `{ objectId, handle }` (0-3 a corner, 4 all of them), or null. */
     setCornerEdit(edit) {
@@ -787,6 +806,8 @@ export default class Engine {
 
     pick(e) {
         if (e.button !== 0 || this.gizmo.dragging || this.gizmo.axis || !this.activeCamera) return;
+        // Editing a mesh, a click is the mesh editor's.
+        if (this.meshEditor?.active) return;
         const s = this.scenes.get(this.activeSceneId);
         if (!s) return;
         const box = this.renderer.domElement.getBoundingClientRect();
@@ -1282,6 +1303,9 @@ export default class Engine {
             const sel = P.objects.find((o) => o.id === this.selectedId);
             sceneId = sel?.sceneId || this.activeSceneId;
         }
+        // Editing a scan's mesh with a free camera shows that scan, wherever the playhead is.
+        const meshEditing = !!this.meshEdit?.on && !exporting;
+        if (meshEditing && this.mode !== 'preview' && this.scenes.has(this.meshEdit.sceneId)) sceneId = this.meshEdit.sceneId;
         if (sceneId !== this.activeSceneId) {
             // The scene left keeps its view; the one come to gets its own back.
             this.rememberView(this.activeSceneId);
@@ -1382,6 +1406,7 @@ export default class Engine {
             const pts = ofType('scanPoints');
             const mesh = ofType('scanMesh');
             const wire = ofType('scanWire');
+            rig.applyEdits(this.meshEdits?.()[rig.fingerprint]?.doc || null);
             rig.apply({ take: takeP, points: pts, mesh, wire }, drawSize, this.ss);
             rig.applyLook(this.looks?.()[S.take]);
             rig.react(pts, wire, freq, live);
@@ -1428,6 +1453,7 @@ export default class Engine {
         this.syncHelpers(objects, resolved, S, takeTime);
         this.syncCorners(this.cornerTarget(objects, S), cam);
         this.syncGizmo();
+        this.meshEditor.frame(meshEditing && S && S.id === this.meshEdit.sceneId ? rig : null, cam, drawSize);
 
         // ---- Layers: behind or in front of the footage
         let behindCount = rig ? rig.assignLayers(behind) : 0;
@@ -1814,17 +1840,20 @@ export default class Engine {
      * The scan's depth from `cam`, into a depth texture the size of the
      * drawing buffer, whether or not the mesh is shown. Null without a scan.
      */
-    renderScanDepth(S, cam, size) {
+    renderScanDepth(S, cam, size, key = 'scanDepthRT') {
         const rig = S?.rig;
         if (!rig?.mesh) return null;
-        if (!this.scanDepthRT || this.scanDepthRT.width !== size.x || this.scanDepthRT.height !== size.y) {
-            this.scanDepthRT?.dispose();
-            this.scanDepthRT = new THREE.WebGLRenderTarget(size.x, size.y, { depthBuffer: true });
-            this.scanDepthRT.depthTexture = new THREE.DepthTexture(size.x, size.y);
+        // `key` names the target: 'scanDepthCutRT' keeps a second depth, the
+        // scan as windows that cut it leave it (drawn with MESH_CUT on).
+        if (!this[key] || this[key].width !== size.x || this[key].height !== size.y) {
+            this[key]?.dispose();
+            this[key] = new THREE.WebGLRenderTarget(size.x, size.y, { depthBuffer: true });
+            this[key].depthTexture = new THREE.DepthTexture(size.x, size.y);
         }
         if (!this.depthScene) {
             this.depthScene = new THREE.Scene();
             this.depthMesh = new THREE.Mesh(undefined, new THREE.MeshBasicMaterial({ colorWrite: false, side: THREE.DoubleSide }));
+            cutByWindows(this.depthMesh.material);
             this.depthMesh.matrixAutoUpdate = false;
             this.depthMesh.frustumCulled = false;
             this.depthScene.add(this.depthMesh);
@@ -1836,12 +1865,12 @@ export default class Engine {
         const r = this.renderer;
         const prev = r.getRenderTarget();
         cam.layers.set(LAYER.FRONT);
-        r.setRenderTarget(this.scanDepthRT);
+        r.setRenderTarget(this[key]);
         r.setClearColor(0x000000, 1);
         r.clear(true, true, false);
         r.render(this.depthScene, cam);
         r.setRenderTarget(prev);
-        return this.scanDepthRT.depthTexture;
+        return this[key].depthTexture;
     }
 
     /** The footage alone, full frame, into its own target: what a matte shows over hidden footage. */
@@ -2119,13 +2148,16 @@ export default class Engine {
             }
         });
         const size = this.windows.ensure();
-        // Windows and text that hide behind the scan read its depth.
+        // Windows and text that hide behind the scan read its depth (the
+        // whole scan: drawn before any window cuts it).
+        MESH_CUT.winCutOn.value = 0;
         let wantDepth = wins.some((w) => w.op.hideBehindScan);
-        S?.adapters.forEach((a) => { if (a.setScanDepth && a.model?.op?.hideBehindScan) wantDepth = true; });
+        let textDepth = false;
+        S?.adapters.forEach((a) => { if (a.setScanDepth && a.model?.op?.hideBehindScan) textDepth = true; });
+        if (textDepth) wantDepth = true;
         if (this.blobActive.some(({ p }) => p.spawnWindows && p.hideBehindScan)) wantDepth = true;
         const scanDepth = wantDepth ? this.renderScanDepth(S, cam, size) : null;
         wins.forEach((w) => w.setScanDepth(scanDepth));
-        S?.adapters.forEach((a) => a.setScanDepth?.(scanDepth, size));
         // The footage quad is scaled up to cover the frame; mattes are cropped the same.
         const crop = this.matteCrop || (this.matteCrop = new THREE.Vector2());
         crop.set(1 / Math.max(1e-6, this.bgQuad.scale.x), 1 / Math.max(1e-6, this.bgQuad.scale.y));
@@ -2133,6 +2165,15 @@ export default class Engine {
         // over the footage, or over hidden footage when the take's mattes put
         // the real object back in front.
         wins.forEach((w) => w.setMatte((footage || matteFootage) && w.op.matte ? this.mattes.texture(w.op.matte) : null, size, crop));
+        // Windows that cut through the scan mesh: their shapes, now they are
+        // set up for this frame and before anything is drawn, so the scan
+        // mesh and its depth-only copy drop what falls inside them (on
+        // screen: the geometry is left as it is). Not while editing the mesh.
+        const meshCutters = S?.rig?.mesh && !this.meshEditor.active ? wins.filter((w) => w.op.cutScanMesh) : [];
+        if (meshCutters.length) this.windows.renderMeshMask(this.scene, cam, wins, meshCutters);
+        // Text behind the scan shows through those windows too.
+        const textScanDepth = scanDepth && meshCutters.length && textDepth ? this.renderScanDepth(S, cam, size, 'scanDepthCutRT') : scanDepth;
+        S?.adapters.forEach((a) => a.setScanDepth?.(textScanDepth, size));
         // The same for the Blob Trackers' windows, drawn later with the effects.
         this.winCtx = { scanDepth, matteOn: !!(footage || matteFootage), crop };
         const hold = holdTex.length > 0 && drawScene;
@@ -2310,10 +2351,16 @@ export default class Engine {
         }
         if (!this.exporting) {
             r.setRenderTarget(null);
+            // The mesh editor's shell hides what is behind the scan from its
+            // lines: against its own depth, not what the frame left.
+            if (this.meshEditor.active) r.clearDepth();
             cam.layers.set(LAYER.OVERLAY);
             r.render(this.scene, cam);
         }
         cam.layers.set(LAYER.FRONT);
+        // The mask is this frame's: nothing drawn after it (another camera's
+        // render, the mesh editor's picking) should be cut by it.
+        MESH_CUT.winCutOn.value = 0;
     }
 }
 

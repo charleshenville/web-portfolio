@@ -13,8 +13,9 @@ import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import {
     applyCloudReactivity, applyWireReactivity, buildWireTopology,
 } from '../../../lib/audioScene';
-import { LAYER } from '../../../lib/scanAssets/windows';
+import { LAYER, cutByWindows } from '../../../lib/scanAssets/windows';
 import { takeBase } from './media';
+import { fingerprint, applyEdits, weld } from '../model/meshEdits';
 import {
     makeLookUniforms, setLookUniforms, hookLook, normaliseLook,
 } from '../../../lib/scanAssets/takeLooks';
@@ -104,6 +105,65 @@ function wireHaloMaterial(color) {
     return m;
 }
 
+/**
+ * Every mesh in a scan's GLB, in the scan's frame, as one indexed geometry
+ * (position and uv only) with a group per mesh, their materials, and the
+ * arrays mesh edits are made against (model/meshEdits: `base`).
+ */
+function mergeScan(gltf) {
+    gltf.scene.updateMatrixWorld(true);
+    const srcs = [];
+    gltf.scene.traverse((o) => { if (o.isMesh && o.geometry.getAttribute('position')) srcs.push(o); });
+    if (!srcs.length) throw new Error('no mesh in GLB');
+    const parts = srcs.map((o) => {
+        const g = o.geometry.clone();
+        g.applyMatrix4(o.matrixWorld);
+        const n = g.getAttribute('position').count;
+        const index = g.index ? g.index.array : Uint32Array.from({ length: n }, (_, i) => i);
+        return { g, n, index, material: Array.isArray(o.material) ? o.material[0] : o.material };
+    });
+    const withUv = parts.every((p) => p.g.getAttribute('uv'));
+    const nv = parts.reduce((s, p) => s + p.n, 0);
+    const nf = parts.reduce((s, p) => s + p.index.length / 3, 0);
+    const pos = new Float32Array(nv * 3);
+    const uv = withUv ? new Float32Array(nv * 2) : null;
+    const index = new Uint32Array(nf * 3);
+    const ranges = [];
+    let v0 = 0;
+    let f0 = 0;
+    parts.forEach((p) => {
+        const P = p.g.getAttribute('position');
+        for (let i = 0; i < p.n; i++) pos.set([P.getX(i), P.getY(i), P.getZ(i)], (v0 + i) * 3);
+        if (uv) {
+            const U = p.g.getAttribute('uv');
+            for (let i = 0; i < p.n; i++) uv.set([U.getX(i), U.getY(i)], (v0 + i) * 2);
+        }
+        for (let i = 0; i < p.index.length; i++) index[f0 * 3 + i] = p.index[i] + v0;
+        ranges.push({ vStart: v0, vCount: p.n, fStart: f0, fCount: p.index.length / 3 });
+        v0 += p.n;
+        f0 += p.index.length / 3;
+        p.g.dispose();
+    });
+    const base = { pos, uv, index, parts: ranges };
+    const geo = new THREE.BufferGeometry();
+    setScanGeometry(geo, applyEdits(base, null));
+    return { geo, materials: parts.map((p) => p.material), base };
+}
+
+/** Put a scan's arrays (from applyEdits) into its geometry, in place: the companions share it. */
+function setScanGeometry(geo, g) {
+    // Throw away what the GPU holds for the old arrays; the next draw uploads these.
+    geo.dispose();
+    geo.setAttribute('position', new THREE.BufferAttribute(g.pos, 3));
+    if (g.uv) geo.setAttribute('uv', new THREE.BufferAttribute(g.uv, 2));
+    geo.setIndex(new THREE.BufferAttribute(g.index, 1));
+    geo.clearGroups();
+    g.groups.forEach((gr) => geo.addGroup(gr.start, gr.count, gr.materialIndex));
+    geo.computeVertexNormals();
+    geo.computeBoundingSphere();
+    geo.userData.faceIds = g.faceIds;
+}
+
 export class TakeRig {
     constructor(take, root, onChange) {
         this.take = take;
@@ -140,16 +200,20 @@ export class TakeRig {
                 new PLYLoader().loadAsync(`${base}.ply`),
             ]);
             if (this.disposed) return;
-            let src = null;
-            gltf.scene.updateMatrixWorld(true);
-            gltf.scene.traverse((o) => { if (!src && o.isMesh) src = o; });
-            if (!src) throw new Error('no mesh in GLB');
-            const geo = src.geometry.clone();
-            geo.applyMatrix4(src.matrixWorld);
-            geo.computeVertexNormals();
-            this.textured = src.material;
-            hookLook(this.textured, this.meshLook, 'map_fragment');
-            this.mesh = new THREE.Mesh(geo, src.material);
+            // A big scan comes as several meshes, one per texture atlas, that
+            // together make the whole: all of them, as one geometry with a
+            // group (and a material) per part.
+            const { geo, materials, base: scan } = mergeScan(gltf);
+            this.base = scan;
+            this.fingerprint = fingerprint(scan.pos, scan.index);
+            this.editsApplied = null;
+            this.geoVersion = 0;
+            this.textured = materials.length > 1 ? materials : materials[0];
+            this.texturedList = materials;
+            materials.forEach((m) => hookLook(m, this.meshLook, 'map_fragment'));
+            // Windows that cut the scan mesh clip it (and its companions) on screen.
+            cutByWindows(materials);
+            this.mesh = new THREE.Mesh(geo, this.textured);
             this.mesh.frustumCulled = false;
             this.root.add(this.mesh);
 
@@ -185,6 +249,25 @@ export class TakeRig {
         this.onChange?.();
     }
 
+    /**
+     * Put the scan's mesh edits (an edit document, or null for none) on its
+     * mesh. Cheap when they have not changed: the document is compared by
+     * identity, so edits are always made by making a new one.
+     */
+    applyEdits(doc) {
+        if (!this.mesh || !this.base || doc === this.editsApplied || (!doc && !this.editsApplied)) return;
+        const welded = doc && Object.keys(doc.moved).length ? this.welded() : null;
+        setScanGeometry(this.mesh.geometry, applyEdits(this.base, doc, welded));
+        this.editsApplied = doc;
+        this.geoVersion++;
+    }
+
+    /** The scan's vertices welded where they meet (made once, when first wanted). */
+    welded() {
+        if (!this.weldCache && this.base) this.weldCache = weld(this.base.pos);
+        return this.weldCache;
+    }
+
     /** Push a take's look (or null for none) onto the mesh and the points. */
     applyLook(look) {
         const n = normaliseLook(look);
@@ -204,6 +287,7 @@ export class TakeRig {
         this.occluder.renderOrder = -1;
         this.occluder.visible = false;
         this.root.add(this.occluder);
+        cutByWindows(this.occluder.material);
 
         this.catcher = new THREE.Mesh(g, new THREE.ShadowMaterial({
             transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4,
@@ -212,11 +296,12 @@ export class TakeRig {
         this.catcher.frustumCulled = false;
         this.catcher.visible = false;
         this.root.add(this.catcher);
+        cutByWindows(this.catcher.material);
 
-        const src = this.textured;
-        this.envMesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({
+        const env = this.texturedList.map((src) => new THREE.MeshBasicMaterial({
             map: src?.map || null, color: src?.map ? 0xffffff : 0x808080, side: THREE.DoubleSide,
         }));
+        this.envMesh = new THREE.Mesh(g, env.length > 1 ? env : env[0]);
         this.envMesh.layers.set(ENV_LAYER);
         this.envMesh.frustumCulled = false;
         this.root.add(this.envMesh);
@@ -306,14 +391,18 @@ export class TakeRig {
                     mat = kind === 'normal' ? new THREE.MeshNormalMaterial()
                         : kind === 'shaded' ? new THREE.MeshLambertMaterial() : new THREE.MeshBasicMaterial();
                     mat.userData.kind = kind;
+                    cutByWindows(mat);
                     this.mesh.material = mat;
                 }
                 mat = this.mesh.material;
-                if (mat.color && kind !== 'textured' && kind !== 'normal') mat.color.set(M.color);
                 const tr = M.opacity < 1;
-                if (mat.transparent !== tr) { mat.transparent = tr; mat.needsUpdate = true; }
-                mat.opacity = M.opacity;
-                mat.depthWrite = !tr;
+                // The scan's own texture is a material per part.
+                [].concat(this.mesh.material).forEach((m) => {
+                    if (m.color && kind !== 'textured' && kind !== 'normal') m.color.set(M.color);
+                    if (m.transparent !== tr) { m.transparent = tr; m.needsUpdate = true; }
+                    m.opacity = M.opacity;
+                    m.depthWrite = !tr;
+                });
             }
         }
         if (this.occluder) this.occluder.visible = !!T.occlude;
@@ -413,11 +502,10 @@ export class TakeRig {
             if (!o) return;
             o.removeFromParent();
             if (o !== this.mesh && o !== this.occluder && o !== this.catcher && o !== this.envMesh) o.geometry?.dispose();
-            if (o.material && o.material !== this.textured) o.material.dispose?.();
+            if (o.material && o.material !== this.textured) [].concat(o.material).forEach((m) => m.dispose?.());
         });
         this.mesh?.geometry.dispose();
-        this.textured?.map?.dispose?.();
-        this.textured?.dispose?.();
+        (this.texturedList || []).forEach((m) => { m.map?.dispose?.(); m.dispose?.(); });
         this.overlay.removeFromParent();
     }
 }

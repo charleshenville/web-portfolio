@@ -5,6 +5,9 @@
 //             video" shows through (or the backdrop, with nothing there).
 //   Effects - a layer over the window: a hue shift and a pixel sort (the
 //             Pixel Sorter's engine), each pushed about by the music.
+//   Through the mesh - the scan mesh, and the depth-only copy of it that
+//             hides 3D behind the scan, are clipped away on screen inside
+//             the window (MESH_CUT), so 3D behind the wall shows through.
 //
 // Either can be held to the inside or the outside of an object matte (see
 // roto.js), so a window can cut away the wall behind someone but not them.
@@ -34,6 +37,10 @@ export const WINDOW_DEFAULTS = {
     corners: [[-0.5, 0.5, 0], [0.5, 0.5, 0], [0.5, -0.5, 0], [-0.5, -0.5, 0]],
     cut: true,
     cutOpacity: 1,
+    // Also cut the scan mesh (and its depth-only copy that hides 3D behind
+    // the scan) wherever the window is, so what is behind it shows through.
+    // A clip on screen: the geometry stays as it is.
+    cutScanMesh: false,
     feather: 0.02, // of the window's width, at each edge
     outline: true,
     // An object matte to hold the cut and effects to: '' for none, else a
@@ -285,6 +292,74 @@ export function screenDepthMaterial(screen) {
     return m;
 }
 
+/**
+ * A window's shape as a mask: its edge mask (feather, matte, the scan in
+ * front) in red, drawn with max blending so overlapping windows add up to
+ * the union. Shares `cut`'s uniforms, so it follows the window.
+ */
+function maskMaterial(cut) {
+    return new THREE.ShaderMaterial({
+        uniforms: cut.uniforms,
+        vertexShader: VERT,
+        fragmentShader: /* glsl */`
+            varying vec2 vUv;
+            ${EDGE}
+            void main() { gl_FragColor = vec4(edgeMask(vUv), 0.0, 0.0, 1.0); }`,
+        blending: THREE.CustomBlending,
+        blendEquation: THREE.MaxEquation,
+        blendSrc: THREE.OneFactor,
+        blendDst: THREE.OneFactor,
+        depthTest: false,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+    });
+}
+
+/**
+ * Where windows cut through the scan mesh this frame: `tMask` holds their
+ * shapes on screen (see WindowCompositor.renderMeshMask), and `on` is set
+ * only while the frame that drew it is being composed.
+ */
+export const MESH_CUT = {
+    tWinCut: { value: null },
+    winCutOn: { value: 0 },
+};
+
+const CUT_VERT_HEAD = 'varying vec4 vWinCutClip;\n';
+const CUT_FRAG_HEAD = 'uniform sampler2D tWinCut;\nuniform float winCutOn;\nvarying vec4 vWinCutClip;\n';
+// Read the mask where the camera sees this point: from its clip position,
+// so it holds in a target of any size drawn with the same camera.
+const CUT_FRAG_TEST = /* glsl */`
+    if (winCutOn > 0.5 && vWinCutClip.w > 0.0
+        && texture2D(tWinCut, vWinCutClip.xy / vWinCutClip.w * 0.5 + 0.5).r > 0.5) discard;
+`;
+
+/**
+ * Make one of three's built-in materials (or a list of them) drop whatever
+ * falls inside a window that cuts the scan mesh. Patched once; a material
+ * already patched, or one that isn't a built-in, is left alone.
+ */
+export function cutByWindows(material) {
+    [].concat(material || []).forEach((m) => {
+        if (!m || m.isShaderMaterial || m.userData.winCut) return;
+        m.userData.winCut = true;
+        const prev = m.onBeforeCompile;
+        m.onBeforeCompile = (shader, renderer) => {
+            prev?.call(m, shader, renderer);
+            shader.uniforms.tWinCut = MESH_CUT.tWinCut;
+            shader.uniforms.winCutOn = MESH_CUT.winCutOn;
+            shader.vertexShader = CUT_VERT_HEAD + shader.vertexShader.replace(
+                '#include <project_vertex>',
+                '#include <project_vertex>\n\tvWinCutClip = gl_Position;',
+            );
+            shader.fragmentShader = CUT_FRAG_HEAD + shader.fragmentShader.replace('void main() {', `void main() {${CUT_FRAG_TEST}`);
+        };
+        const key = m.customProgramCacheKey?.bind(m);
+        m.customProgramCacheKey = () => `${key ? key() : ''}|winCut`;
+        m.needsUpdate = true;
+    });
+}
+
 function fxMaterial() {
     return new THREE.ShaderMaterial({
         uniforms: {
@@ -369,6 +444,7 @@ export class WindowModel {
         this.object.userData.itemId = item.id;
         this.cutMat = cutMaterial();
         this.fxMat = fxMaterial();
+        this.maskMat = maskMaterial(this.cutMat);
         this.lineMat = new THREE.LineBasicMaterial({ color: 0x7fe3ff, transparent: true, opacity: 0.8, depthTest: false, depthWrite: false });
         this.hue = { input: 0, value: 0, flash: 0 };
         this.sortLevel = { input: 0, value: 0, flash: 0 };
@@ -556,6 +632,7 @@ export class WindowModel {
         [this.cutMesh, this.fxMesh, this.outline].forEach((m) => m?.geometry.dispose());
         this.cutMat.dispose();
         this.fxMat.dispose();
+        this.maskMat.dispose();
         this.lineMat.dispose();
         this.sort.tex?.dispose();
         this.object.removeFromParent();
@@ -588,6 +665,8 @@ export class WindowCompositor {
         this.behindRT = new THREE.WebGLRenderTarget(1, 1, { ...opts, samples: 4 });
         this.compRT = new THREE.WebGLRenderTarget(1, 1, { ...opts, depthBuffer: false });
         this.sortRT = new THREE.WebGLRenderTarget(1, 1, { depthBuffer: false });
+        // The shapes of the windows that cut the scan mesh (MESH_CUT).
+        this.maskRT = new THREE.WebGLRenderTarget(1, 1, { depthBuffer: false });
         this.quadScene = new THREE.Scene();
         this.quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
         this.blitMat = new THREE.ShaderMaterial({
@@ -611,6 +690,7 @@ export class WindowCompositor {
         if (this.behindRT.width !== x || this.behindRT.height !== y) {
             this.behindRT.setSize(x, y);
             this.compRT.setSize(x, y);
+            this.maskRT.setSize(x, y);
         }
         return this.size;
     }
@@ -739,6 +819,36 @@ export class WindowCompositor {
         }
     }
 
+    /**
+     * Draw the shapes of `cutters` (open windows in `scene`, each set up for
+     * this frame: size, matte, scan depth) into the mesh cut mask, and point
+     * MESH_CUT at it. The other windows in `all` are kept out of it. Leaves
+     * the windows as they were.
+     */
+    renderMeshMask(scene, camera, all, cutters) {
+        const r = this.renderer;
+        const prev = r.getRenderTarget();
+        const clear = r.getClearColor(new THREE.Color());
+        const alpha = r.getClearAlpha();
+        const keep = all.map((w) => [w.cutMesh.visible, w.cutMesh.material]);
+        all.forEach((w) => {
+            const on = cutters.includes(w);
+            w.cutMesh.visible = on;
+            if (on) w.cutMesh.material = w.maskMat;
+        });
+        r.setRenderTarget(this.maskRT);
+        r.setClearColor(0x000000, 0);
+        r.clear(true, false, false);
+        camera.layers.set(LAYER.WIN_CUT);
+        r.render(scene, camera);
+        camera.layers.set(LAYER.FRONT);
+        all.forEach((w, i) => { [w.cutMesh.visible, w.cutMesh.material] = keep[i]; });
+        r.setClearColor(clear, alpha);
+        r.setRenderTarget(prev);
+        MESH_CUT.tWinCut.value = this.maskRT.texture;
+        MESH_CUT.winCutOn.value = 1;
+    }
+
     prepareCut(win) {
         const u = win.cutMat.uniforms;
         u.tBehind.value = this.behindRT.texture;
@@ -749,6 +859,7 @@ export class WindowCompositor {
         this.behindRT.dispose();
         this.compRT.dispose();
         this.sortRT.dispose();
+        this.maskRT.dispose();
         this.blitMat.dispose();
         this.quad.geometry.dispose();
         this.pool?.close?.();

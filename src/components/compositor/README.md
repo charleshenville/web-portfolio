@@ -18,10 +18,12 @@ model/      plain data and pure functions, no three.js, no React
   timeline.js     clips, source time (hold / loop / ping-pong), the program at t
   project.js      the project document, scenes, file format
   cuts.js         auto-cut: filling a Switch from kicks or a tempo grid
+  meshEdits.js    a scan's mesh edits (holes filled, faces cut, vertices moved) as a patch on its triangles
   storage.js      save / open (dev server → compositor-projects/, or files)
 engine/     three.js and media, no React
   Engine.js       renderer, scenes, cameras, modes, gizmo, compositing passes
   takeRig.js      a take's scan (mesh / points / wireframe) and its solve
+  meshEditor.js   mesh edit mode: picking, the overlay and the tools that fill a scan's holes
   adapters.js     placed objects wrapping lib/ (protagonist, sackboy, props…)
   curveObject.js  Equations and Splines: ribbon lines, instanced or wire points
   textObject.js   text in the scene or over the frame, plain or LaTeX
@@ -30,7 +32,8 @@ engine/     three.js and media, no React
   transport.js    the clock (the audio hardware's while sound plays)
   exporter.js     offline frame-exact MP4 export (WebCodecs)
 ui/         React: Sidebar (outliner) + Inspector, Timeline, Params (link menu),
-            Maths (expression fields, spline points, variables), Manifold (its sound and keypoints)
+            Maths (expression fields, spline points, variables), Manifold (its sound and keypoints),
+            MeshEdit (the Scan mesh's Edit mesh panel)
 ```
 
 Rules of the road:

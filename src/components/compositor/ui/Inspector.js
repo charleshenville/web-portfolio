@@ -24,6 +24,7 @@ import { mattesFor } from '../../../lib/scanAssets/roto';
 import { CATEGORIES, DEFAULT_SCREEN } from '../../../lib/scanAssets/library';
 import { fitCornersToMesh } from '../../../lib/scanAssets/props';
 import RotoEditor from './Roto';
+import MeshEditPanel from './MeshEdit';
 import {
     LOOK_FIELDS, LOOK_DEFAULTS, LOOK_PARTS, isNeutralLook, normaliseLook,
 } from '../../../lib/scanAssets/takeLooks';
@@ -541,6 +542,7 @@ const CUSTOM = {
     screenSource: ScreenSource,
     windowMatte: WindowMatte,
     roto: RotoSection,
+    meshEdit: MeshEditPanel,
     scanLook: ScanLook,
     library: LibraryPanel,
     windowCorners: WindowCorners,

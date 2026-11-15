@@ -268,8 +268,47 @@ function looksRoute(req, res) {
     });
 }
 
+// ---- Scan mesh edits ---------------------------------------------------------------
+//
+// Holes filled and junk cut away in a scan, per scan (by its fingerprint),
+// saved into src/data/meshEdits.json (lib/scanAssets/meshEdits.js accepts
+// the update, like the looks). Triangles are one per line, so an edit is a
+// short diff.
+
+const MESH_EDITS = path.join(__dirname, 'data', 'meshEdits.json');
+const MESH_EDITS_ROUTE = '/__compositor/mesh-edits';
+const MESH_EDITS_MAX = 16 * 1024 * 1024;
+
+function meshEditsRoute(req, res) {
+    if (!isLocal(req)) { res.status(403).end(); return; }
+    res.set('Cache-Control', 'no-store');
+    if (req.method === 'GET') { res.type('application/json').send(fs.readFileSync(MESH_EDITS, 'utf8')); return; }
+    if (req.method !== 'POST') { res.status(405).end(); return; }
+    const chunks = [];
+    let size = 0;
+    req.on('data', (c) => { size += c.length; if (size <= MESH_EDITS_MAX) chunks.push(c); });
+    req.on('end', () => {
+        if (size > MESH_EDITS_MAX) { res.status(413).end(); return; }
+        let data;
+        try { data = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (e) { res.status(400).json({ error: 'not JSON' }); return; }
+        const list = (x) => x === undefined || Array.isArray(x);
+        const ok = data && typeof data === 'object' && !Array.isArray(data)
+            && Object.values(data).every((e) => e && typeof e === 'object' && list(e.add) && list(e.remove) && list(e.verts)
+                && (e.moved === undefined || (e.moved && typeof e.moved === 'object')));
+        if (!ok) { res.status(400).json({ error: 'not a set of mesh edits' }); return; }
+        // Short arrays (a triangle, a run, a vertex) stay on one line.
+        const text = JSON.stringify(data, null, 2)
+            .replace(/\[\s+(-?[\d.e+-]+(?:,\s+-?[\d.e+-]+){1,5})\s+\]/g, (m, inner) => `[${inner.split(/,\s+/).join(', ')}]`);
+        const tmp = `${MESH_EDITS}.tmp`;
+        fs.writeFileSync(tmp, `${text}\n`);
+        fs.renameSync(tmp, MESH_EDITS);
+        res.json({ ok: true, path: 'src/data/meshEdits.json' });
+    });
+}
+
 module.exports = function compositorDevServer(app) {
     app.use(LOOKS_ROUTE, looksRoute);
+    app.use(MESH_EDITS_ROUTE, meshEditsRoute);
     app.use(ROTO_ROUTE, rotoProxy);
     app.use(PROJECTS_ROUTE, projectsRoute);
     app.use(PRESETS_ROUTE, presetsRoute);

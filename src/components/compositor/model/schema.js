@@ -422,6 +422,10 @@ export const OBJECT_TYPES = {
                 OPACITY,
                 LAYER,
             ],
+        }, {
+            title: 'Edit mesh',
+            custom: 'meshEdit',
+            hint: 'Saved with the scan, not the project.',
         }],
     },
 
@@ -736,6 +740,7 @@ export const OBJECT_TYPES = {
                     bool('outline', 'Show outline', true),
                     bool('cut', 'Cut out the footage', true),
                     num('cutOpacity', 'Cut opacity', 0, 1, 0.01, 1, { when: (p) => p.cut }),
+                    bool('cutScanMesh', 'Cut through the scan mesh', false),
                     num('feather', 'Feather', 0, 0.5, 0.005, 0.02),
                     bool('hideBehindScan', 'Hide behind the scan', false),
                     select('fxStage', 'Applies to', [['footage', 'The footage'], ['all', 'Everything (3D too)']], 'footage'),

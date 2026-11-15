@@ -49,6 +49,7 @@ import { MUSIC_ASSETS } from '../../lib/audioScene';
 import {
     loadLooks, saveLooks, normaliseLook, LOOK_DEFAULTS,
 } from '../../lib/scanAssets/takeLooks';
+import { loadMeshEdits, saveMeshEdits } from '../../lib/scanAssets/meshEdits';
 import { listUploads, storeUpload, PUBLIC_VIDEOS } from '../../lib/scanAssets/screenVideo';
 import { makeModelItem } from '../../lib/protagonist/poser';
 import { makeSackboyItem } from '../../lib/scanAssets/sackboy';
@@ -103,6 +104,13 @@ export default function Compositor() {
     const looksRef = useRef(looks);
     const looksSave = useRef(0);
     const [looksSaved, setLooksSaved] = useState(null);
+    // Mesh edit mode (the scene whose scan is being edited), and every scan's
+    // mesh edits, saved apart from projects like the looks.
+    const [meshEdit, setMeshEdit] = useState({ on: false, sceneId: null });
+    const [meshEdits, setMeshEdits] = useState(loadMeshEdits);
+    const meshEditsRef = useRef(meshEdits);
+    const meshEditsSave = useRef(0);
+    const [meshEditsSaved, setMeshEditsSaved] = useState(null);
     const [cornerOn, setCornerOn] = useState(null); // object id with corner editing on
     const [cornerHandle, setCornerHandle] = useState(4);
     const [uploads, setUploads] = useState([]);
@@ -215,12 +223,29 @@ export default function Compositor() {
         engine.mount(mountRef.current);
         engine.setLibrary(() => libraryRef.current);
         engine.setLooks(() => looksRef.current);
+        engine.setMeshEdits(() => meshEditsRef.current);
         engineRef.current = engine;
         // A handle for poking at it from the console while developing.
         if (process.env.NODE_ENV !== 'production') {
             window.__compositor = { engine, project: () => projRef.current, seek: (t) => transportRef.current.seek(t) };
         }
         const offPick = engine.on('pick', (id) => setSelection(id ? { kind: 'object', id } : null));
+        // A scan's mesh edited: kept at once (the engine reads it next frame), saved when asked.
+        const offMeshEdit = engine.on('meshEdit', ({ fp, take, doc, save }) => {
+            const cur = meshEditsRef.current[fp];
+            const next = {
+                ...meshEditsRef.current,
+                [fp]: { takes: Array.from(new Set([...(cur?.takes || []), take])), updatedAt: Date.now(), doc },
+            };
+            meshEditsRef.current = next;
+            setMeshEdits(next);
+            engine.dirty = true;
+            if (!save) return;
+            const n = ++meshEditsSave.current;
+            setMeshEditsSaved('saving');
+            saveMeshEdits(next).then((where) => { if (n === meshEditsSave.current) setMeshEditsSaved(where); });
+        });
+        const offMeshExit = engine.on('meshEditExit', () => setMeshEdit((m) => ({ ...m, on: false })));
         const offEdit = engine.on('edit', (id, patch, done) => {
             const isTake = projRef.current.objects.find((o) => o.id === id)?.type === 'take';
             apply((p) => ({
@@ -259,6 +284,8 @@ export default function Compositor() {
         });
         return () => {
             offPick();
+            offMeshEdit();
+            offMeshExit();
             offEdit();
             offChange();
             offPickCorner();
@@ -359,6 +386,12 @@ export default function Compositor() {
         engine.setRoto({ on: roto.on, plain: roto.plain, aspect: intr ? intr.width / intr.height : null });
         if (roto.on) setMode('preview');
     }, [roto]);
+    // ---- Mesh edit mode --------------------------------------------------------------
+
+    useEffect(() => { engineRef.current?.setMeshEdit(meshEdit); }, [meshEdit]);
+    // One mode at a time: rotoscoping draws the footage alone.
+    useEffect(() => { if (roto.on) setMeshEdit((m) => (m.on ? { ...m, on: false } : m)); }, [roto.on]);
+    useEffect(() => { if (meshEdit.on) setRoto((r) => (r.on ? { ...r, on: false } : r)); }, [meshEdit.on]);
     useEffect(() => { engineRef.current?.setAnalysis(analysis); }, [analysis]);
     useEffect(() => { transportRef.current.setMuted(muted); }, [muted]);
 
@@ -1305,6 +1338,8 @@ export default function Compositor() {
             if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
             const mod = e.metaKey || e.ctrlKey;
             const sel = selectionRef.current;
+            // In mesh edit mode its keys (and undo) are the mesh's.
+            if (engineRef.current?.meshEditor?.key(e)) { e.preventDefault(); return; }
             if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
             if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); save(); return; }
             // Copy / cut / paste. The clipboard events above do the work where
@@ -1414,6 +1449,13 @@ export default function Compositor() {
         pulsePreset: (sceneId, kind, which) => engineRef.current?.pulsePreset(sceneId, kind, which) || null,
         roto,
         setRoto,
+        meshEdit,
+        setMeshEdit,
+        meshEdits,
+        meshEditsSaved,
+        meshEditor: engineRef.current?.meshEditor || null,
+        mode,
+        setMode,
         takeFrameAt,
         seekTakeFrame,
         cornerOn,
@@ -1560,7 +1602,8 @@ export default function Compositor() {
                         <FrameTextOverlay obj={selectedObj} mount={engineRef.current?.stage} />
                     )}
                     {!hasBase && <span className={styles.viewHint}>Add a take or a 3D stage from Media to start.</span>}
-                    {hasBase && mode !== 'preview' && <span className={styles.viewHint}>Drag to orbit · WASD / Q E to fly · F to frame · click to select · G R Y gizmo</span>}
+                    {hasBase && meshEdit.on && <span className={styles.viewHint}>Mesh edit · 1 Connect · 2 Hole · 3 Move · 4 Erase · Enter fills (⇧ round a centre point) · Esc clears · Alt-drag orbits</span>}
+                    {hasBase && mode !== 'preview' && !meshEdit.on && <span className={styles.viewHint}>Drag to orbit · WASD / Q E to fly · F to frame · click to select · G R Y gizmo</span>}
                 </div>
 
                 <Sidebar open={sideOpen} />
