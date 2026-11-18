@@ -23,7 +23,7 @@ import * as THREE from 'three';
 import {
     ANALYSIS_WIDTH, newTrackerState, trackFrame, drawOverlay, trackShown,
 } from '../../../lib/blobTracker';
-import { WindowModel } from '../../../lib/scanAssets/windows';
+import { WindowModel, WINDOW_IDENTITY } from '../../../lib/scanAssets/windows';
 import Readback from './readback';
 
 /** One blob's window. */
@@ -170,9 +170,9 @@ export default class BlobFx {
     /**
      * Put a window over every box seen by `cam`, with the effect's window
      * parameters `p`. `outW` is the output's width (Window padding is in its
-     * pixels); `music`, `time`, `take` drive the windows as the engine's own.
+     * pixels); `music`, `time` drive the windows as the engine's own.
      */
-    placeWindows(cam, p, outW, { music, time, take }) {
+    placeWindows(cam, p, outW, { music, time }) {
         const shown = p.spawnWindows ? this.state.tracks.filter(trackShown) : [];
         const ids = new Set(shown.map((t) => t.id));
         this.slotOf.forEach((slot, id) => {
@@ -216,10 +216,10 @@ export default class BlobFx {
                 // The window's own parameters, from the effect; laid over the
                 // box on screen, at full size, without its editing outline.
                 op: {
-                    ...p, corners, outline: false, sizeOn: false, qt_space: 'screen', screenOn: false,
+                    ...p, ...WINDOW_IDENTITY, corners, outline: false, qt_space: 'screen', screenOn: false,
                 },
             });
-            win.model.update(music, time, { take });
+            win.model.update(music, time);
             win.active = true;
             win.model.object.visible = true;
         });

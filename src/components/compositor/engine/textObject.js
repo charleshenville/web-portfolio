@@ -12,6 +12,38 @@ import * as THREE from 'three';
 import { patchGeometry, quadAspect } from '../../../lib/scanAssets/props';
 import { CMU_FONTS, registerCmuFonts } from '../../../lib/cmuFonts';
 import { texLayout, drawTex, loadTex, texFailed } from './latex';
+import { frameAt } from './pictures';
+import { surfaceIndex, wrapPatch } from './surfaceWrap';
+
+const SURF_PARTS = 8;
+const posIds = new WeakMap(); // a scan's position array -> a number, for cache keys
+let posNext = 1;
+const arrayId = (a) => { if (!posIds.has(a)) posIds.set(a, posNext++); return posIds.get(a); };
+
+// Painted into the scan: the patch shaded by the scan's own texture where
+// it lies (its atlas `vScanPart`, at `vScanUv`): the light and grain of the
+// surface come through it, as paint on that surface would show them.
+const SURF_VERT_HEAD = 'attribute vec2 scanUv;\nattribute float scanPart;\nvarying vec2 vScanUv;\nvarying float vScanPart;\n';
+const SURF_FRAG_HEAD = `
+uniform float surfOn;
+uniform float surfAmount;
+uniform float surfLight;
+uniform float surfTint;
+${Array.from({ length: SURF_PARTS }, (_, i) => `uniform sampler2D surfMap${i};`).join('\n')}
+varying vec2 vScanUv;
+varying float vScanPart;
+vec4 surfSample() {
+    float k = floor(vScanPart + 0.5);
+${Array.from({ length: SURF_PARTS - 1 }, (_, i) => `    if (k < ${i}.5) return texture2D(surfMap${i}, vScanUv);`).join('\n')}
+    return texture2D(surfMap${SURF_PARTS - 1}, vScanUv);
+}`;
+const SURF_APPLY = `
+if (surfOn > 0.5) {
+    vec4 surf = surfSample();
+    float surfLum = dot(surf.rgb, vec3(0.2126, 0.7152, 0.0722));
+    vec3 surfLit = mix(vec3(surfLum), surf.rgb, surfTint) * surfLight;
+    diffuseColor.rgb *= mix(vec3(1.0), surfLit, surfAmount);
+}`;
 
 export const FONTS = [
     ['grotesk', 'Inter Tight (site)', "'Inter Tight', 'Helvetica Neue', Helvetica, Arial, sans-serif"],
@@ -145,6 +177,13 @@ export default class TextObject {
         this.occlusion = {
             tScanDepth: { value: null }, scanOcclude: { value: 0 }, scanRes: { value: new THREE.Vector2(1, 1) },
         };
+        this.surf = {
+            surfOn: { value: 0 },
+            surfAmount: { value: 1 },
+            surfLight: { value: 1.6 },
+            surfTint: { value: 0.3 },
+            ...Object.fromEntries(Array.from({ length: SURF_PARTS }, (_, i) => [`surfMap${i}`, { value: null }])),
+        };
         this.noise = {
             textSoft: { value: 0 },
             textGrain: { value: 0 },
@@ -157,13 +196,15 @@ export default class TextObject {
         };
         [this.basic, this.lit].forEach((m) => {
             m.onBeforeCompile = (shader) => {
-                Object.assign(shader.uniforms, this.occlusion, this.noise);
+                Object.assign(shader.uniforms, this.occlusion, this.noise, this.surf);
+                shader.vertexShader = SURF_VERT_HEAD + shader.vertexShader
+                    .replace('#include <begin_vertex>', '#include <begin_vertex>\n\tvScanUv = scanUv;\n\tvScanPart = scanPart;');
                 shader.fragmentShader = shader.fragmentShader
-                    .replace('#include <common>', `#include <common>\nuniform sampler2D tScanDepth;\nuniform float scanOcclude;\nuniform vec2 scanRes;\n${NOISE_GLSL}`)
-                    .replace('#include <map_fragment>', MAP_GLSL)
+                    .replace('#include <common>', `#include <common>\nuniform sampler2D tScanDepth;\nuniform float scanOcclude;\nuniform vec2 scanRes;\n${NOISE_GLSL}\n${SURF_FRAG_HEAD}`)
+                    .replace('#include <map_fragment>', MAP_GLSL + SURF_APPLY)
                     .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\nif (scanOcclude > 0.5 && gl_FragCoord.z > texture2D(tScanDepth, gl_FragCoord.xy / scanRes).r + 1e-5) discard;');
             };
-            m.customProgramCacheKey = () => 'text-scan-occlude-noise';
+            m.customProgramCacheKey = () => 'text-scan-occlude-noise-surf';
         });
         this.mesh = null;
         this.geoKey = null;
@@ -210,16 +251,81 @@ export default class TextObject {
     sync(p) {
         this.op = p;
         const corners = p.corners;
-        const geoKey = JSON.stringify(corners);
+        // On the scan: shrunk onto it, painted into it, or both (in the scene, not turned to the camera).
+        const surface = p.surface;
+        const onScan = (p.wrapOn || p.paintOn) && p.space !== 'frame' && !p.faceCamera && !!surface?.mesh;
+        let toSurf = null;
+        let wrapKey = '';
+        if (onScan) {
+            this.object.updateWorldMatrix(true, false);
+            surface.mesh.updateWorldMatrix(true, false);
+            toSurf = new THREE.Matrix4().copy(surface.mesh.matrixWorld).invert().multiply(this.object.matrixWorld);
+            const geo = surface.mesh.geometry;
+            wrapKey = JSON.stringify([arrayId(geo.getAttribute('position').array), toSurf.elements.map((v) => Math.round(v * 1e4)),
+                p.wrapLift, p.wrapReach, Math.round(p.wrapDetail ?? 24)]);
+        }
+        const geoKey = JSON.stringify([corners, wrapKey]);
         if (geoKey !== this.geoKey) {
             this.geoKey = geoKey;
             this.mesh?.removeFromParent();
             this.mesh?.geometry.dispose();
-            this.mesh = new THREE.Mesh(patchGeometry(corners, { segs: 4 }), p.lit ? this.lit : this.basic);
+            let geometry;
+            this.flatPos = null;
+            if (onScan) {
+                const flat = patchGeometry(corners, { segs: Math.max(2, Math.min(96, Math.round(p.wrapDetail ?? 24))) });
+                const ix = surfaceIndex(surface.mesh.geometry);
+                if (ix) {
+                    geometry = wrapPatch(flat, ix, toSurf, toSurf.clone().invert(), {
+                        amount: 1, lift: Math.max(0, p.wrapLift ?? 0.2) / 100, reach: Math.max(0.01, p.wrapReach ?? 0.5),
+                    });
+                    // Where each point was and where it lands, to slide between.
+                    this.flatPos = flat.toNonIndexed().getAttribute('position').array;
+                    this.wrapPos = Float32Array.from(geometry.getAttribute('position').array);
+                    this.wrapAmt = null;
+                    flat.dispose();
+                } else {
+                    geometry = flat;
+                }
+            } else {
+                geometry = patchGeometry(corners, { segs: 4 });
+            }
+            this.mesh = new THREE.Mesh(geometry, p.lit ? this.lit : this.basic);
             this.mesh.customDepthMaterial = this.depth;
             this.mesh.frustumCulled = false;
             this.object.add(this.mesh);
         }
+        // How far onto the surface: slid between flat and wrapped, without finding it again.
+        if (this.flatPos) {
+            const amt = p.wrapOn ? Math.max(0, Math.min(1, p.wrapAmount ?? 1)) : 0;
+            if (amt !== this.wrapAmt) {
+                this.wrapAmt = amt;
+                const pos = this.mesh.geometry.getAttribute('position');
+                const a = pos.array;
+                for (let i = 0; i < a.length; i++) a[i] = this.flatPos[i] + (this.wrapPos[i] - this.flatPos[i]) * amt;
+                pos.needsUpdate = true;
+                this.mesh.geometry.computeVertexNormals();
+                this.mesh.geometry.computeBoundingSphere();
+            }
+        }
+        const sf = this.surf;
+        const paint = onScan && !!p.paintOn && !!this.flatPos && (surface.maps || []).some(Boolean);
+        sf.surfOn.value = paint ? 1 : 0;
+        if (paint) {
+            sf.surfAmount.value = Math.max(0, Math.min(1, p.paintAmount ?? 1));
+            sf.surfLight.value = Math.max(0, p.paintLight ?? 1.6);
+            sf.surfTint.value = Math.max(0, Math.min(1, p.paintTint ?? 0.3));
+            const maps = surface.maps;
+            for (let i = 0; i < SURF_PARTS; i++) sf[`surfMap${i}`].value = maps[Math.min(i, maps.length - 1)] || maps.find(Boolean);
+        }
+        // Lying on the scan: drawn just in front of it where they meet.
+        const offset = onScan && !!p.wrapOn;
+        [this.lit, this.basic].forEach((m) => {
+            if (m.polygonOffset !== offset) {
+                m.polygonOffset = offset;
+                m.polygonOffsetFactor = offset ? -1 : 0;
+                m.polygonOffsetUnits = offset ? -4 : 0;
+            }
+        });
         this.mesh.material = p.lit ? this.lit : this.basic;
         this.mesh.castShadow = !!p.castShadow;
         this.mesh.receiveShadow = !!p.lit;
@@ -260,6 +366,7 @@ export default class TextObject {
         if (h * aspect > this.maxTex) h = Math.floor(this.maxTex / aspect);
         h = Math.min(h, this.maxTex);
         const w = Math.max(16, Math.round(h * aspect));
+        if (p.picture !== undefined) { this.drawPicture(p, w, h); return; }
         const family = fontStack(p);
         const latex = p.textMode === 'latex' && !texFailed();
         const key = JSON.stringify([w, h, p.text, family, p.fontSize, p.weight, p.italic, p.color, p.align, p.valign,
@@ -332,6 +439,62 @@ export default class TextObject {
             this.fontsWaited.add(font);
             document.fonts.load(font, p.text || 'A').then(() => { this.fontTick = (this.fontTick || 0) + 1; this.drawKey = null; }).catch(() => {});
         }
+    }
+
+    /**
+     * An Image's picture (engine/pictures.js) on the patch instead of text:
+     * its frame for now (`p.pictureTime`, sped up and offset), fitted inside
+     * the padding over the box's fill, kept crisp for pixel art when asked.
+     */
+    drawPicture(p, w, h) {
+        const pic = p.picture;
+        const ready = !!pic?.ready;
+        const fi = ready ? frameAt(pic, (p.imgOffset || 0) + (p.imgSpeed ?? 1) * (p.pictureTime || 0), p.imgLoop !== false) : -1;
+        const crisp = p.smoothing === 'crisp';
+        const key = JSON.stringify([w, h, pic?.id || null, ready, fi, p.fit, p.padding, p.bgColor, p.bgOpacity, crisp]);
+        if (key === this.drawKey) return;
+        this.drawKey = key;
+        const c = this.canvas;
+        if (c.width !== w || c.height !== h) {
+            c.width = w;
+            c.height = h;
+            this.tex.dispose();
+        }
+        const filter = crisp ? THREE.NearestFilter : THREE.LinearFilter;
+        if (this.tex.magFilter !== filter) {
+            this.tex.magFilter = filter;
+            this.tex.dispose();
+        }
+        const g = c.getContext('2d');
+        g.setTransform(1, 0, 0, 1, 0, 0);
+        g.clearRect(0, 0, w, h);
+        if ((p.bgOpacity ?? 0) > 0) {
+            g.globalAlpha = p.bgOpacity;
+            g.fillStyle = p.bgColor || '#000000';
+            g.fillRect(0, 0, w, h);
+            g.globalAlpha = 1;
+        }
+        if (ready && pic.frames[fi]) {
+            const pad = Math.max(0, p.padding || 0) * h;
+            const bw = Math.max(1, w - pad * 2);
+            const bh = Math.max(1, h - pad * 2);
+            let dw = bw;
+            let dh = bh;
+            if (p.fit !== 'stretch') {
+                const k = (p.fit === 'cover' ? Math.max : Math.min)(bw / pic.width, bh / pic.height);
+                dw = pic.width * k;
+                dh = pic.height * k;
+            }
+            g.save();
+            g.beginPath();
+            g.rect(pad, pad, bw, bh);
+            g.clip();
+            g.imageSmoothingEnabled = !crisp;
+            g.imageSmoothingQuality = 'high';
+            g.drawImage(pic.frames[fi], pad + (bw - dw) / 2, pad + (bh - dh) / 2, dw, dh);
+            g.restore();
+        }
+        this.tex.needsUpdate = true;
     }
 
     /**

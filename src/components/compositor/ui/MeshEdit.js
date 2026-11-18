@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { useComp } from './context';
 import { MESH_TOOLS } from '../engine/meshEditor';
-import { editSummary, isEmptyEdits } from '../model/meshEdits';
+import { editSummary, isEmptyEdits, editKeyFor } from '../model/meshEdits';
 import styles from '../compositor.module.css';
 
 const plural = (n, one, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
@@ -27,13 +27,22 @@ export default function MeshEditPanel({ obj }) {
     // Leaving the panel leaves the mode (as Roto does).
     useEffect(() => () => setMeshEdit((m) => (m.sceneId === sceneId ? { ...m, on: false } : m)), [sceneId, setMeshEdit]);
 
+    // Which edits this take's mesh uses (the Geometry choice above): the scan's, its own, or none.
+    const source = obj.params.meshSource || 'shared';
+    const original = source === 'original';
+    useEffect(() => {
+        if (original) setMeshEdit((m) => (m.sceneId === sceneId && m.on ? { ...m, on: false } : m));
+    }, [original, sceneId, setMeshEdit]);
+
     if (!scene?.take) return null;
-    const fp = rig?.fingerprint;
+    const scanFp = rig?.fingerprint;
+    const fp = editKeyFor(scanFp, scene.take, source);
     const entry = fp ? comp.meshEdits[fp] : null;
     const doc = entry?.doc;
+    const sharedDoc = scanFp ? comp.meshEdits[scanFp]?.doc : null;
     const sum = editSummary(doc, rig?.base);
     // Other takes filmed in this scan get the same edits.
-    const sharing = fp ? comp.project.scenes.filter((s) => s.id !== sceneId && s.take && comp.rig(s.id)?.fingerprint === fp).map((s) => s.take) : [];
+    const sharing = source === 'shared' && fp ? comp.project.scenes.filter((s) => s.id !== sceneId && s.take && comp.rig(s.id)?.fingerprint === fp).map((s) => s.take) : [];
     const live = on && ed?.active && ed.rig === rig;
     const hist = live ? ed.hist : { past: [], future: [] };
     const saved = comp.meshEditsSaved;
@@ -58,10 +67,24 @@ export default function MeshEditPanel({ obj }) {
 
     return (
         <>
-            <button type="button" className={`${styles.rotoBtn} ${on ? styles.btnOn : ''}`} disabled={!rig?.base} onClick={toggle} title="Fill holes and cut junk out of this take's scan (Esc leaves)">
-                <Wrench size={13} />
-                {on ? 'Leave mesh edit' : rig?.base ? 'Edit mesh' : 'Loading the scan…'}
-            </button>
+            {original ? (
+                <p className={styles.hint}>
+                    Drawn as the scan was published, without edits. Pick the scan’s edits or this take’s own under Geometry to edit it.
+                </p>
+            ) : (
+                <button type="button" className={`${styles.rotoBtn} ${on ? styles.btnOn : ''}`} disabled={!rig?.base} onClick={toggle} title={source === 'own' ? 'Fill holes and cut junk out of this take’s own copy of the scan (Esc leaves)' : 'Fill holes and cut junk out of this scan, for every take filmed in it (Esc leaves)'}>
+                    <Wrench size={13} />
+                    {on ? 'Leave mesh edit' : rig?.base ? (source === 'own' ? 'Edit this take’s mesh' : 'Edit mesh') : 'Loading the scan…'}
+                </button>
+            )}
+
+            {source === 'own' && rig?.base && isEmptyEdits(doc) && !isEmptyEdits(sharedDoc) && (
+                <div className={styles.wideRow} style={{ marginBottom: 6 }}>
+                    <button type="button" className={styles.btn} title="Start this take’s own mesh from the edits the scan has (it stays separate after)" onClick={() => comp.putMeshEdits(fp, scene.take, sharedDoc)}>
+                        Start from the scan’s edits
+                    </button>
+                </div>
+            )}
 
             {on && !live && (
                 <div className={styles.warnBox}>
@@ -129,8 +152,8 @@ export default function MeshEditPanel({ obj }) {
                             type="button"
                             className={styles.btn}
                             disabled={isEmptyEdits(doc)}
-                            title="Take every edit off this scan (undoable)"
-                            onClick={() => { if (window.confirm('Take every edit off this scan? (Undo brings them back.)')) ed.reset(); }}
+                            title={source === 'own' ? 'Take every edit off this take’s mesh (undoable)' : 'Take every edit off this scan (undoable)'}
+                            onClick={() => { if (window.confirm(source === 'own' ? 'Take every edit off this take’s mesh? (Undo brings them back.)' : 'Take every edit off this scan? (Undo brings them back.)')) ed.reset(); }}
                         >
                             <RotateCcw size={12} />
                             Reset
@@ -139,7 +162,7 @@ export default function MeshEditPanel({ obj }) {
                 </>
             )}
 
-            {rig?.base && (
+            {rig?.base && !original && (
                 <p className={styles.hint} style={{ marginBottom: 0 }}>
                     {live && ed.topo && (
                         <>

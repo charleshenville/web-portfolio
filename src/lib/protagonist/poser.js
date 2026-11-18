@@ -618,6 +618,24 @@ export class ProtagonistModel {
         this.boneMats = this.skeleton.bones.map(() => new THREE.Matrix4());
     }
 
+    /**
+     * The points as the Flow (the compositor's particle sim) moves them:
+     * geometry, material, where each rests and metres per unit (his rig is in metres).
+     */
+    pointFlow() {
+        if (!this.points || !this.sample) return null;
+        if (!this.pointHomes || this.pointHomes.src !== this.sample) {
+            this.pointHomes = { src: this.sample, homes: Float32Array.from(this.sample.position) };
+        }
+        return {
+            geometry: this.points.geometry,
+            material: this.pointMaterial,
+            homes: this.pointHomes.homes,
+            count: this.pointHomes.homes.length / 3,
+            unit: this.op.scale || 1,
+        };
+    }
+
     /** Pickable markers on every joint the editor exposes. */
     buildHandles() {
         this.handles.forEach((h) => { h.removeFromParent(); h.material.dispose(); });

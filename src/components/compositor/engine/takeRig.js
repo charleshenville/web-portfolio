@@ -13,19 +13,66 @@ import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import {
     applyCloudReactivity, applyWireReactivity, buildWireTopology,
 } from '../../../lib/audioScene';
-import { LAYER, cutByWindows } from '../../../lib/scanAssets/windows';
+import { LAYER, cutByWindows, punchByWindows } from '../../../lib/scanAssets/windows';
 import { takeBase } from './media';
+import Wisps from './wisps';
+import ParticleFlow from './particleFlow';
 import { fingerprint, applyEdits, weld } from '../model/meshEdits';
+import { readTexels, surfaceOf, sampleSurface } from './scanSampler';
 import {
     makeLookUniforms, setLookUniforms, hookLook, normaliseLook,
 } from '../../../lib/scanAssets/takeLooks';
 
 export const ENV_LAYER = 1;
+// Scan points' density runs past 1: beyond the PLY's own count, points are
+// sampled from the scan mesh itself (growCloud), up to this many times the
+// PLY and never more than MAX_CLOUD in all.
+export const MAX_POINT_DENSITY = 8;
+const MAX_CLOUD = 8_000_000;
 const D2R = Math.PI / 180;
 
 const PULSE_DIRS = {
     up: [0, 1, 0], down: [0, -1, 0], right: [1, 0, 0], left: [-1, 0, 0], toward: [0, 0, 1], away: [0, 0, -1],
 };
+
+/**
+ * Put a point cloud's points in a random order, in place (every attribute
+ * alike, seeded, so the same scan always comes out the same). Density draws
+ * the first n points, so in the PLY's own order, which runs through the scan
+ * region by region, fewer points would empty some regions first; shuffled,
+ * any first n are a uniform random sample of all of them. Nothing is dropped.
+ */
+export function shufflePoints(geo, seed = 0x2545f491) {
+    const n = geo.getAttribute('position')?.count || 0;
+    if (n < 2) return;
+    // Points are drawn in vertex order: an index (a PLY with faces) would undo the shuffle.
+    if (geo.index) geo.setIndex(null);
+    let a = seed >>> 0;
+    const rand = () => {
+        a = (a + 0x6d2b79f5) >>> 0;
+        let t = a;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const perm = new Uint32Array(n);
+    for (let i = 0; i < n; i++) perm[i] = i;
+    for (let i = n - 1; i > 0; i--) {
+        const j = Math.floor(rand() * (i + 1));
+        const t = perm[i]; perm[i] = perm[j]; perm[j] = t;
+    }
+    Object.values(geo.attributes).forEach((attr) => {
+        const k = attr.itemSize;
+        const src = attr.array;
+        const out = new src.constructor(src.length);
+        for (let i = 0; i < n; i++) {
+            const from = perm[i] * k;
+            for (let c = 0; c < k; c++) out[i * k + c] = src[from + c];
+        }
+        attr.array = out;
+        attr.needsUpdate = true;
+    });
+}
 
 /** Interpolated camera pose from a solve at `time` seconds into the take. */
 export function poseAt(time, track) {
@@ -217,24 +264,38 @@ export class TakeRig {
             this.mesh.frustumCulled = false;
             this.root.add(this.mesh);
 
-            // PLY colours are sRGB samples of the scan's texture; three takes
-            // vertex colours as linear, so convert or the cloud reads bright.
+            // PLY colours are sRGB samples of the scan's texture, and three
+            // takes vertex colours as linear; PLYLoader (r152 on) converts
+            // them as it reads them. Converting again here, as this used to,
+            // drew the points darker and more saturated than the scan.
+            // In random order, so thinning by density thins everywhere alike.
+            shufflePoints(cloudGeo);
             const colorAttr = cloudGeo.getAttribute('color');
-            if (colorAttr) {
-                const a = colorAttr.array;
-                for (let i = 0; i < a.length; i++) a[i] = a[i] <= 0.04045 ? a[i] / 12.92 : ((a[i] + 0.055) / 1.055) ** 2.4;
-                colorAttr.needsUpdate = true;
-            }
             cloudGeo.computeBoundingSphere();
+            // What the PLY holds; growCloud adds to it and keeps its bounds,
+            // so framing does not shift as the density goes up.
+            this.plyCount = cloudGeo.getAttribute('position').count;
+            this.plySphere = cloudGeo.boundingSphere.clone();
+            this.cloudExtraVersion = null;
             this.cloudReact = {
                 base: Float32Array.from(cloudGeo.getAttribute('position').array),
                 dirs: null, dists: null, freqIndex: null, key: null, dirty: false,
             };
             const cloudMat = new THREE.PointsMaterial({ transparent: true });
             hookLook(cloudMat, this.pointLook, 'color_fragment');
+            // Windows can punch points out near them.
+            punchByWindows(cloudMat);
             this.cloud = new THREE.Points(cloudGeo, cloudMat);
             this.cloud.frustumCulled = false;
             this.overlay.add(this.cloud);
+            // The points set loose as particles (moved in the shader, from where they rest).
+            this.flow = new ParticleFlow();
+            this.flow.attach(cloudGeo, this.cloudReact.base, cloudGeo.getAttribute('position').count, false);
+            this.flow.hook(cloudMat, false);
+            // Ribbons off the points, grown from where they rest (not as the spectrum pushes them).
+            this.wisps = new Wisps();
+            this.wisps.setSource(this.cloudReact.base, colorAttr ? colorAttr.array : null, cloudGeo.getAttribute('position').count);
+            this.overlay.add(this.wisps.object);
 
             this.buildCompanions();
             this.track = track || {
@@ -260,6 +321,42 @@ export class TakeRig {
         setScanGeometry(this.mesh.geometry, applyEdits(this.base, doc, welded));
         this.editsApplied = doc;
         this.geoVersion++;
+    }
+
+    /**
+     * The scan with edits `doc` (null: as published), for a part of it that
+     * uses another version than the one drawn (the depth-only copy, the
+     * shadow catcher, the glow catcher). `key` names the version (see
+     * model/meshEdits editKeyFor); the drawn one is the mesh's own geometry.
+     * Kept while used: `keepVersions` drops the rest.
+     */
+    geometryFor(key, doc) {
+        if (!this.mesh || !this.base) return null;
+        if (key === this.editKey) return this.mesh.geometry;
+        if (!this.versions) this.versions = new Map();
+        const k = key || '(original)';
+        let v = this.versions.get(k);
+        if (!v) {
+            v = { geo: new THREE.BufferGeometry(), doc: undefined };
+            this.versions.set(k, v);
+        }
+        if (v.doc !== doc) {
+            const welded = doc && Object.keys(doc.moved).length ? this.welded() : null;
+            setScanGeometry(v.geo, applyEdits(this.base, doc, welded));
+            v.doc = doc;
+        }
+        v.used = true;
+        return v.geo;
+    }
+
+    /** Let go of the versions geometryFor didn't hand out since the last call. */
+    keepVersions() {
+        if (!this.versions) return;
+        this.versions.forEach((v, k) => {
+            if (v.used) { v.used = false; return; }
+            v.geo.dispose();
+            this.versions.delete(k);
+        });
     }
 
     /** The scan's vertices welded where they meet (made once, when first wanted). */
@@ -313,12 +410,31 @@ export class TakeRig {
         try {
             const gltf = await new GLTFLoader().loadAsync(`${takeBase(this.take)}_wire_${level}.glb`);
             if (this.disposed || this.wireLoading !== level) return;
-            let src = null;
+            // Every mesh in it (the pipeline writes one, but a scan of several
+            // parts may come as several), as one position-only geometry.
             gltf.scene.updateMatrixWorld(true);
-            gltf.scene.traverse((o) => { if (!src && o.isMesh) src = o; });
-            if (!src) throw new Error('no mesh in wireframe GLB');
-            const geo = src.geometry.clone();
-            geo.applyMatrix4(src.matrixWorld);
+            const srcs = [];
+            gltf.scene.traverse((o) => { if (o.isMesh && o.geometry.getAttribute('position')) srcs.push(o); });
+            if (!srcs.length) throw new Error('no mesh in wireframe GLB');
+            const parts = srcs.map((o) => o.geometry.clone().applyMatrix4(o.matrixWorld));
+            const nv = parts.reduce((s, g) => s + g.getAttribute('position').count, 0);
+            const ni = parts.reduce((s, g) => s + (g.index ? g.index.count : g.getAttribute('position').count), 0);
+            const wpos = new Float32Array(nv * 3);
+            const widx = new Uint32Array(ni);
+            let v0 = 0;
+            let i0 = 0;
+            parts.forEach((g) => {
+                const P = g.getAttribute('position');
+                for (let i = 0; i < P.count; i++) wpos.set([P.getX(i), P.getY(i), P.getZ(i)], (v0 + i) * 3);
+                const n = g.index ? g.index.count : P.count;
+                for (let i = 0; i < n; i++) widx[i0 + i] = v0 + (g.index ? g.index.getX(i) : i);
+                v0 += P.count;
+                i0 += n;
+                g.dispose();
+            });
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.BufferAttribute(wpos, 3));
+            geo.setIndex(new THREE.BufferAttribute(widx, 1));
             const topo = buildWireTopology(geo);
             geo.dispose();
             const flat = new Float32Array((topo.edges.length / 2) * 6);
@@ -446,10 +562,64 @@ export class TakeRig {
                 const tr = m.opacity < 1;
                 if (m.transparent !== tr) { m.transparent = tr; m.needsUpdate = true; }
                 m.depthWrite = !tr;
-                const total = this.cloud.geometry.getAttribute('position').count;
-                this.cloud.geometry.setDrawRange(0, Math.max(1, Math.floor(total * Math.max(0, Math.min(1, P.density)))));
+                const density = Math.max(0, Math.min(MAX_POINT_DENSITY, Number(P.density) || 0));
+                const want = Math.max(1, Math.floor(this.plyCount * density));
+                let total = this.cloud.geometry.getAttribute('position').count;
+                // Past the PLY, from the mesh; again if the mesh has been edited since.
+                if (want > total || (total > this.plyCount && this.cloudExtraVersion !== this.geoVersion)) {
+                    this.growCloud(Math.max(want, total));
+                    total = this.cloud.geometry.getAttribute('position').count;
+                }
+                this.cloud.geometry.setDrawRange(0, Math.min(total, want));
             }
         }
+    }
+
+    /**
+     * Make the cloud hold at least `want` points: the PLY's, then samples of
+     * the scan mesh as it now stands (every part, edits applied), coloured
+     * from its textures (engine/scanSampler). Grows in steps of half again,
+     * so dragging the density up does not resample on every frame; points
+     * already made are kept unless the mesh has changed since.
+     */
+    growCloud(want) {
+        const old = this.cloud.geometry;
+        const ply = this.plyCount;
+        const cap = Math.min(MAX_CLOUD, Math.floor(ply * MAX_POINT_DENSITY));
+        const have = this.cloudExtraVersion === this.geoVersion ? old.getAttribute('position').count : ply;
+        const n = Math.max(ply, Math.min(cap, Math.max(want, Math.ceil(have * 1.5))));
+        if (n === have && n === old.getAttribute('position').count) return;
+        if (!this.meshSurface || this.meshSurfaceVersion !== this.geoVersion) {
+            this.meshSurface = surfaceOf(this.mesh.geometry);
+            this.meshSurfaceVersion = this.geoVersion;
+        }
+        if (!this.meshTexels) {
+            this.meshTexels = this.texturedList.map((m) => readTexels(m?.map));
+            this.meshFlat = this.texturedList.map((m) => (m?.color ? [m.color.r, m.color.g, m.color.b] : null));
+        }
+        const oldColor = old.getAttribute('color');
+        const pos = new Float32Array(n * 3);
+        const color = oldColor ? new Float32Array(n * 3) : null;
+        // The PLY's points as they rest (the spectrum may have moved the live ones).
+        pos.set(this.cloudReact.base.subarray(0, ply * 3));
+        if (color) color.set(oldColor.array.subarray(0, ply * 3));
+        const keep = Math.min(have, n);
+        if (keep > ply) {
+            pos.set(this.cloudReact.base.subarray(ply * 3, keep * 3), ply * 3);
+            if (color) color.set(oldColor.array.subarray(ply * 3, keep * 3), ply * 3);
+        }
+        sampleSurface(this.meshSurface, this.meshTexels, this.meshFlat, keep, n, pos, color);
+
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+        if (color) geo.setAttribute('color', new THREE.BufferAttribute(color, 3));
+        geo.boundingSphere = this.plySphere.clone();
+        this.cloud.geometry = geo;
+        old.dispose();
+        this.cloudReact = {
+            base: Float32Array.from(pos), dirs: null, dists: null, freqIndex: null, key: null, dirty: false,
+        };
+        this.cloudExtraVersion = this.geoVersion;
     }
 
     pulseOf(P) {
@@ -482,22 +652,53 @@ export class TakeRig {
         }, freq, live, Number.isFinite(drawn) && drawn > 0 ? drawn : attr.count);
     }
 
+    /** Move the points and draw their wisps at timeline `time` (P the Scan points' parameters). */
+    animatePoints(P, time, drawSize, ss = 1) {
+        // The cloud's geometry is replaced when it grows past the PLY (growCloud):
+        // the particles and the wisps follow it to the new one, homes and all.
+        const geo = this.cloud?.geometry;
+        if (geo && this.flow && this.flow.target?.geometry !== geo) {
+            const count = geo.getAttribute('position').count;
+            this.flow.attach(geo, this.cloudReact.base, count, false);
+            this.wisps?.setSource(this.cloudReact.base, geo.getAttribute('color')?.array || null, count);
+        }
+        this.flow?.update(P, time);
+        this.wisps?.update(P, time, drawSize, ss, !!P && P.visible);
+    }
+
+    /** The scan's own parts, drawn first where stand-in shapes are (Engine.renderLayer). */
+    get parts() {
+        return [this.mesh, this.cloud, this.wisps?.object, this.wire, this.wireHalo, this.occluder, this.catcher, this.glowCatcher].filter(Boolean);
+    }
+
     /** Put the scan's layers in front of the footage or behind it. Returns how many are behind. */
     assignLayers(behind) {
         let n = 0;
-        [[this.mesh, behind.mesh], [this.cloud, behind.points], [this.wire, behind.wire], [this.wireHalo, behind.wire]].forEach(([o, back]) => {
+        [[this.mesh, behind.mesh], [this.cloud, behind.points], [this.wisps?.object, behind.points], [this.wire, behind.wire], [this.wireHalo, behind.wire]].forEach(([o, back]) => {
             if (!o) return;
             o.layers.set(back ? LAYER.BEHIND : LAYER.FRONT);
+            o.layers.enable(back ? LAYER.SCAN_BEHIND : LAYER.SCAN_FRONT);
             if (back && o.visible) n++;
         });
-        if (this.occluder) { this.occluder.layers.set(LAYER.FRONT); this.occluder.layers.enable(LAYER.BEHIND); }
-        if (this.catcher) this.catcher.layers.set(LAYER.FRONT);
+        if (this.occluder) {
+            this.occluder.layers.set(LAYER.FRONT);
+            this.occluder.layers.enable(LAYER.BEHIND);
+            this.occluder.layers.enable(LAYER.SCAN_FRONT);
+            this.occluder.layers.enable(LAYER.SCAN_BEHIND);
+        }
+        [this.catcher, this.glowCatcher].forEach((o) => {
+            if (!o) return;
+            o.layers.set(LAYER.FRONT);
+            o.layers.enable(LAYER.SCAN_FRONT);
+        });
         return n;
     }
 
     dispose() {
         this.disposed = true;
         this.dropWire();
+        this.versions?.forEach((v) => v.geo.dispose());
+        this.wisps?.dispose();
         [this.mesh, this.cloud, this.occluder, this.catcher, this.envMesh].forEach((o) => {
             if (!o) return;
             o.removeFromParent();

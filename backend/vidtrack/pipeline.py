@@ -22,11 +22,13 @@ Usage:
 """
 
 import argparse
+import filecmp
 import json
 import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -85,14 +87,26 @@ def stage_frames(name: str, video: Path) -> None:
     print(f"  {len(list(frames.glob('*.jpg')))} frames")
 
 
-def stage_cloud(name: str, glb: Path, points: int) -> None:
+# Points per square metre of scan surface when --points is not given, and
+# the bounds on the count. A fixed count left big scans sparse: 300k points on
+# the 211 m^2 Myhal atrium is one every 2.7 cm. The compositor samples more
+# from the mesh itself when asked for a density above 1, so this only sets
+# what is committed.
+POINTS_PER_M2 = 2500
+POINTS_MIN, POINTS_MAX = 300_000, 1_000_000
+
+
+def stage_cloud(name: str, glb: Path, points: int | None,
+                per_m2: float = POINTS_PER_M2) -> None:
     """Sample a point cloud off the GLB, and a low-poly copy for wireframes."""
     ASSETS.mkdir(parents=True, exist_ok=True)
     local_glb = ASSETS / f"{name}.glb"
     if glb.resolve() != local_glb.resolve():
         shutil.copy(glb, local_glb)
-    run([PY, GLB_TO_PLY, local_glb, ASSETS / f"{name}.ply",
-         "-n", points, "--seed", 1], f"cloud: {name}")
+    count = (["-n", points] if points else
+             ["--per-m2", per_m2, "--min-points", POINTS_MIN, "--max-points", POINTS_MAX])
+    run([PY, GLB_TO_PLY, local_glb, ASSETS / f"{name}.ply", *count, "--seed", 1],
+        f"cloud: {name}")
     run([PY, HERE / "decimate.py", local_glb, ASSETS, name],
         f"wireframe: {name}")
 
@@ -145,6 +159,29 @@ def stage_export(name: str, fps: float, source: Path | None) -> None:
     run(cmd, f"export: {name}")
 
 
+def place_public(src: Path, dst: Path) -> bool:
+    """
+    Put a file under public/ without reloading an open compositor.
+
+    The dev server reloads every page when a file there *changes*, which
+    throws the session away, but takes no notice of files added or deleted.
+    So a file that is already there is deleted, and the new one moved in a
+    moment later (whole, from work/), which reads as a delete and an add.
+    An unchanged file is left alone. Returns whether anything was written.
+    """
+    if dst.exists() and filecmp.cmp(src, dst, shallow=False):
+        return False
+    staged = WORK / "_publish" / dst.relative_to(PUBLIC)
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(src, staged)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        dst.unlink()
+        time.sleep(0.3)  # past the watcher's window for folding the pair into a change
+    os.replace(staged, dst)
+    return True
+
+
 def stage_publish(name: str, label: str) -> None:
     """Copy the mesh and cloud next to the track and register the take."""
     out = PUBLIC / name
@@ -154,16 +191,27 @@ def stage_publish(name: str, label: str) -> None:
     for fname in names:
         src = ASSETS / fname
         if src.exists():
-            shutil.copy(src, out / fname)
-            print(f"  {out / fname}")
+            wrote = place_public(src, out / fname)
+            print(f"  {out / fname}{'' if wrote else ' (unchanged)'}")
 
     manifest_path = PUBLIC / "manifest.json"
     manifest = []
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
     entry = {"id": name, "label": label}
-    manifest = [m for m in manifest if m.get("id") != name] + [entry]
-    manifest_path.write_text(json.dumps(manifest, indent=4) + "\n")
+    if entry in manifest:
+        print(f"  '{name}' already registered in {manifest_path}")
+        return
+    # Kept in place if the take is already listed, appended if it is new.
+    if any(m.get("id") == name for m in manifest):
+        manifest = [entry if m.get("id") == name else m for m in manifest]
+    else:
+        manifest.append(entry)
+    staged = WORK / "_publish" / "manifest.json.new"
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    staged.write_text(json.dumps(manifest, indent=4) + "\n")
+    place_public(staged, manifest_path)
+    staged.unlink(missing_ok=True)
     print(f"  registered '{name}' in {manifest_path}")
 
 
@@ -195,8 +243,11 @@ def main():
                     help="frame to locate first; defaults to the middle")
     ap.add_argument("--interior", action="store_true",
                     help="filmed from inside the scan, e.g. a room")
-    ap.add_argument("--points", type=int, default=300_000,
-                    help="points sampled for the cloud layer")
+    ap.add_argument("--points", type=int, default=None,
+                    help="points sampled for the cloud layer; by default "
+                         f"{POINTS_PER_M2} per m^2 of surface, {POINTS_MIN}-{POINTS_MAX}")
+    ap.add_argument("--points-per-m2", type=float, default=POINTS_PER_M2,
+                    help="points per m^2 of surface when --points is not given")
     ap.add_argument("--repropagate", action="store_true",
                     help="roto: re-run SAM 2 from the saved clicks, not the stored masks")
     ap.add_argument("--roto-model", default="base_plus",
@@ -228,7 +279,7 @@ def main():
     if {"cloud", "solve", "verify"} & set(todo) and not glb.exists():
         raise SystemExit(f"no GLB at {glb}; pass --glb")
     if "cloud" in todo:
-        stage_cloud(name, glb, args.points)
+        stage_cloud(name, glb, args.points, args.points_per_m2)
     if "solve" in todo:
         stage_solve(name, ASSETS / f"{name}.glb", args.views, args.focal,
                     args.keyframe, args.interior)

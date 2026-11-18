@@ -11,13 +11,14 @@ import {
     OBJECT_TYPES, paramDefs, TRACK_PARAMS, AUDIO_TRACK_PARAMS,
 } from '../model/schema';
 import {
-    CONTROLLER_TYPES, CONTROLLER_COLORS, controllerValue, switchAt, isSwitch, isCut, dependsOn,
+    CONTROLLER_TYPES, CONTROLLER_COLORS, controllerValue, switchAt, isSwitch, isCut, dependsOn, exprInput,
 } from '../model/controllers';
 import { LOOP_MODES, clipEnd } from '../model/timeline';
 import { linksTo } from '../model/project';
 import { assignStates, kickCutTimes, gridCutTimes, mergeCuts } from '../model/cuts';
 import { POSES, JOINTS } from '../../../lib/protagonist/poser';
 import { SACKBOY_POSES, SACKBOY_JOINT_MENU } from '../../../lib/scanAssets/sackboy';
+import { CAT_POSES, CAT_JOINT_MENU } from '../../../lib/scanAssets/headphoneCat/model';
 import { bodyDims } from '../../../lib/protagonist/model';
 import { specOf, MODEL_DEFAULTS } from '../../../lib/protagonist/poser';
 import { mattesFor } from '../../../lib/scanAssets/roto';
@@ -29,6 +30,7 @@ import {
     LOOK_FIELDS, LOOK_DEFAULTS, LOOK_PARTS, isNeutralLook, normaliseLook,
 } from '../../../lib/scanAssets/takeLooks';
 import { PUBLIC_VIDEOS } from '../../../lib/scanAssets/screenVideo';
+import { loadPicture, PICTURE_EXT, PICTURE_ACCEPT } from '../engine/pictures';
 import { listPresets, loadPreset, readPresetFile } from '../../quadtree/presets';
 import { presetToParams } from '../../quadtree/fxParams';
 import { ParamRow, NumberBox } from './Params';
@@ -40,6 +42,7 @@ import { variableLabel } from '../model/globals';
 import { useComp, useTick } from './context';
 import { ICONS } from './Sidebar';
 import styles from '../compositor.module.css';
+import { projectTempo } from '../model/tempo';
 
 /**
  * A collapsible group of controls. Every group starts collapsed; one opened
@@ -108,15 +111,16 @@ function CameraPath({ obj }) {
 
 function PoseEditor({ obj }) {
     const comp = useComp();
-    const sack = obj.type === 'sackboy';
-    const joints = sack ? SACKBOY_JOINT_MENU : JOINTS;
+    // Sackboy's and the cat's presets need nothing of the model; the protagonist's need his proportions.
+    const own = { sackboy: [SACKBOY_JOINT_MENU, SACKBOY_POSES], cat: [CAT_JOINT_MENU, CAT_POSES] }[obj.type];
+    const joints = own ? own[0] : JOINTS;
     const [joint, setJoint] = useState(joints[0][0]);
     const pose = obj.extra?.pose || {};
     const angles = pose[joint] || [0, 0, 0];
-    const presets = sack ? SACKBOY_POSES : POSES;
+    const presets = own ? own[1] : POSES;
     const applyPreset = (id) => comp.updateObject(obj.id, (o) => {
-        if (sack) {
-            const made = SACKBOY_POSES[id].make();
+        if (own) {
+            const made = presets[id].make();
             return { ...o, params: { ...o.params, ...made.op }, extra: { ...o.extra, pose: made.pose } };
         }
         const made = POSES[id].make(bodyDims(specOf({ ...MODEL_DEFAULTS, ...o.params }).body));
@@ -163,7 +167,7 @@ function ScreenSource({ obj }) {
                     <option value="">None</option>
                     {comp.takes.map((t) => <option key={t.id} value={`take:${t.id}`}>Take · {t.label}</option>)}
                     {PUBLIC_VIDEOS.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-                    {comp.uploads.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                    {comp.uploads.filter((u) => !PICTURE_EXT.test(u.name)).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
                 </select>
             </Field>
             <div className={styles.wideRow}>
@@ -178,6 +182,91 @@ function ScreenSource({ obj }) {
                     const f = e.target.files[0];
                     e.target.value = '';
                     if (f) comp.setParam(obj.id, 'video', await comp.uploadScreenVideo(f), true);
+                }}
+            />
+        </>
+    );
+}
+
+/**
+ * The box an Image's picture fills, reshaped to the picture's proportions:
+ * its height kept, its width made to match, about its middle (in the frame,
+ * by the output's shape). Null when the picture isn't loaded.
+ */
+function fitBoxToPicture(obj, pic, output) {
+    if (!pic?.ready || !pic.width || !pic.height) return null;
+    const aspect = pic.width / pic.height;
+    const p = obj.params;
+    if (p.space === 'frame') {
+        const W = output?.width || 1440;
+        const H = output?.height || 1080;
+        return { frameW: Math.round((p.frameH ?? 0.3) * aspect * (H / W) * 1e4) / 1e4 };
+    }
+    const c = p.corners;
+    if (!c || c.length < 4) return null;
+    const [tl, tr, br, bl] = c;
+    const mid = [0, 1, 2].map((k) => (tl[k] + tr[k] + br[k] + bl[k]) / 4);
+    const across = [0, 1, 2].map((k) => ((tr[k] - tl[k]) + (br[k] - bl[k])) / 2);
+    const up = [0, 1, 2].map((k) => ((tl[k] - bl[k]) + (tr[k] - br[k])) / 2);
+    const len = (v) => Math.hypot(v[0], v[1], v[2]) || 1e-9;
+    const h = across.map((v) => (v / len(across)) * len(up) * aspect * 0.5);
+    const v = up.map((x) => x * 0.5);
+    const at = (a, b) => [0, 1, 2].map((k) => Math.round((mid[k] + h[k] * a + v[k] * b) * 1e4) / 1e4);
+    return { corners: [at(-1, 1), at(1, 1), at(1, -1), at(-1, -1)] };
+}
+
+function ImageSource({ obj }) {
+    const comp = useComp();
+    const fileRef = useRef(null);
+    const [, bump] = useState(0);
+    const pic = loadPicture(obj.params.image);
+    // Show its size (and frames) once it has loaded.
+    React.useEffect(() => {
+        if (!pic || pic.ready || pic.failed) return undefined;
+        let live = true;
+        pic.promise.then(() => { if (live) bump((n) => n + 1); });
+        return () => { live = false; };
+    }, [pic]);
+    const fit = (id) => {
+        const p = loadPicture(id);
+        p?.promise.then(() => {
+            const cur = comp.project.objects.find((o) => o.id === obj.id) || obj;
+            const patch = fitBoxToPicture({ ...cur, params: { ...cur.params, image: id } }, p, comp.project.output);
+            if (patch) Object.entries(patch).forEach(([k, v]) => comp.setParam(obj.id, k, v, true));
+        });
+    };
+    const choose = (id) => {
+        comp.setParam(obj.id, 'image', id || null, true);
+        if (id) fit(id);
+    };
+    const pictures = comp.uploads.filter((u) => PICTURE_EXT.test(u.name));
+    let info = null;
+    if (pic?.failed) info = 'Couldn\u2019t read this picture (or it is no longer kept in this browser). Upload it again.';
+    else if (pic && !pic.ready) info = 'Loading\u2026';
+    else if (pic?.ready) info = `${pic.width} \u00d7 ${pic.height}${pic.animated ? ` · ${pic.frames.length} frames · ${pic.total.toFixed(2)} s` : ''}`;
+    return (
+        <>
+            <Field label="Picture">
+                <select className={styles.select} value={obj.params.image || ''} onChange={(e) => choose(e.target.value)}>
+                    <option value="">None</option>
+                    {obj.params.image && !pictures.some((u) => u.id === obj.params.image) && <option value={obj.params.image}>{obj.params.image.replace(/^upload:/, '').split('|')[0]}</option>}
+                    {pictures.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                </select>
+            </Field>
+            {info && <p className={pic?.failed ? `${styles.hint} ${styles.warn}` : styles.hint}>{info}</p>}
+            <div className={styles.wideRow}>
+                <button type="button" className={styles.btn} onClick={() => fileRef.current.click()}>Upload picture…</button>
+                {pic?.ready && <button type="button" className={styles.btn} onClick={() => fit(obj.params.image)}>Fit box to picture</button>}
+            </div>
+            <input
+                ref={fileRef}
+                type="file"
+                accept={PICTURE_ACCEPT}
+                style={{ display: 'none' }}
+                onChange={async (e) => {
+                    const f = e.target.files[0];
+                    e.target.value = '';
+                    if (f) choose(await comp.uploadScreenVideo(f));
                 }}
             />
         </>
@@ -540,6 +629,7 @@ const CUSTOM = {
     cameraPath: CameraPath,
     pose: PoseEditor,
     screenSource: ScreenSource,
+    imageSource: ImageSource,
     windowMatte: WindowMatte,
     roto: RotoSection,
     meshEdit: MeshEditPanel,
@@ -635,7 +725,9 @@ function SwitchTools({ ctrl }) {
     const kicks = project.controllers.filter((c) => c.type === 'kick');
     const [src, setSrc] = useState(kicks[0]?.id || 'grid');
     const [every, setEvery] = useState(1);
-    const [bpm, setBpm] = useState(120);
+    // The grid's tempo is the project's until one is typed here.
+    const [ownBpm, setBpm] = useState(null);
+    const bpm = ownBpm ?? projectTempo(project);
     const [beats, setBeats] = useState(1);
     const [offset, setOffset] = useState(0);
     const [order, setOrder] = useState('cycle');
@@ -722,7 +814,7 @@ function SwitchTools({ ctrl }) {
                 </Field>
                 {src === 'grid' ? (
                     <>
-                        <Field label="BPM"><NumberBox value={bpm} step={0.001} onCommit={setBpm} /></Field>
+                        <Field label={ownBpm === null ? 'BPM (project)' : 'BPM'}><NumberBox value={bpm} step={0.001} onCommit={(v) => setBpm(v > 0 ? v : null)} /></Field>
                         <Field label="Every (beats)"><NumberBox value={beats} step={0.25} onCommit={setBeats} /></Field>
                         <Field label="Offset (s)"><NumberBox value={offset} step={0.001} onCommit={setOffset} /></Field>
                     </>
@@ -847,6 +939,77 @@ function LogicTools({ ctrl }) {
     );
 }
 
+/**
+ * An Expression's two inputs: each another controller (any kind, but none
+ * that reads this one), or a constant. A switch input gives its On value in
+ * the state it is set to and its Off value otherwise (1 and 0 at first).
+ */
+function ExprTools({ ctrl }) {
+    const comp = useComp();
+    const all = comp.project.controllers;
+    const lookup = (id) => all.find((c) => c.id === id);
+    const choices = all.filter((c) => c.id !== ctrl.id && !dependsOn(c, ctrl.id, lookup));
+    const inputs = [0, 1].map((i) => ctrl.inputs?.[i] || exprInput(null, i ? 1 : 0.5));
+    const setInput = (i, patch, discrete = true) => comp.updateController(ctrl.id, (c) => {
+        const list = [0, 1].map((j) => c.inputs?.[j] || inputs[j]);
+        list[i] = { ...list[i], ...patch };
+        return { ...c, inputs: list };
+    }, discrete, discrete ? undefined : `ex:${ctrl.id}:${i}:${Object.keys(patch)[0]}`);
+    const onState = (c) => Math.min(1, (c?.states?.length || 1) - 1);
+    const num = (i, key, step = 0.01) => (
+        <span onBlur={comp.commit} style={{ display: 'contents' }}>
+            <NumberBox value={inputs[i][key]} step={step} onCommit={(v) => setInput(i, { [key]: v }, false)} />
+        </span>
+    );
+    return (
+        <Group owner={ctrl.id} title="Inputs">
+            <p className={styles.hint}>Combined as chosen above, then scaled, offset and held to 0–1. A switch gives its On value in the state picked and its Off value otherwise.</p>
+            {inputs.map((inp, i) => {
+                const c = inp.controller ? lookup(inp.controller) : null;
+                const sw = isSwitch(c);
+                return (
+                    // eslint-disable-next-line react/no-array-index-key
+                    <React.Fragment key={i}>
+                        <Field label={i ? 'B' : 'A'}>
+                            <select
+                                className={styles.select}
+                                value={inp.controller || ''}
+                                onChange={(e) => {
+                                    const n = e.target.value ? lookup(e.target.value) : null;
+                                    setInput(i, { controller: n ? n.id : null, ...(n && isSwitch(n) ? { state: onState(n) } : {}) });
+                                }}
+                            >
+                                <option value="">Constant</option>
+                                {inp.controller && !c && <option value={inp.controller}>(missing)</option>}
+                                {c && !choices.includes(c) && <option value={c.id}>{c.name}</option>}
+                                {choices.map((o) => <option key={o.id} value={o.id}>{`${o.name} \u00b7 ${CONTROLLER_TYPES[o.type]?.label || o.type}`}</option>)}
+                            </select>
+                            {!inp.controller && num(i, 'value')}
+                        </Field>
+                        {sw && (
+                            <>
+                                <Field label="On when">
+                                    <select
+                                        className={styles.select}
+                                        value={inp.state ?? onState(c)}
+                                        onChange={(e) => setInput(i, { state: parseInt(e.target.value, 10) })}
+                                    >
+                                        {(c.type === 'logic' ? ['Off', 'On'] : (c.states || [])).map((s, k) => <option key={s + k} value={k}>is {s}</option>)}
+                                    </select>
+                                </Field>
+                                <Field label="On / Off">
+                                    {num(i, 'on')}
+                                    {num(i, 'off')}
+                                </Field>
+                            </>
+                        )}
+                    </React.Fragment>
+                );
+            })}
+        </Group>
+    );
+}
+
 function ControllerInspector({ ctrl }) {
     const comp = useComp();
     const type = CONTROLLER_TYPES[ctrl.type];
@@ -892,6 +1055,7 @@ function ControllerInspector({ ctrl }) {
             )}
             {isCut(ctrl) && <SwitchTools ctrl={ctrl} />}
             {ctrl.type === 'logic' && <LogicTools ctrl={ctrl} />}
+            {ctrl.type === 'expr' && <ExprTools ctrl={ctrl} />}
             {ctrl.type === 'keys' && <KeyTools ctrl={ctrl} />}
             <Group owner={ctrl.id} id="linked" title={`Linked (${uses.length})`}>
                 {!uses.length && <p className={styles.hint}>Nothing linked. Right-click a control to link it.</p>}
@@ -1201,6 +1365,8 @@ function OutputInspector() {
                 <Field label="Width"><NumberBox value={o.width} step={2} onCommit={(v) => set({ width: Math.max(16, Math.round(v / 2) * 2) })} /></Field>
                 <Field label="Height"><NumberBox value={o.height} step={2} onCommit={(v) => set({ height: Math.max(16, Math.round(v / 2) * 2) })} /></Field>
                 <Field label="Frame rate"><NumberBox value={o.fps} step={0.001} onCommit={(v) => set({ fps: Math.max(1, Math.min(240, v)) })} /></Field>
+                {/* Every tempo field (nods, tempo LFOs, the cut grid) follows this until given its own. */}
+                <Field label="Tempo (BPM)"><NumberBox value={projectTempo(comp.project)} step={0.001} onCommit={(v) => { if (v > 0) comp.setTempo(Math.min(999, v)); }} /></Field>
                 <div className={styles.wideRow}>
                     {OUTPUT_PRESETS.map(([label, w, h]) => (
                         <button key={label} type="button" className={`${styles.btn} ${o.width === w && o.height === h ? styles.btnOn : ''}`} onClick={() => set({ width: w, height: h })}>{label}</button>

@@ -8,10 +8,13 @@ import {
     Eye, EyeOff, Move3d, Box, Camera, Sun, Sparkles, Activity, Plus, Trash2, Copy,
     ChevronDown, ChevronRight, Spline, PersonStanding, Square, Monitor, AlertTriangle, Clapperboard,
     Circle, Layers, ArrowUp, ArrowDown, Shapes, Frame, Type, LayoutGrid, ArrowDownWideNarrow, ScanSearch,
-    SquareFunction, Waypoints, Variable, CircleDot, Orbit,
+    SquareFunction, Waypoints, Variable, CircleDot, Orbit, Cuboid, Ghost, Cat,
+    Image as ImageIcon,
 } from 'lucide-react';
 import { Film, Music } from './icons';
-import { OBJECT_TYPES, ADDABLE, paramDefs } from '../model/schema';
+import {
+    OBJECT_TYPES, ADDABLE, SHAPE_KINDS, SHAPE_MENU, paramDefs,
+} from '../model/schema';
 import { CONTROLLER_TYPES } from '../model/controllers';
 import { useComp, useTick } from './context';
 import {
@@ -19,6 +22,7 @@ import {
 } from '../model/globals';
 import { formatValue } from '../model/expr';
 import { unusedScenes } from '../model/project';
+import { projectTempo } from '../model/tempo';
 import Inspector from './Inspector';
 import styles from '../compositor.module.css';
 
@@ -40,9 +44,12 @@ const ICONS = {
     variable: Variable,
     protagonist: PersonStanding,
     sackboy: PersonStanding,
+    cat: Cat,
     prop: Shapes,
+    shape: Cuboid,
     window: Square,
     text: Type,
+    image: ImageIcon,
     glow: Sparkles,
     haze: Sparkles,
     grade: Sparkles,
@@ -53,12 +60,31 @@ const ICONS = {
 
 const MEDIA_ICONS = { take: Clapperboard, video: Film, audio: Music, stage: Box };
 
-function Section({ title, children, actions, open: initial = true }) {
-    const [open, setOpen] = useState(initial);
+/**
+ * The outliner's folds, open or closed as they were left: kept with the
+ * project (see Compositor's outlineOpen), so they survive the sidebar
+ * closing, and a save and reopen. `def` is how one shows until toggled.
+ */
+function useFolds() {
+    const comp = useComp();
+    const [, redraw] = useState(0);
+    const isOpen = (key, def = true) => comp.outlineOpen(key, def);
+    const toggle = (key, def = true) => {
+        comp.setOutlineOpen(key, !isOpen(key, def));
+        redraw((n) => n + 1);
+    };
+    return { isOpen, toggle };
+}
+
+function Section({
+    id, title, children, actions, folds, open: def = true,
+}) {
+    const key = `section:${id}`;
+    const open = folds.isOpen(key, def);
     return (
         <>
             <div className={styles.olHead}>
-                <button type="button" className={styles.olToggle} onClick={() => setOpen(!open)} aria-label={open ? 'Collapse' : 'Expand'}>
+                <button type="button" className={styles.olToggle} onClick={() => folds.toggle(key, def)} aria-label={open ? 'Collapse' : 'Expand'}>
                     {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                 </button>
                 <span className={styles.olName}>{title}</span>
@@ -106,7 +132,8 @@ function AddButton({ label, items, onPick }) {
 
 function ObjectRow({ obj, depth = 1, kids = 0, folded = false, onFold = null }) {
     const comp = useComp();
-    const Icon = ICONS[obj.type] || Box;
+    // An invisible stand-in shape shows as one.
+    const Icon = obj.type === 'shape' && obj.params.role === 'occluder' ? Ghost : (ICONS[obj.type] || Box);
     const on = comp.selection?.kind === 'object' && comp.selection.id === obj.id;
     const visible = obj.params.visible !== false;
     const visLinked = !!obj.links?.visible;
@@ -188,7 +215,7 @@ function VariableRow({ v }) {
 function Outliner() {
     const comp = useComp();
     const { project } = comp;
-    const [closed, setClosed] = useState({});
+    const folds = useFolds();
     const effects = project.objects.filter((o) => !o.sceneId);
     const missing = comp.missingMedia;
     // Scenes no clip plays, which can be deleted.
@@ -196,7 +223,10 @@ function Outliner() {
     const unusedIds = new Set(unused.map((sc) => sc.id));
 
     const addItems = useMemo(() => [
-        ...ADDABLE.placed.map((t) => ({ id: t, label: OBJECT_TYPES[t].label })),
+        // Shapes by kind: each item adds a Shape that starts as that one.
+        ...ADDABLE.placed.flatMap((t) => (t === 'shape'
+            ? SHAPE_MENU.map((k) => ({ id: `shape:${k}`, label: `Shape: ${SHAPE_KINDS.find(([v]) => v === k)[1]}` }))
+            : [{ id: t, label: OBJECT_TYPES[t].label }])),
         { id: 'camera', label: 'Camera' },
     ], []);
 
@@ -209,9 +239,11 @@ function Outliner() {
             >
                 <span className={styles.olIcon}><Monitor size={12} /></span>
                 <span className={styles.olName}>Output</span>
-                <span className={styles.olTag}>{`${project.output.width}×${project.output.height} · ${project.output.fps}fps`}</span>
+                <span className={styles.olTag}>{`${project.output.width}×${project.output.height} · ${project.output.fps}fps · ${+projectTempo(project).toFixed(3)} bpm`}</span>
             </div>
             <Section
+                id="media"
+                folds={folds}
                 title="Media"
                 actions={(
                     <AddButton
@@ -266,12 +298,12 @@ function Outliner() {
             )}
             {project.scenes.map((sc) => {
                 const objs = project.objects.filter((o) => o.sceneId === sc.id);
-                const isClosed = closed[sc.id];
+                const isClosed = !folds.isOpen(sc.id);
                 const isUnused = unusedIds.has(sc.id);
                 return (
                     <React.Fragment key={sc.id}>
                         <div className={styles.olHead}>
-                            <button type="button" className={styles.olToggle} onClick={() => setClosed({ ...closed, [sc.id]: !isClosed })}>
+                            <button type="button" className={styles.olToggle} onClick={() => folds.toggle(sc.id)} aria-label={isClosed ? 'Expand' : 'Collapse'}>
                                 {isClosed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
                             </button>
                             <span className={styles.olName}>{sc.name}</span>
@@ -294,9 +326,9 @@ function Outliner() {
                             const kidsOf = (id) => objs.filter((o) => o.parentId === id);
                             return objs.filter((o) => !o.parentId || !ids.has(o.parentId)).flatMap((o) => {
                                 const kids = kidsOf(o.id);
-                                const folded = !!closed[o.id];
+                                const folded = !folds.isOpen(o.id);
                                 return [
-                                    <ObjectRow key={o.id} obj={o} kids={kids.length} folded={folded} onFold={() => setClosed({ ...closed, [o.id]: !folded })} />,
+                                    <ObjectRow key={o.id} obj={o} kids={kids.length} folded={folded} onFold={() => folds.toggle(o.id)} />,
                                     ...(folded ? [] : kids.map((k) => <ObjectRow key={k.id} obj={k} depth={2} />)),
                                 ];
                             });
@@ -306,6 +338,8 @@ function Outliner() {
             })}
 
             <Section
+                id="effects"
+                folds={folds}
                 title="Effects"
                 open={effects.length > 0}
                 actions={(
@@ -321,8 +355,9 @@ function Outliner() {
             </Section>
 
             <Section
+                id="variables"
+                folds={folds}
                 title="Variables"
-                open
                 actions={(
                     <AddButton
                         label="Add variable"
@@ -336,6 +371,8 @@ function Outliner() {
             </Section>
 
             <Section
+                id="controllers"
+                folds={folds}
                 title="Controllers"
                 actions={(
                     <AddButton

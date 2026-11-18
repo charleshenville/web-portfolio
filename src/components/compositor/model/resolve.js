@@ -5,6 +5,7 @@
 import { controllerValue, switchAt, isSwitch } from './controllers';
 import { applyMap, mixColor } from './maps';
 import { paramDefs, trackDefs } from './schema';
+import { projectTempo, withTempo } from './tempo';
 
 /**
  * A per-frame evaluation context: controller values are worked out once a
@@ -13,14 +14,17 @@ import { paramDefs, trackDefs } from './schema';
 export function makeFrame(project, t, analysis) {
     const byId = new Map(project.controllers.map((c) => [c.id, c]));
     const cache = new Map();
+    const tempo = projectTempo(project);
+    const ctx = withTempo(analysis, tempo);
     return {
         t,
         analysis,
         project,
+        tempo,
         controller: (id) => byId.get(id),
         value(id) {
             if (cache.has(id)) return cache.get(id);
-            const v = controllerValue(byId.get(id), t, analysis, (x) => byId.get(x));
+            const v = controllerValue(byId.get(id), t, ctx, (x) => byId.get(x));
             cache.set(id, v);
             return v;
         },
@@ -45,8 +49,26 @@ export function linkValue(def, link, frame) {
     return from + (to - from) * x;
 }
 
+// The keys of a set of parameters that are tempos (follow the project's when unset).
+const tempoCache = new WeakMap();
+function tempoKeys(defs) {
+    let k = tempoCache.get(defs);
+    if (!k) {
+        k = [];
+        defs.forEach((d, key) => { if (d.tempo) k.push(key); });
+        tempoCache.set(defs, k);
+    }
+    return k;
+}
+
 function resolveWith(owner, defs, frame) {
     const links = owner.links;
+    const tempos = tempoKeys(defs).filter((key) => !(Number.isFinite(owner.params[key]) && owner.params[key] > 0));
+    if (tempos.length) {
+        // Tempo fields that follow the project read its tempo.
+        const tempo = frame ? frame.tempo : projectTempo(null);
+        owner = { ...owner, params: { ...owner.params, ...Object.fromEntries(tempos.map((key) => [key, tempo])) } };
+    }
     if (!links || !frame) return owner.params;
     const keys = Object.keys(links);
     if (!keys.length) return owner.params;

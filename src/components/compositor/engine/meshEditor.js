@@ -205,7 +205,8 @@ export class MeshEditor {
 
     // ---- What is being edited ------------------------------------------------------------
 
-    get fp() { return this.rig?.fingerprint || null; }
+    /** Where the edits being made are kept: the scan's (shared), or this take's own; null on the original scan. */
+    get fp() { return this.rig?.editKey || null; }
 
     get doc() { return (this.fp && this.engine.meshEdits?.()[this.fp]?.doc) || EMPTY_EDITS; }
 
@@ -261,7 +262,7 @@ export class MeshEditor {
         const geo = this.rig.mesh.geometry;
         const doc = this.rig.editsApplied || EMPTY_EDITS;
         // The topology changes with the triangles, not with a vertex moved.
-        const key = `${this.rig.fingerprint}|${doc.add.length}|${doc.remove.length}|${doc.verts.length}|${this.rig.editsApplied ? 1 : 0}`;
+        const key = `${this.fp}|${doc.add.length}|${doc.remove.length}|${doc.verts.length}|${this.rig.editsApplied ? 1 : 0}`;
         // (Not while a brush is being dragged: that waits for it to end.)
         const fresh = !this.stroke && (key !== this.topoKey || !this.topo || this.topoDoc?.add !== doc.add || this.topoDoc?.remove !== doc.remove);
         if (fresh) {

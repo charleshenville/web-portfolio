@@ -347,3 +347,24 @@ export function editSummary(doc, base) {
         baseFaces: base ? base.index.length / 3 : 0,
     };
 }
+
+// Which edits a take's mesh is drawn with (its Scan mesh's `meshSource`):
+//   shared    the scan's own, shared by every take filmed in it (keyed by its fingerprint)
+//   own       this take's alone (keyed by fingerprint#take)
+//   original  none: the scan as it was published
+export const MESH_SOURCES = [
+    ['shared', 'The scan\u2019s edits (shared)'],
+    ['own', 'This take\u2019s own edits'],
+    ['original', 'The original scan'],
+];
+
+// What hides things behind it, catches shadows and catches glow can each use
+// a version of its own: one with holes filled for hiding, say, while what is
+// drawn is the scan as it was.
+export const MESH_PART_SOURCES = [['drawn', 'As drawn'], ...MESH_SOURCES];
+
+/** The key a take's edits are kept under (null: the original scan, no edits). */
+export function editKeyFor(fp, take, source) {
+    if (!fp || source === 'original') return null;
+    return source === 'own' ? `${fp}#${take}` : fp;
+}

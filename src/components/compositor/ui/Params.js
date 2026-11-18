@@ -7,6 +7,7 @@ import { createPortal } from 'react-dom';
 import { MAPS, applyMap, newLink } from '../model/maps';
 import { CONTROLLER_TYPES, isSwitch } from '../model/controllers';
 import { linkValue } from '../model/resolve';
+import { projectTempo } from '../model/tempo';
 import { useComp, useTick } from './context';
 import ColorPicker, { isPickerEvent } from '../../ui/ColorPicker';
 import styles from '../compositor.module.css';
@@ -137,7 +138,7 @@ export function LinkMenu({ at, def, value, link, onLink, onReset, onClose }) {
                     )}
                     <div className={styles.menuTitle}>New controller</div>
                     <div className={styles.menuGrid}>
-                        {['keys', 'switch', 'logic', 'lfo', 'kick', 'band'].map((type) => (
+                        {['keys', 'switch', 'logic', 'expr', 'lfo', 'kick', 'band'].map((type) => (
                             <button
                                 key={type}
                                 type="button"
@@ -247,6 +248,9 @@ export function ParamRow({ def, value, link, onChange, onLink, onCommit }) {
         setMenu({ x: e.clientX, y: e.clientY });
     };
     const reset = () => onChange(def.def ?? value);
+    // A tempo field with no number of its own shows (and plays) the project's tempo.
+    const follows = !!def.tempo && !(Number.isFinite(value) && value > 0);
+    if (follows) value = projectTempo(comp.project);
 
     let control;
     if (def.type === 'bool') {
@@ -344,6 +348,9 @@ export function ParamRow({ def, value, link, onChange, onLink, onCommit }) {
             <span className={styles.rowLabel}>
                 {linked && <span className={styles.linkDot} style={{ background: ctrl.color }} />}
                 {def.label}
+                {def.tempo && (follows
+                    ? <span className={styles.tempoTag} title="Follows the project's tempo (Output). Type a value to give this its own.">project</span>
+                    : <button type="button" className={styles.tempoTag} title="Follow the project's tempo again" onClick={() => { onChange(null); onCommit?.(); }}>use project</button>)}
             </span>
             {control}
             {menu && (

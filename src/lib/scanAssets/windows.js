@@ -28,9 +28,38 @@ import { sortPixels } from '../pixelSort';
 import { createSortPool } from '../pixelSortPool';
 import { MATTE_RAMP } from './roto';
 
-/** Camera layers. 1 is the models' reflection capture. */
+/**
+ * Camera layers. 1 is the models' reflection capture. SCAN_FRONT and
+ * SCAN_BEHIND mark, as well, the scan's own parts on FRONT and BEHIND, so
+ * they can be drawn before the shapes that stand in for it (Engine.renderLayer).
+ */
 export const LAYER = {
-    FRONT: 0, BEHIND: 2, OVERLAY: 3, WIN_CUT: 4, WIN_FX: 5, WIN_SCREEN: 6,
+    FRONT: 0, BEHIND: 2, OVERLAY: 3, WIN_CUT: 4, WIN_FX: 5, WIN_SCREEN: 6, SCAN_FRONT: 7, SCAN_BEHIND: 8,
+};
+
+/** A window's transform at rest: exactly as its corners were drawn. */
+export const WINDOW_IDENTITY = {
+    winScale: 1, // both ways at once
+    winW: 1, // across, of the drawn width
+    winH: 1, // up, of the drawn height
+    winX: 0, // slid across, in drawn widths
+    winY: 0, // slid up, in drawn heights
+    winRoll: 0, // degrees, in its own plane
+    winTilt: 0, // degrees, about its horizontal axis
+    winTurn: 0, // degrees, about its vertical axis
+};
+
+/** Where on the window (u across, v up, 0 to 1) each anchor is. */
+export const WINDOW_ANCHORS = {
+    centre: [0.5, 0.5],
+    top: [0.5, 1],
+    bottom: [0.5, 0],
+    left: [0, 0.5],
+    right: [1, 0.5],
+    topLeft: [0, 1],
+    topRight: [1, 1],
+    bottomLeft: [0, 0],
+    bottomRight: [1, 0],
 };
 
 export const WINDOW_DEFAULTS = {
@@ -72,39 +101,13 @@ export const WINDOW_DEFAULTS = {
     sortModAmount: 1,
     sortMod: { ...MOD_DEFAULTS },
 
-    // Size over time: the window as drawn is 1 x 1, and it eases from the
-    // start size to the end size between two times on its clock. Before the
-    // start it holds the start size, after the end the end size.
-    sizeOn: false,
-    sizeClock: 'take', // 'take' (the footage's time) | 'music'
-    sizeFrom: 0, // seconds
-    sizeTo: 2,
-    startW: 0,
-    startH: 0,
-    endW: 1,
-    endH: 1,
-    sizeEase: 'inOut', // 'linear' | 'in' | 'out' | 'inOut'
-    sizeAnchor: 'centre', // 'centre' | 'top' | 'bottom' | 'left' | 'right'
+    // Its transform: the window as drawn is 1 x 1, and these size, slide
+    // and turn it from there, every one of them something a controller can
+    // drive. It grows from its anchor ('centre', an edge, or a corner) and
+    // turns about it, about the drawn window's own axes.
+    ...WINDOW_IDENTITY,
+    sizeAnchor: 'centre', // a WINDOW_ANCHORS key
 };
-
-const EASES = {
-    linear: (x) => x,
-    in: (x) => x * x * x,
-    out: (x) => 1 - (1 - x) ** 3,
-    inOut: (x) => (x < 0.5 ? 4 * x * x * x : 1 - ((-2 * x + 2) ** 3) / 2),
-};
-
-/** The window's width and height multipliers at `time` on its size clock. */
-export function windowSizeAt(op, time) {
-    if (!op.sizeOn || time == null || !Number.isFinite(time)) return [1, 1];
-    const a = Math.min(op.sizeFrom, op.sizeTo);
-    const b = Math.max(op.sizeFrom, op.sizeTo);
-    let x = b - a < 1e-6 ? (time >= b ? 1 : 0) : Math.max(0, Math.min(1, (time - a) / (b - a)));
-    // Times entered the wrong way round play the animation backwards.
-    if (op.sizeFrom > op.sizeTo) x = 1 - x;
-    const k = (EASES[op.sizeEase] || EASES.linear)(x);
-    return [op.startW + (op.endW - op.startW) * k, op.startH + (op.endH - op.startH) * k];
-}
 
 export function makeWindowItem(id, corners) {
     return {
@@ -168,10 +171,26 @@ uniform vec2 matteRes;
 uniform vec2 matteCrop; // the footage's crop: (1, 1) when it fills the frame
 uniform sampler2D tScanDepth; // the scan's depth from this camera
 uniform float scanOcclude; // 1: hidden wherever the scan is in front
+uniform sampler2D tFrontDepth; // the 3D drawn in front of the footage (not the scan)
+uniform float frontOcclude; // 1: kept off whatever of that is in front of the window
+uniform vec3 frontCam; // the camera's near, far, and 1 when orthographic
+// How far from the camera a depth-buffer value is.
+float frontDist(float d) {
+    float n = frontCam.x;
+    float f = frontCam.y;
+    if (frontCam.z > 0.5) return n + d * (f - n);
+    return 2.0 * n * f / (f + n - (d * 2.0 - 1.0) * (f - n));
+}
 float edgeMask(vec2 uv) {
     float e = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
     float m = feather > 0.0 ? smoothstep(0.0, feather, e) : 1.0;
     if (scanOcclude > 0.5 && gl_FragCoord.z > texture2D(tScanDepth, gl_FragCoord.xy / matteRes).r + 1e-5) return 0.0;
+    if (frontOcclude > 0.5) {
+        // Clear of the window by more than a little (points resting on the
+        // wall it is drawn on are the wall's, and stay in it).
+        float fd = texture2D(tFrontDepth, gl_FragCoord.xy / matteRes).r;
+        if (fd < 1.0 && frontDist(fd) < frontDist(gl_FragCoord.z) * 0.985) return 0.0;
+    }
     if (matteMode != 0.0) {
         vec2 mu = (gl_FragCoord.xy / matteRes - 0.5) * matteCrop + 0.5;
         float k = smoothstep(${MATTE_RAMP[0].toFixed(3)}, ${MATTE_RAMP[1].toFixed(3)}, texture2D(tMatte, mu).r);
@@ -187,6 +206,9 @@ const matteUniforms = () => ({
     matteCrop: { value: new THREE.Vector2(1, 1) },
     tScanDepth: { value: null },
     scanOcclude: { value: 0 },
+    tFrontDepth: { value: null },
+    frontOcclude: { value: 0 },
+    frontCam: { value: new THREE.Vector3(0.1, 1000, 0) },
 });
 
 const COLOUR = /* glsl */`
@@ -360,6 +382,117 @@ export function cutByWindows(material) {
     });
 }
 
+// ---- Punching points out -------------------------------------------------------
+//
+// A window can delete the scan's points near it: those whose resting place,
+// seen square-on to the window, falls inside its shape and lies no more
+// than `front` before its face (the side it faces, out of the corners as
+// drawn: right × up) or `back` behind it. A box of the window's shape,
+// then, in the scene's frame. Done in the points' vertex shader, so the
+// scan's data is untouched and the window can move, grow and be linked.
+// The four corners need not be in a plane: the box stands on their mean
+// plane, and their outline is laid flat on it.
+
+export const MAX_PUNCH = 8;
+
+const vec3s = () => Array.from({ length: MAX_PUNCH }, () => new THREE.Vector3());
+const vec4s = () => Array.from({ length: MAX_PUNCH }, () => new THREE.Vector4());
+
+/** This frame's punching windows, shared by every material punchByWindows has hooked. */
+export const POINT_PUNCH = {
+    uPunchN: { value: 0 },
+    uPunchFrame: { value: new THREE.Matrix4() }, // world -> the scene's frame
+    uPunchO: { value: vec3s() }, // the window's middle
+    uPunchR: { value: vec3s() }, // its right, up and out, unit
+    uPunchU: { value: vec3s() },
+    uPunchF: { value: vec3s() },
+    uPunchA: { value: vec4s() }, // its corners on that plane: tl, tr
+    uPunchB: { value: vec4s() }, // br, bl
+    uPunchD: { value: Array.from({ length: MAX_PUNCH }, () => new THREE.Vector2()) }, // front, back
+};
+
+const PUNCH_HEAD = /* glsl */ `
+#define MAX_PUNCH ${MAX_PUNCH}
+uniform int uPunchN;
+uniform mat4 uPunchFrame;
+uniform vec3 uPunchO[MAX_PUNCH];
+uniform vec3 uPunchR[MAX_PUNCH];
+uniform vec3 uPunchU[MAX_PUNCH];
+uniform vec3 uPunchF[MAX_PUNCH];
+uniform vec4 uPunchA[MAX_PUNCH];
+uniform vec4 uPunchB[MAX_PUNCH];
+uniform vec2 uPunchD[MAX_PUNCH];
+float punchSide(vec2 a, vec2 b, vec2 p) { return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x); }
+bool punchedOut(vec3 local) {
+    if (uPunchN == 0) return false;
+    vec3 s = (uPunchFrame * modelMatrix * vec4(local, 1.0)).xyz;
+    for (int i = 0; i < MAX_PUNCH; i++) {
+        if (i >= uPunchN) break;
+        vec3 d = s - uPunchO[i];
+        float z = dot(d, uPunchF[i]);
+        if (z > uPunchD[i].x || z < -uPunchD[i].y) continue;
+        vec2 p = vec2(dot(d, uPunchR[i]), dot(d, uPunchU[i]));
+        float e0 = punchSide(uPunchA[i].xy, uPunchA[i].zw, p);
+        float e1 = punchSide(uPunchA[i].zw, uPunchB[i].xy, p);
+        float e2 = punchSide(uPunchB[i].xy, uPunchB[i].zw, p);
+        float e3 = punchSide(uPunchB[i].zw, uPunchA[i].xy, p);
+        if ((e0 >= 0.0 && e1 >= 0.0 && e2 >= 0.0 && e3 >= 0.0) || (e0 <= 0.0 && e1 <= 0.0 && e2 <= 0.0 && e3 <= 0.0)) return true;
+    }
+    return false;
+}
+`;
+
+/**
+ * Let windows punch a PointsMaterial's points out (see POINT_PUNCH). Chains
+ * onto whatever it already does before it compiles; patched once.
+ */
+export function punchByWindows(material) {
+    if (!material || material.userData.winPunch) return;
+    material.userData.winPunch = true;
+    const prev = material.onBeforeCompile;
+    material.onBeforeCompile = (shader, renderer) => {
+        prev?.call(material, shader, renderer);
+        Object.assign(shader.uniforms, POINT_PUNCH);
+        shader.vertexShader = shader.vertexShader
+            .replace('#include <common>', `#include <common>\n${PUNCH_HEAD}`)
+            // Off screen and of no size: deleted, as far as anything drawn can tell.
+            .replace('#include <fog_vertex>', '#include <fog_vertex>\n\tif (punchedOut(position)) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); gl_PointSize = 0.0; }');
+    };
+    const key = material.customProgramCacheKey?.bind(material);
+    material.customProgramCacheKey = () => `${key ? key() : ''}|winPunch`;
+    material.needsUpdate = true;
+}
+
+/**
+ * Set this frame's punching windows: `wins` WindowModels (those open, with
+ * punchPoints on), `root` the scene's root (whose frame the distances are in).
+ */
+export function setPointPunch(wins, root) {
+    const U = POINT_PUNCH;
+    const list = root ? wins.filter((w) => w.op.punchPoints && (w.corners || w.op.corners)).slice(0, MAX_PUNCH) : [];
+    U.uPunchN.value = list.length;
+    if (!list.length) return;
+    root.updateMatrixWorld(true);
+    const inv = new THREE.Matrix4().copy(root.matrixWorld).invert();
+    U.uPunchFrame.value.copy(inv);
+    const toScene = new THREE.Matrix4();
+    list.forEach((w, i) => {
+        toScene.multiplyMatrices(inv, w.object.matrixWorld);
+        const c = (w.corners || w.op.corners).map((v) => new THREE.Vector3().fromArray(v).applyMatrix4(toScene));
+        const [tl, tr, br, bl] = c;
+        const o = U.uPunchO.value[i].copy(tl).add(tr).add(br).add(bl).multiplyScalar(0.25);
+        const r = U.uPunchR.value[i].copy(tr).sub(tl).add(br).sub(bl).normalize();
+        const up = tl.clone().sub(bl).add(tr).sub(br);
+        const f = U.uPunchF.value[i].crossVectors(r, up).normalize();
+        U.uPunchU.value[i].crossVectors(f, r).normalize();
+        const flat = c.map((p) => { const d = p.clone().sub(o); return [d.dot(r), d.dot(U.uPunchU.value[i])]; });
+        U.uPunchA.value[i].set(flat[0][0], flat[0][1], flat[1][0], flat[1][1]);
+        U.uPunchB.value[i].set(flat[2][0], flat[2][1], flat[3][0], flat[3][1]);
+        const n = (v, d) => Math.max(0, Number.isFinite(v) ? v : d);
+        U.uPunchD.value[i].set(n(w.op.punchFront, 0.05), n(w.op.punchBack, 0.05));
+    });
+}
+
 function fxMaterial() {
     return new THREE.ShaderMaterial({
         uniforms: {
@@ -467,7 +600,7 @@ export class WindowModel {
         if (key !== this.cornerKey) {
             this.cornerKey = key;
             // Built once; after that the corners move the meshes in place
-            // (applySize lays them out from `drawn`), which a window that
+            // (applyTransform lays them out from `drawn`), which a window that
             // follows something every frame needs.
             if (!this.cutMesh) this.build(op.corners);
             else this.drawn = op.corners;
@@ -505,34 +638,70 @@ export class WindowModel {
     }
 
     /**
-     * Size the window to `w` x `h` of its drawn size, held at its anchor.
+     * Lay the window out by its transform (`t`, the WINDOW_IDENTITY fields
+     * and `sizeAnchor`): sized and slid across the drawn patch, then turned
+     * about its anchor.
      *
      * The four corners need not lie in a plane, so the window is the curved
      * patch they span, and a smaller window is a piece of that same patch
      * (a larger one carries it on past the corners). Scaling the corners
      * about a point instead would leave any twist out of the plane at full
-     * size, and the window could never close.
+     * size, and the window could never close. The turn is rigid, about the
+     * drawn window's own axes, so it keeps the patch's shape.
      */
-    applySize(w, h) {
-        const key = `${w}|${h}|${this.op.sizeAnchor}`;
+    applyTransform(t) {
+        const n = (v, d) => (Number.isFinite(v) ? v : d);
+        const k = Math.max(0, n(t.winScale, 1));
+        const w = Math.max(0, n(t.winW, 1)) * k;
+        const h = Math.max(0, n(t.winH, 1)) * k;
+        const x = n(t.winX, 0);
+        const y = n(t.winY, 0);
+        const deg = Math.PI / 180;
+        const roll = n(t.winRoll, 0) * deg;
+        const tilt = n(t.winTilt, 0) * deg;
+        const turn = n(t.winTurn, 0) * deg;
+        const a = t.sizeAnchor || 'centre';
+        const key = [w, h, x, y, roll, tilt, turn, a].join('|');
         if (key === this.sizeKey) return;
         this.sizeKey = key;
         this.size = [w, h];
-        const a = this.op.sizeAnchor;
-        // Across (u, left to right) and up (v, bottom to top) the patch.
-        const span = (len, from) => (from === 'start' ? [0, len] : from === 'end' ? [1 - len, 1] : [0.5 - len / 2, 0.5 + len / 2]);
-        const [u0, u1] = span(w, a === 'left' ? 'start' : a === 'right' ? 'end' : 'mid');
-        const [v0, v1] = span(h, a === 'bottom' ? 'start' : a === 'top' ? 'end' : 'mid');
+        // Across (u, left to right) and up (v, bottom to top) the patch: the
+        // anchor holds still and the window grows away from it.
+        const [au, av] = WINDOW_ANCHORS[a] || WINDOW_ANCHORS.centre;
+        const u0 = au - au * w + x;
+        const u1 = u0 + w;
+        const v0 = av - av * h + y;
+        const v1 = v0 + h;
         const g = patchGeometry(this.drawn, { segs: 6, u0, u1, v0, v1 });
         const pos = g.getAttribute('position').array;
+        const at = (u, v) => bilinear(this.drawn, u, v, new THREE.Vector3());
+        let corners = [at(u0, v1), at(u1, v1), at(u1, v0), at(u0, v0)];
+        if (roll || tilt || turn) {
+            // The drawn window's axes: right, up and out of it.
+            const [tl, tr, br, bl] = this.drawn.map((c) => new THREE.Vector3().fromArray(c));
+            const right = tr.clone().sub(tl).add(br.clone().sub(bl)).normalize();
+            const up = tl.clone().sub(bl).add(tr.clone().sub(br));
+            const out = right.clone().cross(up).normalize();
+            up.crossVectors(out, right).normalize();
+            const q = new THREE.Quaternion().setFromAxisAngle(up, turn)
+                .multiply(new THREE.Quaternion().setFromAxisAngle(right, tilt))
+                .multiply(new THREE.Quaternion().setFromAxisAngle(out, roll));
+            const pivot = at(au + x, av + y);
+            const p = new THREE.Vector3();
+            const spin = (v) => v.sub(pivot).applyQuaternion(q).add(pivot);
+            for (let i = 0; i < pos.length; i += 3) {
+                spin(p.set(pos[i], pos[i + 1], pos[i + 2]));
+                pos[i] = p.x; pos[i + 1] = p.y; pos[i + 2] = p.z;
+            }
+            corners = corners.map(spin);
+        }
         [this.cutMesh, this.fxMesh].forEach((m) => {
             const attr = m.geometry.getAttribute('position');
             attr.array.set(pos);
             attr.needsUpdate = true;
         });
         g.dispose();
-        const at = (u, v) => bilinear(this.drawn, u, v);
-        this.corners = [at(u0, v1), at(u1, v1), at(u1, v0), at(u0, v0)].map((p) => p.toArray());
+        this.corners = corners.map((c) => c.toArray());
         const line = this.outline.geometry.getAttribute('position');
         [...this.corners, this.corners[0]].forEach((c, i) => line.setXYZ(i, c[0], c[1], c[2]));
         line.needsUpdate = true;
@@ -576,19 +745,31 @@ export class WindowModel {
         });
     }
 
+    /**
+     * Keep the window's cut and effects off the 3D in front of it: `tex` the
+     * depth of what is drawn in front of the footage (the scan left out),
+     * from `camera`, or null to work on the whole picture under the window.
+     */
+    setFrontDepth(tex, camera) {
+        [this.cutMat, this.fxMat, ...this.maskedMats].forEach((m) => {
+            const u = m.uniforms;
+            if (!u.tFrontDepth) return;
+            u.tFrontDepth.value = tex;
+            u.frontOcclude.value = tex ? 1 : 0;
+            if (camera) u.frontCam.value.set(camera.near, camera.far, camera.isOrthographicCamera ? 1 : 0);
+        });
+    }
+
     /** Whether the window covers anything this frame. */
     get open() { return this.frame.visible; }
 
     /**
-     * Read the music: `music` the decoded track, `time` where it is; `take`
-     * where the footage is. `hold` shows the window as drawn, for editing
-     * its corners.
+     * Read the music: `music` the decoded track, `time` where it is. `hold`
+     * shows the window as drawn, for editing its corners.
      */
-    update(music, time, { take = null, hold = false } = {}) {
+    update(music, time, { hold = false } = {}) {
         const op = this.op;
-        const clock = op.sizeClock === 'music' ? time : take;
-        const [w, h] = hold ? [1, 1] : windowSizeAt(op, clock);
-        this.applySize(w, h);
+        this.applyTransform(hold ? { ...WINDOW_IDENTITY, sizeAnchor: op.sizeAnchor } : op);
         this.hue = op.hueOn ? modulate(op.hueMod, music, time) : { input: 0, value: 0, flash: 0 };
         this.sortLevel = op.sortOn ? modulate(op.sortMod, music, time) : { input: 0, value: 0, flash: 0 };
         const u = this.fxMat.uniforms;
@@ -849,6 +1030,65 @@ export class WindowCompositor {
         MESH_CUT.winCutOn.value = 1;
     }
 
+    /**
+     * Over the composite in compRT, inside `win`, put back `pre` (the frame
+     * before the 3D in front of the footage was drawn) wherever that 3D,
+     * by `front` (its depth, from `camera`), stands in front of the window:
+     * what the window's quad tree and pixel sort read is what is behind it,
+     * not what is in front. The same test as the window's own mask
+     * (edgeMask), so what it leaves out is what they leave alone.
+     */
+    restoreFront(win, scene, camera, all, pre, front) {
+        if (!this.restoreMat) {
+            this.restoreMat = new THREE.ShaderMaterial({
+                uniforms: {
+                    tPre: { value: null },
+                    tFrontDepth: { value: null },
+                    res: { value: new THREE.Vector2(1, 1) },
+                    frontCam: { value: new THREE.Vector3(0.1, 1000, 0) },
+                },
+                vertexShader: VERT,
+                fragmentShader: /* glsl */`
+                    uniform sampler2D tPre;
+                    uniform sampler2D tFrontDepth;
+                    uniform vec2 res;
+                    uniform vec3 frontCam;
+                    float frontDist(float d) {
+                        float n = frontCam.x;
+                        float f = frontCam.y;
+                        if (frontCam.z > 0.5) return n + d * (f - n);
+                        return 2.0 * n * f / (f + n - (d * 2.0 - 1.0) * (f - n));
+                    }
+                    void main() {
+                        vec2 st = gl_FragCoord.xy / res;
+                        float fd = texture2D(tFrontDepth, st).r;
+                        if (!(fd < 1.0 && frontDist(fd) < frontDist(gl_FragCoord.z) * 0.985)) discard;
+                        gl_FragColor = texture2D(tPre, st);
+                    }`,
+                depthTest: false,
+                depthWrite: false,
+                side: THREE.DoubleSide,
+            });
+        }
+        const u = this.restoreMat.uniforms;
+        u.tPre.value = pre;
+        u.tFrontDepth.value = front;
+        u.res.value.copy(this.size);
+        u.frontCam.value.set(camera.near, camera.far, camera.isOrthographicCamera ? 1 : 0);
+        const r = this.renderer;
+        const prev = r.getRenderTarget();
+        const mask = camera.layers.mask;
+        const keep = all.map((w) => [w.cutMesh.visible, w.cutMesh.material]);
+        all.forEach((w) => { w.cutMesh.visible = w === win; });
+        win.cutMesh.material = this.restoreMat;
+        r.setRenderTarget(this.compRT);
+        camera.layers.set(LAYER.WIN_CUT);
+        r.render(scene, camera);
+        camera.layers.mask = mask;
+        all.forEach((w, i) => { [w.cutMesh.visible, w.cutMesh.material] = keep[i]; });
+        r.setRenderTarget(prev);
+    }
+
     prepareCut(win) {
         const u = win.cutMat.uniforms;
         u.tBehind.value = this.behindRT.texture;
@@ -860,6 +1100,7 @@ export class WindowCompositor {
         this.compRT.dispose();
         this.sortRT.dispose();
         this.maskRT.dispose();
+        this.restoreMat?.dispose();
         this.blitMat.dispose();
         this.quad.geometry.dispose();
         this.pool?.close?.();

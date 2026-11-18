@@ -152,20 +152,30 @@ web tool picks it up via `manifest.json`. Stages are resumable:
 | Stage | What it does |
 | --- | --- |
 | `frames` | ffmpeg splits the video into JPEGs |
-| `cloud` | samples a coloured point cloud, and low-poly copies for the wireframe |
+| `cloud` | samples a coloured point cloud sized to the scan, and low-poly copies for the wireframe |
 | `solve` | locates the camera against the scan, frame by frame |
 | `refine` | pulls each pose into line by optical flow, and refits the focal |
 | `export` | writes `track.json` and a web-playable H.264 copy |
 | `verify` | draws the solve back over the footage |
-| `publish` | copies assets across and registers the take |
+| `publish` | copies assets across and registers the take, without reloading an open compositor |
 | `roto` | writes the take's object mattes from `roto/<take>.json` (see below) |
 
-`decimate.py` drops disconnected shells below ~0.4% of the face count before
-simplifying. A scan carries hundreds of them - leaves, gravel, scraps of fence -
-which read as noise in wireframe and, worse, hold the decimator up, since every
-shell needs a minimum number of faces however low the target. On these takes it
-removes 480-1240 specks and tens of thousands of faces, and only then will a
-mesh actually reduce to its target.
+`decimate.py` makes the wireframe's low-poly copies from every mesh in the
+GLB (a scan whose texture overflows one page arrives as several, one per
+page), welded by position first. A textured scan splits its vertices at
+every seam of its texture atlas, so unwelded it is hundreds of loose charts.
+The decimator used to take those for specks - leaves, gravel - and drop any
+under 0.4% of the faces, which on Myhal was 1184 "specks" and 145k faces, 45%
+of the scan; every take lost some, and on Bench the medium wireframe missed
+46% of the surface. Welded,
+a scan is 1-7 real shells and none is small enough to matter, so nothing is
+dropped (`--min-shell` brings the filter back if a scan ever needs it).
+
+The point cloud is sized to the scan: 2500 points per square metre of
+surface, between 300k and 1M (`--points` fixes the count, `--points-per-m2`
+changes the rate). A fixed 300k was 270k/m^2 on a statue and 1.4k/m^2 - one
+every 2.7 cm - on the Myhal atrium. For more than that, the compositor's Scan
+points go past density 1, and samples the mesh itself in the browser.
 
 Knobs worth knowing when a take misbehaves:
 

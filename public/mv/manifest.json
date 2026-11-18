@@ -74,5 +74,9 @@
     {
         "id": "myhal_3",
         "label": "Myhal Atrium 3"
+    },
+    {
+        "id": "truck",
+        "label": "Truck"
     }
 ]

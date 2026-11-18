@@ -602,7 +602,16 @@ export class SackboyModel {
             const i2 = S.tris[lo * 3 + 2];
             for (let k = 0; k < 3; k++) col[i * 3 + k] = S.color[i0 * 3 + k] * (1 - a - b) + S.color[i1 * 3 + k] * a + S.color[i2 * 3 + k] * b;
         }
-        this.pointSample = { tri, bary, n };
+        // Where each point rests, for the Flow (the compositor's particle sim).
+        const homes = new Float32Array(n * 3);
+        for (let i = 0; i < n; i++) {
+            const t = tri[i] * 3;
+            const a = bary[i * 2];
+            const b = bary[i * 2 + 1];
+            const c = 1 - a - b;
+            for (let k = 0; k < 3; k++) homes[i * 3 + k] = S.pos[S.tris[t] * 3 + k] * c + S.pos[S.tris[t + 1] * 3 + k] * a + S.pos[S.tris[t + 2] * 3 + k] * b;
+        }
+        this.pointSample = { tri, bary, n, homes };
         this.pointKey = this.op.pointCount;
         const g = new THREE.BufferGeometry();
         g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
@@ -611,6 +620,21 @@ export class SackboyModel {
         this.points = new THREE.Points(g, this.pointMaterial);
         this.points.frustumCulled = false;
         this.scene.add(this.points);
+    }
+
+    /**
+     * The points as the Flow moves them: their geometry and material, where
+     * each rests (in the scene's units) and how many metres one of those is.
+     */
+    pointFlow() {
+        if (!this.ready || !this.points) return null;
+        return {
+            geometry: this.points.geometry,
+            material: this.pointMaterial,
+            homes: this.pointSample.homes,
+            count: this.pointSample.n,
+            unit: (this.k || 1) * (this.op.scale || 1),
+        };
     }
 
     buildHandles() {

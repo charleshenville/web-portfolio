@@ -20,13 +20,34 @@
 //   text     a switch whose states are pieces of text, cut the same way;
 //            a text variable shows the one it is on (and anything that can
 //            follow a switch can follow it).
+//   expr     two inputs, A and B, combined (A + B, A × B, min, …), scaled,
+//            offset and held to 0..1. An input is any other controller (an
+//            Expression too), or a constant; a switch input (Switch, Text,
+//            Logic) gives one value when in a chosen state and another when
+//            not, 1 and 0 unless changed (0.8 and 0.2, say).
 
 import { kickEnvelope, kickHits, kickLevelAt } from '../../../lib/protagonist/kicks';
 import { modulate, MOD_DEFAULTS } from '../../../lib/scanAssets/modulate';
+import { bpmOr } from './tempo';
 
 export const CONTROLLER_COLORS = ['#ecebe6', '#e8553d', '#e8c547', '#6fd3ff', '#9b7bff', '#5fd39a', '#ff7bd0', '#ffb347'];
 
 const num = (key, label, min, max, step, def, extra = {}) => ({ key, label, type: 'number', min, max, step, def, ...extra });
+
+// How an Expression combines its inputs a and b.
+export const EXPR_OPS = [
+    ['add', 'A + B', (a, b) => a + b],
+    ['sub', 'A \u2212 B', (a, b) => a - b],
+    ['mul', 'A \u00d7 B', (a, b) => a * b],
+    ['div', 'A \u00f7 B', (a, b) => (Math.abs(b) > 1e-6 ? a / b : (a > 0 ? 1 : 0))],
+    ['min', 'Smaller of A, B', Math.min],
+    ['max', 'Larger of A, B', Math.max],
+    ['avg', 'Average of A, B', (a, b) => (a + b) / 2],
+    ['diff', '|A \u2212 B|', (a, b) => Math.abs(a - b)],
+    ['screen', 'Screen (1 \u2212 (1\u2212A)(1\u2212B))', (a, b) => 1 - (1 - a) * (1 - b)],
+    ['pow', 'A ^ B', (a, b) => (a <= 0 ? 0 : a ** b)],
+];
+const EXPR_FN = Object.fromEntries(EXPR_OPS.map(([v, , f]) => [v, f]));
 
 export const CONTROLLER_TYPES = {
     kick: {
@@ -64,7 +85,7 @@ export const CONTROLLER_TYPES = {
                 options: [['hz', 'Free (Hz)'], ['bpm', 'Tempo']],
             },
             num('rate', 'Rate (Hz)', 0.01, 20, 0.01, 0.5, { when: (p) => p.sync !== 'bpm' }),
-            num('bpm', 'BPM', 30, 240, 0.1, 120, { when: (p) => p.sync === 'bpm' }),
+            num('bpm', 'BPM', 30, 240, 0.001, null, { tempo: true, when: (p) => p.sync === 'bpm' }),
             num('beats', 'Beats / cycle', 0.25, 32, 0.25, 1, { when: (p) => p.sync === 'bpm' }),
             num('phase', 'Phase', 0, 1, 0.01, 0),
             num('duty', 'Duty', 0.01, 0.99, 0.01, 0.5, { when: (p) => p.shape === 'square' }),
@@ -98,6 +119,17 @@ export const CONTROLLER_TYPES = {
         label: 'Text',
         lane: true,
         params: [],
+    },
+    expr: {
+        label: 'Expression',
+        params: [
+            {
+                key: 'op', label: 'Combine', type: 'select', def: 'mul',
+                options: EXPR_OPS.map(([v, l]) => [v, l]),
+            },
+            num('gain', 'Then \u00d7', -4, 4, 0.01, 1),
+            num('offset', 'Then +', -2, 2, 0.01, 0),
+        ],
     },
     logic: {
         label: 'Logic',
@@ -136,7 +168,19 @@ export function makeController(id, type, over = {}) {
     if (type === 'switch' || type === 'text') base.cuts = [{ id: `${id}_c0`, t: 0, s: 0 }];
     if (type === 'text') base.states = ['Hello', 'World'];
     if (type === 'logic') base.inputs = [];
+    if (type === 'expr') base.inputs = [exprInput(null), exprInput(null, 1)];
     return { ...base, ...over, params: { ...base.params, ...(over.params || {}) } };
+}
+
+/**
+ * One of an Expression's inputs: `controller` (an id, or null for the
+ * constant `value`), and for a switch the `state` it counts as on in and the
+ * values it gives `on` and `off` it.
+ */
+export function exprInput(controller, value = 0.5, state = 1) {
+    return {
+        controller, value, state, on: 1, off: 0,
+    };
 }
 
 /** The controllers a new project starts with: whatever drove the old tools. */
@@ -146,7 +190,8 @@ export function stockControllers(nextId) {
         makeController(nextId(), 'band', { name: 'Lows', color: '#e8553d', params: { low: 30, high: 150 } }),
         makeController(nextId(), 'band', { name: 'Mids', color: '#e8c547', params: { low: 250, high: 2000 } }),
         makeController(nextId(), 'band', { name: 'Highs', color: '#6fd3ff', params: { low: 5000, high: 16000, release: 0.15 } }),
-        makeController(nextId(), 'lfo', { name: 'Pulse', color: '#9b7bff', params: { sync: 'bpm', bpm: 120, beats: 1 } }),
+        // Its tempo is the project's.
+        makeController(nextId(), 'lfo', { name: 'Pulse', color: '#9b7bff', params: { sync: 'bpm', bpm: null, beats: 1 } }),
     ];
 }
 
@@ -193,8 +238,8 @@ const hash = (n) => {
     return (x >>> 0) / 4294967296;
 };
 
-function lfoAt(p, t) {
-    const hz = p.sync === 'bpm' ? (p.bpm / 60) / Math.max(0.0625, p.beats) : p.rate;
+function lfoAt(p, t, tempo) {
+    const hz = p.sync === 'bpm' ? (bpmOr(p.bpm, tempo) / 60) / Math.max(0.0625, p.beats) : p.rate;
     const x = t * hz + (p.phase || 0);
     let f = x - Math.floor(x);
     if (p.shape === 'sine' || p.shape === 'saw' || p.shape === 'triangle' || !p.shape) {
@@ -276,11 +321,40 @@ export function switchAt(ctrl, t, lookup = null, seen = undefined) {
 }
 
 /**
+ * An Expression's value at `t`: its inputs combined, scaled, offset and held
+ * to 0..1. `seen` stops Expressions reading each other in a loop (one
+ * already being worked out reads as 0).
+ */
+export function exprAt(ctrl, t, ctx, lookup, seen = new Set()) {
+    if (seen.has(ctrl.id)) return 0;
+    seen.add(ctrl.id);
+    const fin = (v, d) => (Number.isFinite(v) ? v : d);
+    const read = (inp) => {
+        if (!inp) return 0;
+        const c = inp.controller && lookup ? lookup(inp.controller) : null;
+        if (!c) return inp.controller ? 0 : fin(inp.value, 0);
+        if (isSwitch(c)) {
+            const want = Number.isInteger(inp.state) ? inp.state : 1;
+            return switchAt(c, t, lookup) === want ? fin(inp.on, 1) : fin(inp.off, 0);
+        }
+        // eslint-disable-next-line no-use-before-define
+        return controllerValue(c, t, ctx, lookup, seen);
+    };
+    const [A, B] = ctrl.inputs || [];
+    const p = ctrl.params || {};
+    const f = EXPR_FN[p.op] || EXPR_FN.mul;
+    const v = f(read(A), read(B)) * fin(p.gain, 1) + fin(p.offset, 0);
+    seen.delete(ctrl.id);
+    return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0;
+}
+
+/**
  * A controller's signal at timeline time `t`, 0..1. `ctx.music` is the
  * project's mixed soundtrack (an AudioBuffer starting at timeline 0), or
  * null with no audio, in which case the audio controllers sit at 0.
+ * `lookup(id)` finds the controllers a Logic or an Expression reads.
  */
-export function controllerValue(ctrl, t, ctx, lookup = null) {
+export function controllerValue(ctrl, t, ctx, lookup = null, seen = undefined) {
     if (!ctrl) return 0;
     const p = ctrl.params || {};
     switch (ctrl.type) {
@@ -307,7 +381,7 @@ export function controllerValue(ctrl, t, ctx, lookup = null) {
             const span = Math.max(1e-3, (p.ceiling ?? 1) - (p.floor ?? 0));
             return Math.max(0, Math.min(1, (v - (p.floor ?? 0)) / span));
         }
-        case 'lfo': return lfoAt(p, t);
+        case 'lfo': return lfoAt(p, t, ctx?.tempo);
         case 'keys': return Math.max(0, Math.min(1, keysAt(ctrl.keys, t, p.interp)));
         case 'switch':
         case 'text': {
@@ -315,6 +389,7 @@ export function controllerValue(ctrl, t, ctx, lookup = null) {
             return switchAt(ctrl, t) / n;
         }
         case 'logic': return logicAt(ctrl, t, lookup) ? 1 : 0;
+        case 'expr': return exprAt(ctrl, t, ctx, lookup, seen);
         default: return 0;
     }
 }
@@ -348,12 +423,13 @@ export function logicCuts(ctrl, lookup) {
     return out;
 }
 
-/** Whether `ctrl` reads `id`, directly or through other Logics (so it cannot be one of id's inputs). */
+/** Whether `ctrl` reads `id`, directly or through Logics and Expressions (so it cannot be one of id's inputs). */
 export function dependsOn(ctrl, id, lookup, seen = new Set()) {
     if (!ctrl || seen.has(ctrl.id)) return false;
     if (ctrl.id === id) return true;
     seen.add(ctrl.id);
-    return ctrl.type === 'logic' && (ctrl.inputs || []).some((inp) => dependsOn(lookup(inp.controller), id, lookup, seen));
+    return (ctrl.type === 'logic' || ctrl.type === 'expr')
+        && (ctrl.inputs || []).some((inp) => inp.controller && dependsOn(lookup(inp.controller), id, lookup, seen));
 }
 
 /** Kick hits for the auto-cut tools and the lane display. */
@@ -366,11 +442,11 @@ export function kickTimes(ctrl, music) {
     return n > 1 ? hits.filter((_, i) => i % n === 0) : hits;
 }
 
-/** A level trace of an audio controller across [t0, t1], for its lane. */
-export function controllerTrace(ctrl, t0, t1, samples, ctx) {
+/** A level trace of an audio controller (or an LFO, or an Expression) across [t0, t1], for its lane. */
+export function controllerTrace(ctrl, t0, t1, samples, ctx, lookup = null) {
     const out = new Float32Array(samples);
     const span = Math.max(1e-6, t1 - t0);
-    for (let i = 0; i < samples; i++) out[i] = controllerValue(ctrl, t0 + (span * i) / Math.max(1, samples - 1), ctx);
+    for (let i = 0; i < samples; i++) out[i] = controllerValue(ctrl, t0 + (span * i) / Math.max(1, samples - 1), ctx, lookup);
     return out;
 }
 

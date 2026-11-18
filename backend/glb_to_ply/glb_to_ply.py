@@ -551,22 +551,40 @@ end_header
         else:
             f.write(header)
         
-        # Write vertices with colors
+        # Write vertices with colors, all at once: a scan's cloud runs to
+        # millions of points, and a write per point took minutes.
         if binary:
-            for i in range(num_vertices):
-                # Write position as floats
-                f.write(np.array(vertices[i], dtype=np.float32).tobytes())
-                # Write color as bytes
-                f.write(np.array(colors[i], dtype=np.uint8).tobytes())
+            rows = np.empty(num_vertices, dtype=[('x', '<f4'), ('y', '<f4'), ('z', '<f4'),
+                                                 ('r', 'u1'), ('g', 'u1'), ('b', 'u1')])
+            v = np.asarray(vertices, dtype=np.float32)
+            c = np.asarray(colors, dtype=np.uint8)
+            rows['x'], rows['y'], rows['z'] = v[:, 0], v[:, 1], v[:, 2]
+            rows['r'], rows['g'], rows['b'] = c[:, 0], c[:, 1], c[:, 2]
+            f.write(rows.tobytes())
         else:
             for i in range(num_vertices):
                 f.write(f"{vertices[i, 0]} {vertices[i, 1]} {vertices[i, 2]} "
                        f"{colors[i, 0]} {colors[i, 1]} {colors[i, 2]}\n")
 
 
+def points_for_area(geometries: list[trimesh.Trimesh], per_m2: float,
+                    lo: int, hi: int) -> tuple[int, float]:
+    """
+    A point budget that grows with the scan's surface area.
+
+    A fixed count is dense on a statue and sparse on a building: 300k points
+    is 270k per square metre on a 1 m^2 scan but 1.4k on a 211 m^2 atrium,
+    a point every 2.7 cm. Returns (points, area in the scan's units squared).
+    """
+    area = float(sum(g.area for g in geometries))
+    return int(np.clip(round(area * per_m2), lo, hi)), area
+
+
 def glb_to_ply(input_path: str, output_path: str | None = None, 
                binary: bool = True, output_dir: Path | None = None,
-               sample_points: int | None = None, seed: int | None = None) -> str:
+               sample_points: int | None = None, seed: int | None = None,
+               per_m2: float | None = None, min_points: int = 300_000,
+               max_points: int = 1_000_000) -> str:
     """
     Convert a GLB file to PLY point cloud with vertex colors from texture.
     
@@ -578,6 +596,8 @@ def glb_to_ply(input_path: str, output_path: str | None = None,
         sample_points: If set, randomly/uniformly sample this many points on the
             mesh surface instead of using only the mesh vertices
         seed: Optional random seed used when sample_points is set
+        per_m2: If set (and sample_points is not), sample this many points
+            per square unit of surface, clamped to [min_points, max_points]
         
     Returns:
         Path to the output PLY file
@@ -595,6 +615,12 @@ def glb_to_ply(input_path: str, output_path: str | None = None,
         output_path = Path(output_path)
     
     print(f"Loading GLB file: {input_path}")
+
+    if sample_points is None and per_m2 is not None:
+        sample_points, area = points_for_area(load_glb_geometries(str(input_path)),
+                                              per_m2, min_points, max_points)
+        print(f"  Surface area: {area:.1f}; {per_m2:g} per unit^2 -> {sample_points} points "
+              f"(clamped to {min_points}-{max_points})")
 
     if sample_points is not None:
         # Randomly and uniformly sample points across the mesh faces. Keep each
@@ -726,6 +752,16 @@ def main():
              "faces instead of using only the mesh vertices (e.g. -n 100000)"
     )
     parser.add_argument(
+        "--per-m2",
+        type=float,
+        default=None,
+        metavar="D",
+        help="Sample D points per square unit of surface instead of a fixed -n "
+             "(clamped by --min-points/--max-points)"
+    )
+    parser.add_argument("--min-points", type=int, default=300_000)
+    parser.add_argument("--max-points", type=int, default=1_000_000)
+    parser.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -756,7 +792,9 @@ def main():
         
         try:
             glb_to_ply(args.input, args.output, binary=not args.ascii,
-                       sample_points=args.sample_points, seed=args.seed)
+                       sample_points=args.sample_points, seed=args.seed,
+                       per_m2=args.per_m2, min_points=args.min_points,
+                       max_points=args.max_points)
         except Exception as e:
             print(f"Error during conversion: {e}")
             sys.exit(1)

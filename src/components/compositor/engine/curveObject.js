@@ -243,7 +243,7 @@ class Ribbon {
 
 // ---- Points ------------------------------------------------------------------------------
 
-const SHAPES = {
+export const SHAPES = {
     square: () => new THREE.PlaneGeometry(2, 2),
     disc: () => new THREE.CircleGeometry(1, 24),
     tetra: () => new THREE.TetrahedronGeometry(1, 0),
@@ -690,6 +690,7 @@ export default class CurveAdapter {
             this.handle.scale.copy(g.scale);
         }
         this.bounds.makeEmpty();
+        this.emitCount = 0; // what it drew this frame, for Emission (emitPoints)
         this.ribbon.mesh.castShadow = !!p.castShadow;
         // Hidden, its children (a spline's points) go too; faded out, only the curve does.
         g.visible = p.visible !== false;
@@ -716,6 +717,28 @@ export default class CurveAdapter {
     }
 
     copies(p) { return isSeries(p) ? Math.max(1, Math.min(64, Math.round(p.seriesCount || 1))) : 1; }
+
+    /** Buffers (xyz, rgb) for at least `n` emitting points, kept between frames. */
+    emitBuf(n) {
+        if (!this.emit || this.emit.cap < n) {
+            const cap = Math.max(n, 64);
+            this.emit = { cap, pos: new Float32Array(cap * 3), col: new Float32Array(cap * 3) };
+        }
+        return this.emit;
+    }
+
+    /**
+     * What it drew this frame as an emitter (engine/emission.js): its dots, or
+     * its line's samples, in order along it, in the frame of this.group. They
+     * move from frame to frame, so they are gathered into lights along the
+     * curve rather than by k-means.
+     */
+    emitPoints() {
+        if (!this.emitCount || !this.emit || !this.group.visible) return null;
+        return {
+            pos: this.emit.pos, col: this.emit.col, count: this.emitCount, matrixWorld: this.group.matrixWorld, ordered: true,
+        };
+    }
 
     /**
      * Turned by `q` ([x, y, z, w], in the scene's frame, or null for not at
@@ -836,6 +859,19 @@ export default class CurveAdapter {
             }
             strips.push(s);
         }
+        if (p.emitOn) {
+            let n = 0;
+            strips.forEach((s) => { for (let i = 0; i < s.n; i++) if (s.ok[i]) n++; });
+            const E = this.emitBuf(n);
+            strips.forEach((s) => {
+                for (let i = 0; i < s.n; i++) {
+                    if (!s.ok[i]) continue;
+                    E.pos.set(s.xyz.subarray(i * 3, i * 3 + 3), this.emitCount * 3);
+                    E.col.set(s.rgba.subarray(i * 4, i * 4 + 3), this.emitCount * 3);
+                    this.emitCount++;
+                }
+            });
+        }
         const r = this.ribbon;
         r.write(strips);
         const u = r.material.uniforms;
@@ -921,6 +957,12 @@ export default class CurveAdapter {
                 this.shade(p, u, solid, B.rgba, j * 4);
                 j++;
             }
+        }
+        if (p.emitOn) {
+            const E = this.emitBuf(j);
+            E.pos.set(B.xyz.subarray(0, j * 3));
+            for (let i = 0; i < j; i++) E.col.set(B.rgba.subarray(i * 4, i * 4 + 3), i * 3);
+            this.emitCount = j;
         }
         this.dots.write(j, B.xyz, B.size, B.rgba, {
             shape: p.pointShape || 'tetra',

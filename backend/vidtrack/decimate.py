@@ -8,14 +8,21 @@ as a solid fill rather than as structure. Collapsing it to a few thousand faces
 turns it back into something you can see through, and quadric decimation keeps
 the silhouette while doing it.
 
-Two things make the result less of a mess:
+Three things make the result less of a mess:
 
-  * Specks are dropped first. A scan carries dozens of small disconnected
-    shells - leaves, gravel, scraps of fence - that read as noise in wireframe
-    and, worse, hold the decimator up: every shell needs a minimum number of
-    faces, so a mesh full of them cannot be reduced much however low the target.
+  * Every mesh in the GLB is used. A scan whose texture overflows one page
+    arrives as several meshes, one per page, which together make the whole.
+  * The mesh is welded by position first. A textured scan splits its vertices
+    wherever the texture atlas has a seam, so unwelded it falls apart into
+    hundreds of loose charts: the decimator tears each one away from its
+    neighbours, and a shell-size filter mistakes them for junk. On Myhal that
+    once threw away 1184 "specks" - 145k faces, 45% of the scan - which were
+    really pieces of the walls. Welded, nearly every scan is a handful of
+    shells and nothing small is left to filter.
   * Several levels are written rather than one, since how dense a wireframe
     should be is a look, not a constant.
+
+Small disconnected shells are kept unless --min-shell asks otherwise.
 
 Usage:
     python decimate.py <scan.glb> <out_dir> <name> [--levels coarse=1200,...]
@@ -32,42 +39,76 @@ import trimesh
 DEFAULT_LEVELS = {"coarse": 1200, "medium": 5000, "fine": 18000}
 
 
-def drop_specks(mesh: trimesh.Trimesh, min_fraction: float = 0.004
+def load_welded(src: Path) -> trimesh.Trimesh:
+    """
+    Every mesh in a GLB, with its scene transform, as one mesh welded by
+    position (texture coordinates and normals ignored).
+
+    Args:
+        src: the scan GLB
+
+    Returns:
+        An untextured mesh whose shells are the surface's real pieces
+    """
+    scene = trimesh.load(str(src), force="scene")
+    verts, faces, offset = [], [], 0
+    for node in scene.graph.nodes_geometry:
+        transform, gname = scene.graph[node]
+        g = scene.geometry.get(gname)
+        if not isinstance(g, trimesh.Trimesh) or not len(g.faces):
+            continue
+        verts.append(trimesh.transform_points(np.asarray(g.vertices), transform))
+        faces.append(np.asarray(g.faces, dtype=np.int64) + offset)
+        offset += len(g.vertices)
+    if not faces:
+        raise SystemExit(f"{src}: no meshes")
+    mesh = trimesh.Trimesh(np.vstack(verts), np.vstack(faces), process=False)
+    raw = len(mesh.vertices)
+    mesh.merge_vertices(merge_tex=True, merge_norm=True)
+    print(f"[dec] {src.name}: {len(faces)} mesh(es), {len(mesh.faces)} faces, "
+          f"{raw} -> {len(mesh.vertices)} vertices welded")
+    return mesh
+
+
+def drop_specks(mesh: trimesh.Trimesh, min_fraction: float = 0.0
                 ) -> trimesh.Trimesh:
     """
-    Remove disconnected shells too small to be part of the subject.
+    Remove disconnected shells smaller than a share of the faces.
 
     Components are found from face adjacency directly rather than through
     mesh.split(), which tries to repair each shell it extracts and pulls in a
-    graph dependency to do it. Nothing here needs watertight parts.
+    graph dependency to do it. Nothing here needs watertight parts. The mesh
+    must be welded (load_welded) or every texture chart counts as a shell.
 
     Args:
-        mesh: the loaded scan
-        min_fraction: smallest share of total faces a shell may hold and stay
+        mesh: the welded scan
+        min_fraction: smallest share of total faces a shell may hold and
+            stay; 0 keeps everything
 
     Returns:
         The mesh with specks removed (or the original if that would empty it)
     """
     groups = trimesh.graph.connected_components(
         mesh.face_adjacency, nodes=np.arange(len(mesh.faces)))
-    if len(groups) <= 1:
+    total = len(mesh.faces)
+    sizes = sorted((len(g) for g in groups), reverse=True)
+    print(f"[dec]   {len(groups)} shell(s), largest {sizes[:6]}")
+    if len(groups) <= 1 or min_fraction <= 0:
         return mesh
 
-    total = len(mesh.faces)
     keep = [g for g in groups if len(g) >= total * min_fraction]
-    if not keep:
+    if not keep or len(keep) == len(groups):
         return mesh
 
     faces = np.concatenate(keep)
     trimmed = mesh.submesh([faces], append=True, repair=False)
-    print(f"[dec]   {len(groups)} shells -> kept {len(keep)} "
-          f"({len(groups) - len(keep)} specks, "
+    print(f"[dec]   kept {len(keep)} ({len(groups) - len(keep)} specks, "
           f"{total - len(trimmed.faces)} faces dropped)")
     return trimmed
 
 
 def decimate(src: Path, out_dir: Path, name: str, levels: dict,
-             min_shell: float = 0.004) -> dict:
+             min_shell: float = 0.0) -> dict:
     """
     Write one untextured copy of a mesh per level.
 
@@ -81,9 +122,7 @@ def decimate(src: Path, out_dir: Path, name: str, levels: dict,
     Returns:
         {level name: faces actually achieved}
     """
-    mesh = trimesh.load(str(src), force="mesh")
-    print(f"[dec] {src.name}: {len(mesh.faces)} faces")
-    mesh = drop_specks(mesh, min_shell)
+    mesh = drop_specks(load_welded(src), min_shell)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     achieved = {}
@@ -110,8 +149,9 @@ def main():
     ap.add_argument("name", type=str)
     ap.add_argument("--levels", type=str, default=None,
                     help="comma-separated name=faces, e.g. coarse=1200,fine=20000")
-    ap.add_argument("--min-shell", type=float, default=0.004,
-                    help="smallest share of faces a disconnected shell may hold")
+    ap.add_argument("--min-shell", type=float, default=0.0,
+                    help="smallest share of faces a disconnected shell may hold "
+                         "(default 0: keep every shell)")
     args = ap.parse_args()
 
     levels = DEFAULT_LEVELS

@@ -1,1 +1,87 @@
-{}
+{
+  "myhal_1": {
+    "mesh": {
+      "exposure": 0,
+      "contrast": 1,
+      "gamma": 1,
+      "saturation": 1,
+      "temperature": 0
+    },
+    "points": {
+      "exposure": -0.27,
+      "contrast": 1.16,
+      "gamma": 1,
+      "saturation": 0.83,
+      "temperature": 0
+    },
+    "updatedAt": 1794785058610
+  },
+  "myhal_3": {
+    "mesh": {
+      "exposure": -0.21,
+      "contrast": 1,
+      "gamma": 1,
+      "saturation": 1,
+      "temperature": 0
+    },
+    "points": {
+      "exposure": -0.96,
+      "contrast": 1.1,
+      "gamma": 1.38,
+      "saturation": 0.83,
+      "temperature": 0
+    },
+    "updatedAt": 1794777759296
+  },
+  "nonchalant": {
+    "mesh": {
+      "exposure": 1.18,
+      "contrast": 1.06,
+      "gamma": 1,
+      "saturation": 1,
+      "temperature": 0
+    },
+    "points": {
+      "exposure": 1.38,
+      "contrast": 1.06,
+      "gamma": 1,
+      "saturation": 1,
+      "temperature": 0
+    },
+    "updatedAt": 1794167417684
+  },
+  "popeyes": {
+    "mesh": {
+      "exposure": 1.41,
+      "contrast": 1.08,
+      "gamma": 1,
+      "saturation": 1.24,
+      "temperature": 0.14
+    },
+    "points": {
+      "exposure": 1.41,
+      "contrast": 1.08,
+      "gamma": 1,
+      "saturation": 1.24,
+      "temperature": 0.14
+    },
+    "updatedAt": 1794291225864
+  },
+  "truck": {
+    "mesh": {
+      "exposure": 0.99,
+      "contrast": 1,
+      "gamma": 1,
+      "saturation": 2,
+      "temperature": 0
+    },
+    "points": {
+      "exposure": 0.72,
+      "contrast": 1,
+      "gamma": 1,
+      "saturation": 2,
+      "temperature": 1
+    },
+    "updatedAt": 1794888501597
+  }
+}

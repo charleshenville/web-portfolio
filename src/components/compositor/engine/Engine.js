@@ -28,7 +28,7 @@ import { GammaCorrectionShader } from 'three/examples/jsm/shaders/GammaCorrectio
 import DreamHazeShader from '../../../lib/dreamHaze';
 import { PointGlowPass } from '../../../lib/pointGlow';
 import {
-    WindowCompositor, LAYER, cornersFacing, MESH_CUT, cutByWindows,
+    WindowCompositor, LAYER, cornersFacing, MESH_CUT, cutByWindows, setPointPunch, POINT_PUNCH,
 } from '../../../lib/scanAssets/windows';
 import { MeshEditor } from './meshEditor';
 import { MatteSet, HoldoutPass, mattesFor } from '../../../lib/scanAssets/roto';
@@ -37,10 +37,12 @@ import { makeFrame, resolveObject, resolveTrack } from '../model/resolve';
 import { globalsOf } from '../model/globals';
 import { ALL_POINTS } from '../model/spline';
 import { switchAt as switchStateAt, isSwitch } from '../model/controllers';
-import { OBJECT_TYPES } from '../model/schema';
+import { OBJECT_TYPES, isPatchType } from '../model/schema';
 import { programAt, clipSourceTime } from '../model/timeline';
 import { TakeRig, poseAt, applyIntrinsics } from './takeRig';
 import { makeAdapter } from './adapters';
+import { editKeyFor } from '../model/meshEdits';
+import { Emission, makeGlowCatcher } from './emission';
 import { drawnSpan, knotU } from './curveObject';
 import { VideoPool } from './media';
 import {
@@ -240,6 +242,18 @@ export default class Engine {
         renderer.shadowMap.enabled = true;
         renderer.shadowMap.type = THREE.PCFShadowMap;
         renderer.shadowMap.autoUpdate = false;
+        // Three draws a caster into the shadow maps only if the camera being
+        // rendered sees its layer. The maps are refreshed by whichever pass
+        // comes first, and that can see only part of the frame: with stand-in
+        // shapes it is the scan on its own (renderLayer), so the maps held
+        // nothing and no shadows landed anywhere. They are drawn as the whole
+        // frame sees them instead, in front of the footage and behind it.
+        const shadows = renderer.shadowMap;
+        const drawShadows = shadows.render;
+        const shadowView = new THREE.Camera();
+        shadowView.layers.set(LAYER.FRONT);
+        shadowView.layers.enable(LAYER.BEHIND);
+        shadows.render = (lights, scene) => drawShadows.call(shadows, lights, scene, shadowView);
         renderer.domElement.style.display = 'block';
         // The canvas sits in a box exactly its size, so overlays (the roto
         // editor's) can be laid over the picture and nothing else.
@@ -475,6 +489,8 @@ export default class Engine {
         this.holdout?.dispose();
         this.footRT?.dispose();
         this.scanDepthRT?.dispose();
+        this.frontRT?.dispose();
+        this.preRT?.dispose();
         this.scanDepthCutRT?.dispose();
         this.blackTex?.dispose();
         this.mattes?.dispose();
@@ -658,6 +674,7 @@ export default class Engine {
     }
 
     dropScene(s) {
+        s.rig?.glowCatcher?.material.dispose();
         s.adapters.forEach((a) => a.dispose());
         s.adapters.clear();
         s.rig?.dispose();
@@ -858,7 +875,7 @@ export default class Engine {
         if (obj.type === 'camera') return { node: this.cameraProxy, kind: 'camera' };
         const a = this.adapterOf(obj.id)?.adapter;
         if (!a) return null;
-        if (obj.type === 'window' || obj.type === 'text' || obj.type === 'splinePoint') return null; // moved by their corners
+        if (obj.type === 'window' || isPatchType(obj.type) || obj.type === 'splinePoint') return null; // moved by their corners
         const node = a.gizmoTarget || a.object;
         return node ? { node, kind: 'object' } : null;
     }
@@ -934,8 +951,27 @@ export default class Engine {
             patch.rotY = deg(node.rotation.y);
             patch.rotZ = deg(node.rotation.z);
             if (this.gizmoKind !== 'camera') patch.scale = r(node.scale.x);
+            if (obj.type === 'shape') Object.assign(patch, this.shapeScalePatch(obj, node, r));
         }
         this.emit('edit', obj.id, patch, done);
+    }
+
+    /**
+     * A shape scales along each axis: a drag that grew all three alike (the
+     * gizmo's middle handle) is its Scale, one along an axis its Stretch on
+     * that axis. Measured against what it is drawn at now, links applied.
+     */
+    shapeScalePatch(obj, node, r) {
+        const p = this.adapterOf(obj.id)?.adapter?.op || obj.params;
+        const k = Math.max(1e-4, p.scale ?? 1);
+        const st = ['stretchX', 'stretchY', 'stretchZ'].map((key) => Math.max(1e-4, Number.isFinite(p[key]) ? p[key] : 1));
+        const now = [node.scale.x, node.scale.y, node.scale.z];
+        const f = now.map((v, i) => v / (k * st[i]));
+        const same = Math.abs(f[0] - f[1]) < 1e-4 * Math.abs(f[0]) && Math.abs(f[0] - f[2]) < 1e-4 * Math.abs(f[0]);
+        if (same) return { scale: r(k * f[0]) };
+        return {
+            scale: r(k), stretchX: r(now[0] / k), stretchY: r(now[1] / k), stretchZ: r(now[2] / k),
+        };
     }
 
     /**
@@ -995,8 +1031,8 @@ export default class Engine {
         if (!obj) return null;
         // Windows and text are both drawn by their corners, written to `corners`
         // (text over the frame is placed in frame coordinates instead).
-        if (obj.type === 'text' && obj.params.space === 'frame') return null;
-        if (obj.type === 'text' || obj.type === 'splinePoint') {
+        if (isPatchType(obj.type) && obj.params.space === 'frame') return null;
+        if (isPatchType(obj.type) || obj.type === 'splinePoint') {
             // In the text's own frame: its parent's (a label's, from its point),
             // turned with it when it faces the camera, so the markers sit on it.
             const a = S.adapters.get(obj.id);
@@ -1406,10 +1442,23 @@ export default class Engine {
             const pts = ofType('scanPoints');
             const mesh = ofType('scanMesh');
             const wire = ofType('scanWire');
-            rig.applyEdits(this.meshEdits?.()[rig.fingerprint]?.doc || null);
+            // The scan's shared edits, this take's own, or none (meshSource).
+            rig.editKey = editKeyFor(rig.fingerprint, rig.take, mesh?.meshSource);
+            const editsOf = (key) => (key ? this.meshEdits?.()[key]?.doc || null : null);
+            rig.applyEdits(editsOf(rig.editKey));
+            // Each part's own version, if it isn't the drawn one (Versions).
+            const version = (src) => {
+                const key = !src || src === 'drawn' ? rig.editKey : editKeyFor(rig.fingerprint, rig.take, src);
+                return rig.geometryFor(key, editsOf(key));
+            };
+            if (rig.occluder) rig.occluder.geometry = version(mesh?.occludeSource) || rig.occluder.geometry;
+            if (rig.catcher) rig.catcher.geometry = version(mesh?.shadowSource) || rig.catcher.geometry;
+            rig.glowGeometry = version(mesh?.glowSource);
+            rig.keepVersions();
             rig.apply({ take: takeP, points: pts, mesh, wire }, drawSize, this.ss);
             rig.applyLook(this.looks?.()[S.take]);
             rig.react(pts, wire, freq, live);
+            rig.animatePoints(pts, t, drawSize, this.ss);
             behind.points = pts?.depthLayer === 'behind';
             behind.mesh = mesh?.depthLayer === 'behind';
             behind.wire = wire?.depthLayer === 'behind';
@@ -1422,7 +1471,9 @@ export default class Engine {
             // A spline whose points are being dragged holds its spin still, so they go where they're pulled.
             holdSpin: this.dragging && this.cornerTargetNow?.kind === 'spline' ? this.cornerTargetNow.obj.id : null,
             music, time: t, take: takeTime, freq, live, drawSize, renderer: this.renderer, scene: this.scene, camera: cam,
-            exporting, playing: !!opts.playing, envReady: !!rig?.envMesh,
+            // The scan's mesh as drawn, and its textures (one per part), for text and images laid onto it.
+            scanSurface: rig?.mesh ? { mesh: rig.mesh, maps: (rig.texturedList || []).map((m) => m?.map || null) } : null,
+            exporting, playing: !!opts.playing, envReady: !!rig?.envMesh, ss: this.ss,
             // A window shows at its drawn size while one of its corners is dragged.
             holdWindow: this.dragging && this.cornerTargetNow?.kind === 'window' ? S?.adapters.get(this.cornerTargetNow.obj.id) : null,
         };
@@ -1444,12 +1495,14 @@ export default class Engine {
                     a.look = resolved.get(o.parentId) || {};
                     a.parentId = o.parentId;
                 }
+                a.selected = o.id === this.selectedId;
                 this.attach(o, a, S, resolved, f);
                 a.sync(o, resolved.get(o.id), f);
                 a.update(dt, f);
             });
         }
         this.placeSun(S, sunP);
+        this.placeEmission(S, rig, ofType);
         this.syncHelpers(objects, resolved, S, takeTime);
         this.syncCorners(this.cornerTarget(objects, S), cam);
         this.syncGizmo();
@@ -1461,6 +1514,8 @@ export default class Engine {
             S.adapters.forEach((a, id) => {
                 // Windows keep the camera layers their passes draw them on.
                 if (a.model?.cutMesh) return;
+                // A stand-in shape hides things as the scan's depth-only copy does, on both layers.
+                if (a.standIn) { a.assignStandInLayers(); return; }
                 const p = resolved.get(id);
                 const back = p?.depthLayer === 'behind';
                 // And the shadow map it casts into (a spline's points cast into their spline's).
@@ -1595,6 +1650,8 @@ export default class Engine {
             S.rig.catcher.visible = casting;
             S.rig.catcher.material.opacity = sun.shadowOpacity;
         }
+        // Stand-in shapes catch shadows where they replace the scan.
+        S?.adapters.forEach((a) => a.setShadowCatch?.(casting, sun.shadowOpacity));
         const center = box.isEmpty() ? (S?.rig?.sphere ? S.root.localToWorld(S.rig.sphere.center.clone()) : new THREE.Vector3()) : box.getCenter(new THREE.Vector3());
         this.sunHelper.position.copy(center).addScaledVector(dir, 0.8);
         this.sunHelper.setDirection(dir.clone().negate());
@@ -1701,6 +1758,68 @@ export default class Engine {
         }
     }
 
+    /**
+     * Emissive point clouds (engine/emission.js): the scan's points and the
+     * scene's point clouds that emit become this frame's light sources, and
+     * the glow catchers (on the scan mesh's surface and stand-in shapes) show
+     * their light where those surfaces aren't drawn lit.
+     */
+    placeEmission(S, rig, ofType) {
+        if (!this.emission) this.emission = new Emission(this.scene);
+        const sources = [];
+        if (S) {
+            S.root.updateMatrixWorld(true);
+            const unit = S.root.getWorldScale(new THREE.Vector3()).x;
+            const P = rig?.cloud ? ofType('scanPoints') : null;
+            if (P?.emitOn && P.visible !== false && rig.cloudReact?.base) {
+                const g = rig.cloud.geometry;
+                const total = g.getAttribute('position').count;
+                sources.push({
+                    id: `scan:${S.id}`,
+                    pos: rig.cloudReact.base,
+                    col: P.colorMode === 'solid' ? null : (g.getAttribute('color')?.array || null),
+                    count: Math.min(total, g.drawRange.count, rig.cloudReact.base.length / 3),
+                    matrixWorld: rig.cloud.matrixWorld,
+                    unit,
+                    p: P.colorMode === 'solid' && P.emitColorMode !== 'solid' ? { ...P, emitColorMode: 'solid', emitColor: P.color } : P,
+                });
+            }
+            S.adapters.forEach((a, id) => {
+                const rec = a.rec;
+                const p = a.op;
+                if (!p?.emitOn) return;
+                // Equations, splines and manifolds: what they drew this frame.
+                const drawn = a.emitPoints?.();
+                if (drawn) { sources.push({ id, ...drawn, unit, p }); return; }
+                if (!rec?.basePositions || !rec.instancedMesh || !a.group?.visible) return;
+                sources.push({
+                    id,
+                    pos: rec.basePositions,
+                    col: rec.instancedMesh.instanceColor?.array || null,
+                    count: rec.count,
+                    matrixWorld: rec.instancedMesh.matrixWorld,
+                    unit,
+                    p,
+                });
+            });
+        }
+        const glow = this.emission.update(sources);
+        // The scan's surface glows where the mesh isn't drawn lit (hidden, or
+        // scan-textured or flat): a lit mesh takes the real lights instead.
+        if (rig?.mesh) {
+            if (!rig.glowCatcher) {
+                rig.glowCatcher = makeGlowCatcher(rig.mesh.geometry);
+                rig.root.add(rig.glowCatcher);
+            }
+            rig.glowCatcher.geometry = rig.glowGeometry || rig.mesh.geometry;
+            const M = ofType('scanMesh');
+            // A lit mesh takes the real lights, unless the glow is caught on another version.
+            const lit = rig.mesh.visible && M?.shading === 'shaded' && rig.glowCatcher.geometry === rig.mesh.geometry;
+            rig.glowCatcher.visible = glow && !this.meshEditor.active && !lit;
+        }
+        S?.adapters.forEach((a) => a.setGlowCatch?.(glow));
+    }
+
     /** A camera and a frustum drawn for it, in one colour, on the overlay. */
     makeFrustum(color, ortho = false) {
         const cam = ortho ? new THREE.OrthographicCamera(-1, 1, 1, -1, 0.05, 0.4) : new THREE.PerspectiveCamera(50, this.outputAspect, 0.05, 0.4);
@@ -1785,6 +1904,33 @@ export default class Engine {
     }
 
     /**
+     * Draw `layer` (FRONT or BEHIND) of the scene. Shapes standing in for the
+     * scan hide what is behind them, but not the scan itself: where the scan
+     * dips just behind one (a floor under a ground plane laid over it, say),
+     * the stand-in's depth would take the scan's mesh and points out in
+     * patches. So with stand-ins in `S`, the scan's own parts are drawn
+     * first, then the stand-ins and everything else, against the depth the
+     * scan left.
+     */
+    renderLayer(S, cam, layer, r = this.renderer) {
+        const rig = S?.rig;
+        let standIns = false;
+        S?.adapters.forEach((a) => { if (a.standIn) standIns = true; });
+        cam.layers.set(layer);
+        if (!standIns || !rig) { r.render(this.scene, cam); return; }
+        const scanBit = layer === LAYER.BEHIND ? LAYER.SCAN_BEHIND : LAYER.SCAN_FRONT;
+        cam.layers.set(scanBit);
+        r.render(this.scene, cam);
+        // Kept out of the second draw: only what the first drew.
+        const parts = rig.parts.filter((o) => o.layers.isEnabled(scanBit));
+        const was = parts.map((o) => o.visible);
+        parts.forEach((o) => { o.visible = false; });
+        cam.layers.set(layer);
+        r.render(this.scene, cam);
+        parts.forEach((o, i) => { o.visible = was[i]; });
+    }
+
+    /**
      * The 3D-objects glow's source: everything in the scene in front of the
      * footage, over black. The footage and video layers are drawn apart from
      * the scene, so they are not in it; text laid over the frame is set aside.
@@ -1793,8 +1939,8 @@ export default class Engine {
         const flat = [];
         this.scene.traverseVisible((o) => { if (o.userData.frame2D) flat.push(o); });
         flat.forEach((o) => { o.visible = false; });
+        this.renderLayer(this.composeScene, cam, LAYER.FRONT, r);
         cam.layers.set(LAYER.FRONT);
-        r.render(this.scene, cam);
         flat.forEach((o) => { o.visible = true; });
         this.holdOutSource();
     }
@@ -1838,11 +1984,14 @@ export default class Engine {
 
     /**
      * The scan's depth from `cam`, into a depth texture the size of the
-     * drawing buffer, whether or not the mesh is shown. Null without a scan.
+     * drawing buffer, whether or not the mesh is shown. Stand-in shapes
+     * count as the scan. Null with neither.
      */
     renderScanDepth(S, cam, size, key = 'scanDepthRT') {
         const rig = S?.rig;
-        if (!rig?.mesh) return null;
+        const standIns = [];
+        S?.adapters.forEach((a) => { if (a.standIn) standIns.push(a); });
+        if (!rig?.mesh && !standIns.length) return null;
         // `key` names the target: 'scanDepthCutRT' keeps a second depth, the
         // scan as windows that cut it leave it (drawn with MESH_CUT on).
         if (!this[key] || this[key].width !== size.x || this[key].height !== size.y) {
@@ -1857,11 +2006,33 @@ export default class Engine {
             this.depthMesh.matrixAutoUpdate = false;
             this.depthMesh.frustumCulled = false;
             this.depthScene.add(this.depthMesh);
+            this.depthPlain = new THREE.MeshBasicMaterial({ colorWrite: false, side: THREE.DoubleSide });
+            this.depthStandIns = [];
         }
-        this.depthMesh.geometry = rig.mesh.geometry;
         S.root.updateMatrixWorld(true);
-        this.depthMesh.matrix.copy(S.root.matrixWorld);
-        this.depthMesh.matrixWorld.copy(S.root.matrixWorld);
+        this.depthMesh.visible = !!rig?.mesh;
+        if (rig?.mesh) {
+            // What hides things behind the scan: its depth-only copy's version.
+            this.depthMesh.geometry = rig.occluder?.geometry || rig.mesh.geometry;
+            this.depthMesh.matrix.copy(S.root.matrixWorld);
+            this.depthMesh.matrixWorld.copy(S.root.matrixWorld);
+        }
+        while (this.depthStandIns.length < standIns.length) {
+            const m = new THREE.Mesh(undefined, this.depthPlain);
+            m.matrixAutoUpdate = false;
+            m.frustumCulled = false;
+            this.depthScene.add(m);
+            this.depthStandIns.push(m);
+        }
+        this.depthStandIns.forEach((m, i) => {
+            const a = standIns[i];
+            m.visible = !!a;
+            if (!a) return;
+            m.geometry = a.occ.geometry;
+            m.matrix.copy(a.occ.matrixWorld);
+            m.matrixWorld.copy(a.occ.matrixWorld);
+            m.material = a.windowCut ? this.depthMesh.material : this.depthPlain;
+        });
         const r = this.renderer;
         const prev = r.getRenderTarget();
         cam.layers.set(LAYER.FRONT);
@@ -1871,6 +2042,55 @@ export default class Engine {
         r.render(this.depthScene, cam);
         r.setRenderTarget(prev);
         return this[key].depthTexture;
+    }
+
+    /**
+     * The depth of the 3D drawn in front of the footage, from `cam`, made at
+     * most once a frame (`this.frontDepthTex`, cleared as each frame starts):
+     * what windows working on the finished frame keep off when it is in front
+     * of them. The scan and what stands in for it are left out (windows are
+     * drawn on it); the points, props, models and shapes are in, drawn with
+     * their own materials, so points have their size and their flow.
+     */
+    frontDepth(S, cam, size) {
+        if (this.frontDepthTex) return this.frontDepthTex;
+        if (!this.frontRT || this.frontRT.width !== size.x || this.frontRT.height !== size.y) {
+            this.frontRT?.dispose();
+            this.frontRT = new THREE.WebGLRenderTarget(size.x, size.y, { depthBuffer: true });
+            this.frontRT.depthTexture = new THREE.DepthTexture(size.x, size.y);
+        }
+        const rig = S?.rig;
+        const hide = [rig?.mesh, rig?.occluder, rig?.catcher, rig?.glowCatcher, rig?.wire];
+        S?.adapters.forEach((a) => { if (a.standIn) hide.push(a.group); });
+        const was = hide.map((o) => o?.visible);
+        hide.forEach((o) => { if (o) o.visible = false; });
+        const r = this.renderer;
+        const prev = r.getRenderTarget();
+        const clear = r.getClearColor(new THREE.Color());
+        const alpha = r.getClearAlpha();
+        const mask = cam.layers.mask;
+        cam.layers.set(LAYER.FRONT);
+        r.setRenderTarget(this.frontRT);
+        r.setClearColor(0x000000, 0);
+        r.clear(true, true, false);
+        r.render(this.scene, cam);
+        r.setRenderTarget(prev);
+        r.setClearColor(clear, alpha);
+        cam.layers.mask = mask;
+        hide.forEach((o, i) => { if (o) o.visible = was[i]; });
+        this.frontDepthTex = this.frontRT.depthTexture;
+        return this.frontDepthTex;
+    }
+
+    /** A copy of `target` as it is now (made once per frame's need, kept in preRT). */
+    copyFrame(target, size) {
+        if (!this.preRT) this.preRT = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false });
+        if (this.preRT.width !== size.x || this.preRT.height !== size.y) this.preRT.setSize(size.x, size.y);
+        const r = this.renderer;
+        r.setRenderTarget(this.preRT);
+        this.windows.blit(target.texture);
+        r.setRenderTarget(target);
+        return this.preRT.texture;
     }
 
     /** The footage alone, full frame, into its own target: what a matte shows over hidden footage. */
@@ -1944,7 +2164,7 @@ export default class Engine {
         bf.begin(this.drawNo);
         bf.captureTexture(rt.texture, rt.width, rt.height, this.exporting);
         bf.step(p, t);
-        bf.placeWindows(cam, p, outW, { music: this.analysis.music, time: t, take: null });
+        bf.placeWindows(cam, p, outW, { music: this.analysis.music, time: t });
         this.blobWindowsOver(bf, rt, cam, t);
         bf.drawOver(rt, p, outW, o.height || 1080);
     }
@@ -1966,8 +2186,11 @@ export default class Engine {
             w.model.fxMesh.visible = false;
         });
         if (!wins.length) return;
+        // Over the finished frame: kept off the 3D in front of them, as placed windows are.
+        const front = ctx.front?.() || null;
         wins.forEach((w) => {
             w.setScanDepth(ctx.scanDepth || null);
+            w.setFrontDepth(front, cam);
             w.setMatte(ctx.matteOn && w.op.matte ? this.mattes.texture(w.op.matte) : null, comp.size, ctx.crop);
         });
         const cutWins = wins.filter((w) => w.op.cut);
@@ -1990,6 +2213,7 @@ export default class Engine {
             cam.layers.set(LAYER.WIN_FX);
             r.render(bf.scene, cam);
         }
+        wins.forEach((w) => w.setFrontDepth(null));
         cam.layers.set(LAYER.FRONT);
     }
 
@@ -2130,6 +2354,7 @@ export default class Engine {
         const drawScene = !!S;
         const bufSize = this.renderer.getDrawingBufferSize(new THREE.Vector2());
         this.composeCam = cam;
+        this.composeScene = S;
         const wins = [];
         let screens = false;
         S?.adapters.forEach((a) => {
@@ -2148,6 +2373,9 @@ export default class Engine {
             }
         });
         const size = this.windows.ensure();
+        this.frontDepthTex = null; // made this frame if a window wants it (frontDepth)
+        // Windows that punch out the scan's points near them, in the scene's frame.
+        setPointPunch(S?.rig?.cloud ? wins : [], S?.root);
         // Windows and text that hide behind the scan read its depth (the
         // whole scan: drawn before any window cuts it).
         MESH_CUT.winCutOn.value = 0;
@@ -2175,7 +2403,10 @@ export default class Engine {
         const textScanDepth = scanDepth && meshCutters.length && textDepth ? this.renderScanDepth(S, cam, size, 'scanDepthCutRT') : scanDepth;
         S?.adapters.forEach((a) => a.setScanDepth?.(textScanDepth, size));
         // The same for the Blob Trackers' windows, drawn later with the effects.
-        this.winCtx = { scanDepth, matteOn: !!(footage || matteFootage), crop };
+        this.winCtx = {
+            scanDepth, matteOn: !!(footage || matteFootage), crop,
+            front: drawScene ? () => this.frontDepth(S, cam, size) : () => null,
+        };
         const hold = holdTex.length > 0 && drawScene;
         const target = hold ? this.holdout.baseRT : out;
         // Over hidden footage a half-on patch inside a matte would let the
@@ -2200,6 +2431,11 @@ export default class Engine {
         const late = (w) => !!out && w.op.fxStage === 'all';
         const earlyWins = wins.filter((w) => !late(w));
         const lateWins = wins.filter(late);
+        // Quad trees and late sorts read the finished frame, so they keep a
+        // copy of it from before the 3D in front was drawn, to read past that.
+        const readsFrame = (w) => (w.op.qt_on && (this.exporting || w.op.qt_preview !== false)) || (late(w) && w.op.sortOn);
+        const needPre = !!out && drawScene && wins.some(readsFrame);
+        let pre = null;
 
         const bg = this.backdrop || (this.backdrop = new THREE.Color());
         bg.set(bgColor);
@@ -2209,9 +2445,8 @@ export default class Engine {
             clearTo(target);
             if (footage) { r.render(this.bgScene, this.bgCamera); r.clearDepth(); }
             if (!hold && drawScene) {
-                cam.layers.set(LAYER.FRONT);
                 r.shadowMap.needsUpdate = true;
-                r.render(this.scene, cam);
+                this.renderLayer(S, cam, LAYER.FRONT);
             }
         } else {
             const comp = this.windows;
@@ -2220,9 +2455,8 @@ export default class Engine {
             const fxWins = earlyWins.filter((w) => w.op.hueOn || w.op.sortOn);
             clearTo(comp.behindRT);
             if (behindCount) {
-                cam.layers.set(LAYER.BEHIND);
                 r.shadowMap.needsUpdate = true;
-                r.render(this.scene, cam);
+                this.renderLayer(S, cam, LAYER.BEHIND);
             } else {
                 comp.resolve();
             }
@@ -2249,20 +2483,20 @@ export default class Engine {
                 r.render(this.scene, cam);
             }
             if (!hold && drawScene) {
+                if (needPre) pre = this.copyFrame(target, size);
                 r.clearDepth();
-                cam.layers.set(LAYER.FRONT);
                 r.shadowMap.needsUpdate = true;
-                r.render(this.scene, cam);
+                this.renderLayer(S, cam, LAYER.FRONT);
             }
         }
         if (hold) {
             // Footage hidden: the matte shows the footage, not the shot under it.
             const over = matteFootage ? this.footageOnly(size) : this.holdout.baseRT.texture;
+            if (needPre) pre = this.holdout.baseRT.texture;
             clearTo(out);
             this.windows.blit(this.holdout.baseRT.texture);
-            cam.layers.set(LAYER.FRONT);
             r.shadowMap.needsUpdate = true;
-            r.render(this.scene, cam);
+            this.renderLayer(S, cam, LAYER.FRONT);
             this.holdout.apply(over);
         }
 
@@ -2273,6 +2507,12 @@ export default class Engine {
         // drawn over it and held to each window's shape. Quad trees are left
         // out of the preview when asked; exports always have them.
         const lateCut = lateWins.filter((w) => w.op.cut);
+        const qtWins = out ? wins.filter((w) => w.op.qt_on && (this.exporting || w.op.qt_preview !== false)) : [];
+        const lateFx = lateWins.filter((w) => w.op.hueOn || w.op.sortOn);
+        // What is in front of a window stays as it is: the points, props and
+        // shapes nearer the camera than it are left out of what it does.
+        const front = out && (lateCut.length || qtWins.length || lateFx.length) && drawScene ? this.frontDepth(S, cam, size) : null;
+        wins.forEach((w) => w.setFrontDepth(front, cam));
         if (lateCut.length) {
             const comp = this.windows;
             r.setRenderTarget(out);
@@ -2280,15 +2520,23 @@ export default class Engine {
             cam.layers.set(LAYER.WIN_CUT);
             r.render(this.scene, cam);
         }
-        const qtWins = out ? wins.filter((w) => w.op.qt_on && (this.exporting || w.op.qt_preview !== false)) : [];
         wins.forEach((w) => { if (!qtWins.includes(w)) w.qt = null; });
-        const lateFx = lateWins.filter((w) => w.op.hueOn || w.op.sortOn);
         if (qtWins.length || lateFx.length) {
             const comp = this.windows;
+            // Each window's quad tree and sort read the frame as it is behind
+            // that window: what is in front of it put back as it was before
+            // the 3D was drawn (so the 3D in front isn't in their cells).
+            const sortWins = lateFx.filter((w) => w.op.sortOn);
+            wins.filter((w) => sortWins.includes(w) || qtWins.includes(w)).forEach((w) => {
+                r.setRenderTarget(comp.compRT);
+                comp.blit(out.texture);
+                if (front && pre) comp.restoreFront(w, this.scene, cam, wins, pre, front);
+                if (sortWins.includes(w)) comp.sortWindow(w, cam, !!sortNow);
+                if (qtWins.includes(w)) this.windowQuadTree(w, cam, frame.t);
+            });
+            // The hue shift reads the frame as it is (what is in front is left out by the mask).
             r.setRenderTarget(comp.compRT);
             comp.blit(out.texture);
-            lateFx.filter((w) => w.op.sortOn).forEach((w) => comp.sortWindow(w, cam, !!sortNow));
-            qtWins.forEach((w) => this.windowQuadTree(w, cam, frame.t));
             r.setRenderTarget(out);
             wins.forEach((w) => {
                 w.fxMesh.visible = qtWins.includes(w) || lateFx.includes(w);
@@ -2297,6 +2545,7 @@ export default class Engine {
             cam.layers.set(LAYER.WIN_FX);
             r.render(this.scene, cam);
         }
+        wins.forEach((w) => w.setFrontDepth(null));
 
         // Quad trees and pixel sorts on the base track's picture (a take or
         // stage), before the plain video layers go over it.
@@ -2361,6 +2610,7 @@ export default class Engine {
         // The mask is this frame's: nothing drawn after it (another camera's
         // render, the mesh editor's picking) should be cut by it.
         MESH_CUT.winCutOn.value = 0;
+        POINT_PUNCH.uPunchN.value = 0;
     }
 }
 

@@ -38,7 +38,7 @@ import { copyClip as clipPayload, pasteClip as pasteClipInto, CLIP_COPY_FORMAT }
 import {
     projectDuration, firstFit, clipEnd, is3D, clipSourceTime,
 } from './model/timeline';
-import { OBJECT_TYPES, defaultParams } from './model/schema';
+import { OBJECT_TYPES, SHAPE_KINDS, defaultParams, isPatchType } from './model/schema';
 import {
     listProjects, openProject, saveProject, downloadProject, readProjectFile,
 } from './model/storage';
@@ -53,6 +53,7 @@ import { loadMeshEdits, saveMeshEdits } from '../../lib/scanAssets/meshEdits';
 import { listUploads, storeUpload, PUBLIC_VIDEOS } from '../../lib/scanAssets/screenVideo';
 import { makeModelItem } from '../../lib/protagonist/poser';
 import { makeSackboyItem } from '../../lib/scanAssets/sackboy';
+import { makeCatItem } from '../../lib/scanAssets/headphoneCat/model';
 import { Ctx, makeTicker } from './ui/context';
 import Sidebar from './ui/Sidebar';
 import Timeline from './ui/Timeline';
@@ -194,11 +195,19 @@ export default function Compositor() {
     const setGroupOpen = useCallback((key, on) => {
         if (on) openGroups.current.add(key); else openGroups.current.delete(key);
     }, []);
-    /** `p` as written to a file: with the open groups of things it still has. */
+    // The outliner's folds the same way: its sections ('section:media'),
+    // scenes and objects with parts, each open or closed as it was left.
+    // Only the ones toggled are kept; the rest show as they start.
+    const outline = useRef(new Map(Object.entries(projRef.current.ui?.outline || {})));
+    const outlineOpen = useCallback((key, def = true) => (outline.current.has(key) ? outline.current.get(key) : def), []);
+    const setOutlineOpen = useCallback((key, on) => { outline.current.set(key, !!on); }, []);
+    /** `p` as written to a file: with the open groups and folds of things it still has. */
     const withUi = (p) => {
         const owners = new Set([...p.objects, ...p.controllers, ...(p.variables || [])].map((o) => o.id));
         const open = Array.from(openGroups.current).filter((k) => owners.has(k.slice(0, k.indexOf(':'))));
-        return { ...p, ui: { ...(p.ui || {}), openGroups: open } };
+        const folds = new Set([...p.scenes, ...p.objects].map((o) => o.id));
+        const outlineKept = Object.fromEntries(Array.from(outline.current).filter(([k]) => k.startsWith('section:') || folds.has(k)));
+        return { ...p, ui: { ...(p.ui || {}), openGroups: open, outline: outlineKept } };
     };
 
     const replaceProject = useCallback((p0) => {
@@ -208,6 +217,7 @@ export default function Compositor() {
         projRef.current = p;
         savedRef.current = p;
         openGroups.current = new Set(p.ui?.openGroups || []);
+        outline.current = new Map(Object.entries(p.ui?.outline || {}));
         transportRef.current.seek(0);
         setSelection(null);
         setRev((r) => r + 1);
@@ -231,7 +241,9 @@ export default function Compositor() {
         }
         const offPick = engine.on('pick', (id) => setSelection(id ? { kind: 'object', id } : null));
         // A scan's mesh edited: kept at once (the engine reads it next frame), saved when asked.
+        // `fp` is where the edits are kept: the scan's fingerprint, or fingerprint#take for a take's own.
         const offMeshEdit = engine.on('meshEdit', ({ fp, take, doc, save }) => {
+            if (!fp) return;
             const cur = meshEditsRef.current[fp];
             const next = {
                 ...meshEditsRef.current,
@@ -354,7 +366,7 @@ export default function Compositor() {
     // ---- Corner editing: a selected window always; a screen or the pulse shape when asked.
     const selectedObj = selection?.kind === 'object' ? project.objects.find((o) => o.id === selection.id) : null;
     const cornerEdit = selectedObj && selectedObj.gizmo !== false
-        && (selectedObj.type === 'window' || selectedObj.type === 'text' || selectedObj.type === 'splinePoint' || cornerOn === selectedObj.id)
+        && (selectedObj.type === 'window' || isPatchType(selectedObj.type) || selectedObj.type === 'splinePoint' || cornerOn === selectedObj.id)
         ? { objectId: selectedObj.id, handle: cornerHandle } : null;
     const cornerKey = cornerEdit ? `${cornerEdit.objectId}:${cornerEdit.handle}` : '';
     useEffect(() => {
@@ -535,10 +547,12 @@ export default function Compositor() {
     const removeController = useCallback((id) => {
         apply((p) => ({
             ...p,
-            controllers: p.controllers.filter((c) => c.id !== id).map((c) => (
-                c.type === 'logic' && (c.inputs || []).some((x) => x.controller === id)
-                    ? { ...c, inputs: c.inputs.filter((x) => x.controller !== id) } : c
-            )),
+            controllers: p.controllers.filter((c) => c.id !== id).map((c) => {
+                if (!(c.inputs || []).some((x) => x.controller === id)) return c;
+                // An Expression keeps both its inputs: the one that read it becomes a constant 0.
+                if (c.type === 'expr') return { ...c, inputs: c.inputs.map((x) => (x.controller === id ? { ...x, controller: null, value: 0 } : x)) };
+                return c.type === 'logic' ? { ...c, inputs: c.inputs.filter((x) => x.controller !== id) } : c;
+            }),
             objects: p.objects.map((o) => {
                 if (!Object.values(o.links || {}).some((l) => l.controller === id)) return o;
                 return { ...o, links: Object.fromEntries(Object.entries(o.links).filter(([, l]) => l.controller !== id)) };
@@ -620,17 +634,27 @@ export default function Compositor() {
     };
     const scanRadius = (sceneId) => engineRef.current?.rig(sceneId)?.sphere?.radius || 1;
 
-    const addObject = useCallback((type, sceneId) => {
+    const addObject = useCallback((what, sceneId) => {
+        // 'shape:sphere' is a Shape that starts as a sphere.
+        const [type, shapeKind] = what.startsWith('shape:') ? ['shape', what.slice(6)] : [what, null];
         let params = {};
         let extra;
         if (sceneId) {
-            const grounded = ['protagonist', 'sackboy', 'prop'].includes(type);
+            const grounded = ['protagonist', 'sackboy', 'cat', 'prop'].includes(type);
             const at = scanCentre(sceneId, grounded);
             const r = scanRadius(sceneId);
             if (type === 'cloud') params = { ...at, radius: r * 1.4, pointSize: Math.max(0.0015, r * 0.004), maxPoints: 40000, samples: 20000 };
             if (type === 'curve') params = { ...at, curveScale: r * 1.2, dotSize: Math.max(0.01, r * 0.02) };
             // Written in their own units (a unit circle, a spline across -1..1), scaled to the scene.
             if (type === 'equation' || type === 'spline' || type === 'manifold') params = { ...at, scale: Math.round(r * 0.6 * 1000) / 1000 || 1 };
+            if (type === 'shape') {
+                // A fifth of the scan across, at its middle.
+                const s = Math.round(r * 0.2 * 1000) / 1000 || 0.5;
+                const h = Math.round(s * 500) / 1000;
+                params = {
+                    ...at, shape: shapeKind || 'box', width: s, height: s, depth: s, radius: h, radiusTop: h, radiusBottom: h, tube: Math.round(s * 160) / 1000,
+                };
+            }
             if (type === 'protagonist') {
                 const it = makeModelItem('x', at, 'stand');
                 params = { ...it.op };
@@ -641,6 +665,13 @@ export default function Compositor() {
                 params = { ...it.op };
                 extra = { pose: it.pose };
             }
+            if (type === 'cat') {
+                const it = makeCatItem('x', at, 'stand');
+                params = { ...it.op };
+                extra = { pose: it.pose };
+            }
+            // A model's nod keeps the project's tempo (its lib's own default is a number).
+            if (['protagonist', 'sackboy', 'cat'].includes(type)) params.bpm = null;
             if (type === 'prop') {
                 const first = libraryRef.current.assets.find((a) => a.category !== 'screen') || libraryRef.current.assets[0];
                 params = { ...at, assetId: first?.id || '' };
@@ -653,7 +684,7 @@ export default function Compositor() {
                     params = { posX: cam.position.x, posY: cam.position.y, posZ: cam.position.z, rotX: d(e.x), rotY: d(e.y), rotZ: d(e.z), fov: cam.fov };
                 }
             }
-            if (type === 'window' || type === 'text') {
+            if (type === 'window' || isPatchType(type)) {
                 let corners = engineRef.current?.windowCorners(sceneId);
                 if (corners && type === 'text') {
                     // A line of text: half again as wide, half as tall.
@@ -674,7 +705,10 @@ export default function Compositor() {
             if (free) params = { ...params, symbol: free[0] };
         }
         const obj = makeObject(type, sceneId, { params, extra });
-        const same = projRef.current.objects.filter((o) => o.type === type && o.sceneId === sceneId).length;
+        // A shape is named for what it starts as (Cube, Sphere 2…).
+        const kind = type === 'shape' ? obj.params.shape : null;
+        if (kind) obj.name = SHAPE_KINDS.find(([v]) => v === kind)?.[1] || obj.name;
+        const same = projRef.current.objects.filter((o) => o.type === type && o.sceneId === sceneId && (!kind || o.params.shape === kind)).length;
         if (same) obj.name = `${obj.name} ${same + 1}`;
         apply((p) => ({ ...p, objects: [...p.objects, obj] }), true);
         setSelection({ kind: 'object', id: obj.id });
@@ -757,7 +791,7 @@ export default function Compositor() {
         const src = projRef.current.objects.find((o) => o.id === id);
         if (!src || OBJECT_TYPES[src.type]?.child) return;
         const copy = { ...JSON.parse(JSON.stringify(src)), id: newId(src.type), name: `${src.name} copy` };
-        if (copy.type === 'text' && copy.params.space === 'frame') Object.assign(copy.params, nudgeFrame(copy.params));
+        if (isPatchType(copy.type) && copy.params.space === 'frame') Object.assign(copy.params, nudgeFrame(copy.params));
         apply((p) => {
             const i = p.objects.findIndex((o) => o.id === id);
             const objects = [...p.objects];
@@ -857,7 +891,7 @@ export default function Compositor() {
             const sceneId = isEffect ? null : target;
             const params = { ...src.params };
             if (!isEffect && (src.sceneId !== sceneId || loose)) {
-                const at = scanCentre(sceneId, ['protagonist', 'sackboy', 'prop'].includes(src.type));
+                const at = scanCentre(sceneId, ['protagonist', 'sackboy', 'cat', 'prop'].includes(src.type));
                 if ('posX' in params) Object.assign(params, at);
                 if (Array.isArray(params.corners) && params.corners.length) {
                     const c = params.corners;
@@ -869,7 +903,7 @@ export default function Compositor() {
                 if (src.type === 'window') params.matte = '';
             }
             // Over the frame, a copy in the same scene steps aside so it shows.
-            if (src.type === 'text' && params.space === 'frame' && src.sceneId === sceneId) Object.assign(params, nudgeFrame(params));
+            if (isPatchType(src.type) && params.space === 'frame' && src.sceneId === sceneId) Object.assign(params, nudgeFrame(params));
             // Links to controllers this project lacks are dropped.
             const links = Object.fromEntries(Object.entries(src.links || {}).filter(([, l]) => ctrlIds.has(l.controller)));
             // A child keeps its parent only beside it, in the same scene.
@@ -1453,6 +1487,10 @@ export default function Compositor() {
         setMeshEdit,
         meshEdits,
         meshEditsSaved,
+        // Put a whole set of edits in place (a take's own, copied from the scan's), and save it.
+        putMeshEdits: (key, take, doc) => engineRef.current?.emit('meshEdit', {
+            fp: key, take, doc, save: true,
+        }),
         meshEditor: engineRef.current?.meshEditor || null,
         mode,
         setMode,
@@ -1514,8 +1552,11 @@ export default function Compositor() {
         importAudio,
         groupOpen,
         setGroupOpen,
+        outlineOpen,
+        setOutlineOpen,
         uploadScreenVideo,
         setOutput: (patch) => apply((p) => ({ ...p, output: { ...p.output, ...patch } }), true),
+        setTempo: (bpm) => apply((p) => ({ ...p, tempo: bpm }), true),
         toggleRecord,
         cameraFromView,
         viewFromCamera,
@@ -1597,7 +1638,7 @@ export default function Compositor() {
                     <div ref={mountRef} className={styles.mount} />
                     <span className={styles.viewBadge}>{mode}</span>
                     {recordingId && <span className={styles.recBadge}>● REC PATH</span>}
-                    {selectedObj?.type === 'text' && selectedObj.params.space === 'frame' && selectedObj.gizmo !== false && !roto.on
+                    {isPatchType(selectedObj?.type) && selectedObj.params.space === 'frame' && selectedObj.gizmo !== false && !roto.on
                         && engineRef.current?.activeSceneId === selectedObj.sceneId && (
                         <FrameTextOverlay obj={selectedObj} mount={engineRef.current?.stage} />
                     )}

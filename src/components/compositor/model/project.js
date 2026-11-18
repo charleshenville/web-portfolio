@@ -12,12 +12,15 @@
 //   controllers  kick / band / LFO / keyframes / switch
 //   variables    named numbers expressions read (θ, ω_1), each with its own
 //                linkable value (model/globals.js)
+//   tempo        the project's BPM, which every tempo field follows until it
+//                is given its own (model/tempo.js)
 //
 // Files that point at media this machine does not have still open; the
 // missing media is flagged and can be relocated.
 
 import { defaultParams, OBJECT_TYPES } from './schema';
 import { stockControllers, makeController, CONTROLLER_TYPES, defaultsFor } from './controllers';
+import { DEFAULT_TEMPO, projectTempo } from './tempo';
 
 export const PROJECT_FORMAT = 'compositor-project';
 export const PROJECT_VERSION = 1;
@@ -55,6 +58,7 @@ export function createProject(name = 'Untitled') {
         version: PROJECT_VERSION,
         name,
         output: { width: 1440, height: 1080, fps: 30, auto: true },
+        tempo: DEFAULT_TEMPO,
         media: [],
         tracks: [
             { id: newId('trk'), kind: 'video', name: 'V2', params: { visible: true, opacity: 1 }, links: {} },
@@ -195,13 +199,53 @@ export function migrateSuns(project) {
     return changed ? { ...project, objects } : project;
 }
 
+// A window's "Size over time" (eased from a start to an end size between two
+// times) gave way to its transform, which controllers drive.
+const OLD_SIZE_KEYS = ['sizeOn', 'sizeClock', 'sizeFrom', 'sizeTo', 'startW', 'startH', 'endW', 'endH', 'sizeEase'];
+
+/** A window (or Blob Tracker) saved with the old size settings, without them: one that animated keeps its end size. */
+export function migrateWindowSize(o) {
+    if (!o.params || !OLD_SIZE_KEYS.some((k) => k in o.params)) return o;
+    const params = { ...o.params };
+    if (o.type === 'window' && params.sizeOn) {
+        params.winW = Number.isFinite(params.endW) ? params.endW : 1;
+        params.winH = Number.isFinite(params.endH) ? params.endH : 1;
+    }
+    OLD_SIZE_KEYS.forEach((k) => { delete params[k]; });
+    const links = o.links && Object.fromEntries(Object.entries(o.links).filter(([k]) => !OLD_SIZE_KEYS.includes(k)));
+    return { ...o, params, ...(links ? { links } : {}) };
+}
+
+/**
+ * A file from before the project had a tempo: it gets 120, and the tempo
+ * fields left at their old defaults follow it, where that changes nothing
+ * that plays (a tempo LFO at 120; a nod at 96 that is off). A nod that is on
+ * at 96, or any tempo set by hand, keeps its own.
+ */
+export function migrateTempo(data) {
+    if (!data || data.tempo !== undefined) return data;
+    const objects = (data.objects || []).map((o) => {
+        if (!o?.params || !['protagonist', 'sackboy', 'cat'].includes(o.type)) return o;
+        const p = o.params;
+        if (p.bpm === undefined || (p.bpm === 96 && !p.nodOn)) return { ...o, params: { ...p, bpm: null } };
+        return o;
+    });
+    const controllers = (data.controllers || []).map((c) => {
+        if (c?.type !== 'lfo' || !c.params) return c;
+        if (c.params.bpm === undefined || c.params.bpm === 120) return { ...c, params: { ...c.params, bpm: null } };
+        return c;
+    });
+    return { ...data, tempo: DEFAULT_TEMPO, objects, controllers };
+}
+
 /** A project read back from a file, with anything missing filled in. Throws on a file that is not one. */
 export function parseProject(text) {
-    const data = typeof text === 'string' ? JSON.parse(text) : text;
-    if (!data || data.format !== PROJECT_FORMAT) throw new Error('not a compositor project');
-    if (data.version > PROJECT_VERSION) throw new Error(`made by a newer version (v${data.version})`);
+    const raw = typeof text === 'string' ? JSON.parse(text) : text;
+    if (!raw || raw.format !== PROJECT_FORMAT) throw new Error('not a compositor project');
+    if (raw.version > PROJECT_VERSION) throw new Error(`made by a newer version (v${raw.version})`);
+    const data = migrateTempo(raw);
     const base = createProject(data.name || 'Untitled');
-    const objects = (data.objects || []).filter((o) => o && OBJECT_TYPES[o.type]).map(migrateSun).map((o) => ({
+    const objects = (data.objects || []).filter((o) => o && OBJECT_TYPES[o.type]).map(migrateSun).map(migrateWindowSize).map((o) => ({
         ...o,
         params: { ...defaultParams(o.type), ...(o.params || {}) },
         links: o.links || {},
@@ -221,6 +265,7 @@ export function parseProject(text) {
         ...base,
         ...data,
         output: { ...base.output, ...(data.output || {}) },
+        tempo: projectTempo(data),
         media: (data.media || []).map((m) => ({ ...m, duration: m.kind === 'stage' ? Infinity : finite(m.duration, 0) })),
         tracks: (data.tracks || base.tracks).map((t) => ({ params: {}, links: {}, ...t })),
         clips: (data.clips || []).map((c) => ({ rate: 1, loop: 'off', in: 0, ...c })),

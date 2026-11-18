@@ -1,6 +1,7 @@
 // Placed objects in the engine. Each adapter wraps one of the libs the scan
 // compositor already used (point clouds and curves from audioScene, the
-// protagonist, Sackboy, props and screens, windows) behind one interface:
+// protagonist, Sackboy, the headphone cat, props and screens, windows)
+// behind one interface:
 //
 //   object            the THREE.Object3D in the scene (picked, gizmo'd)
 //   sync(obj, params, f)
@@ -24,18 +25,51 @@ import { ProtagonistModel, makeModelItem } from '../../../lib/protagonist/poser'
 import { metalEnvironment } from '../../../lib/protagonist/rig';
 import { kickEnvelope, kickHits, kickLevelAt } from '../../../lib/protagonist/kicks';
 import { SackboyModel, makeSackboyItem } from '../../../lib/scanAssets/sackboy';
+import { CatModel, makeCatItem } from '../../../lib/scanAssets/headphoneCat/model';
 import { PropModel } from '../../../lib/scanAssets/props';
 import { WindowModel } from '../../../lib/scanAssets/windows';
 import { ENV_LAYER } from './takeRig';
+import { hookGlowCatch } from './emission';
 import PatchScreen from './patchScreen';
+import { loadPicture } from './pictures';
 import TextObject from './textObject';
-import CurveAdapter, { Dots, knotAngle } from './curveObject';
+import CurveAdapter, {
+    Dots, knotAngle, SHAPES, FLAT_SHAPES,
+} from './curveObject';
+import Wisps from './wisps';
+import ParticleFlow from './particleFlow';
+import ShapeAdapter from './shapeObject';
 import { isTemplate, fillTemplate, formatValue } from '../model/expr';
 
 // A spline point label's {{world.x}} / {{world.y:3}}: the point's coordinate in its scene's frame.
 const WORLD_TEMPLATE = /\{\{\s*world\.(x|y|z)\s*(?::(\d+))?\}\}/g;
 
 const plyCache = new Map();
+
+// A point cloud's dots turned to face the camera, for flat shapes: each dot's
+// own xyz laid along the camera's right, up and toward-it, as the object sees
+// them (its instances only move, never turn). Runs before the Flow hook moves
+// the dot, so a flowing flat dot still faces the camera.
+function hookFacing(material, uniform) {
+    const prev = material.onBeforeCompile;
+    const prevKey = material.customProgramCacheKey;
+    material.onBeforeCompile = (shader, renderer) => {
+        prev?.call(material, shader, renderer);
+        shader.uniforms.uFaceCam = uniform;
+        shader.vertexShader = shader.vertexShader
+            .replace('#include <common>', '#include <common>\nuniform float uFaceCam;')
+            .replace('#include <begin_vertex>', `#include <begin_vertex>
+if (uFaceCam > 0.5) {
+    mat3 fcM = mat3(modelViewMatrix);
+    vec3 fcR = normalize(vec3(fcM[0][0], fcM[1][0], fcM[2][0]));
+    vec3 fcU = normalize(vec3(fcM[0][1], fcM[1][1], fcM[2][1]));
+    vec3 fcF = normalize(vec3(fcM[0][2], fcM[1][2], fcM[2][2]));
+    transformed = fcR * transformed.x + fcU * transformed.y + fcF * transformed.z;
+}`);
+    };
+    material.customProgramCacheKey = () => `${prevKey ? prevKey.call(material) : ''}|faceCam`;
+    material.needsUpdate = true;
+}
 
 /** Which things the lib's own sync should see change: everything but the per-frame values. */
 const shallowSame = (a, b) => {
@@ -58,6 +92,13 @@ class RecordAdapter {
         this.key = null;
         this.token = null;
         this.op = null;
+        // A point cloud's wisps, in its own space (beside its dots, so they move with it).
+        if (obj.type === 'cloud') {
+            this.wisps = new Wisps();
+            this.group.add(this.wisps.object);
+            // And its dots set loose as particles.
+            this.flow = new ParticleFlow();
+        }
     }
 
     sync(obj, p) {
@@ -79,12 +120,35 @@ class RecordAdapter {
             this.rec.colB.set(p.endColor);
         } else if (this.rec.colorKey !== sphereColorKey(p)) {
             recolorPointCloud(this.rec, p);
+            if (this.wisps) this.wisps.key = null; // their colours are taken from the dots
         }
         applyRecordTransform(this.rec, this.rec.op);
+        if (!curve) this.setDotShape(p);
         if (this.opacityKey !== p.opacity) {
             this.opacityKey = p.opacity;
             applySceneOpacity([this.rec], p.opacity ?? 1);
         }
+    }
+
+    /**
+     * A point cloud's dots in the chosen shape (the splines' shapes), as big
+     * as the lib's tetrahedra were: `pointSize` × 1.2 across their unit shape.
+     */
+    setDotShape(p) {
+        const mesh = this.rec?.instancedMesh;
+        if (!mesh) return;
+        const shape = SHAPES[p.dotShape] ? p.dotShape : 'tetra';
+        const key = `${shape}|${p.pointSize}`;
+        if (key === this.shapeKey) return;
+        this.shapeKey = key;
+        const g = SHAPES[shape]();
+        g.scale(p.pointSize * 1.2, p.pointSize * 1.2, p.pointSize * 1.2);
+        mesh.geometry.dispose();
+        mesh.geometry = g;
+        // Flow moves the dots from attributes on their geometry: give the new one them.
+        if (this.flow && this.rec.basePositions) this.flow.attach(g, this.rec.basePositions, this.rec.count, true);
+        if (this.faceCam) this.faceCam.value = FLAT_SHAPES.has(shape) ? 1 : 0;
+        mesh.computeBoundingSphere?.();
     }
 
     rebuild(obj, p, key, curve) {
@@ -96,6 +160,20 @@ class RecordAdapter {
             rec.object3D.userData.objectId = obj.id;
             this.group.add(rec.object3D);
             this.opacityKey = null;
+            if (this.wisps && rec.basePositions) {
+                this.wisps.setSource(rec.basePositions, rec.instancedMesh?.instanceColor?.array || null, rec.count);
+            }
+            if (this.flow && rec.instancedMesh && rec.basePositions) {
+                this.flow.attach(rec.instancedMesh.geometry, rec.basePositions, rec.count, true);
+                this.flow.hook(rec.instancedMesh.material, true);
+            }
+            // Its dots' shape, set in sync (the lib always makes tetrahedra).
+            if (!curve && rec.instancedMesh) {
+                this.faceCam = { value: 0 };
+                hookFacing(rec.instancedMesh.material, this.faceCam);
+                rec.instancedMesh.material.side = THREE.DoubleSide;
+                this.shapeKey = null;
+            }
         };
         if (curve) {
             install(buildCurveRecord(p.funcId, p));
@@ -117,37 +195,80 @@ class RecordAdapter {
     update(dt, f) {
         if (!this.rec || this.rec.loading) return;
         applyAudioReactivity([this.rec], f.freq, dt, f.live);
+        this.flow?.update(this.op, f.time);
+        this.wisps?.update(this.op, f.time, f.drawSize, f.ss, this.group.visible);
     }
 
     dispose() {
         this.disposed = true;
         if (this.rec) disposeRecord(this.rec);
+        this.wisps?.dispose();
         this.group.removeFromParent();
     }
 }
 
 // ---- Rigged models ----------------------------------------------------------------
 
+const MODEL_KINDS = new Map([
+    [ProtagonistModel, { make: makeModelItem, modelId: 'protagonist' }],
+    [SackboyModel, { make: makeSackboyItem, modelId: 'sackboy' }],
+    [CatModel, { make: makeCatItem, modelId: 'cat' }],
+]);
+
 class ModelAdapter {
     constructor(obj, parent, Kind) {
         const pose = obj.extra?.pose;
         const item = this.item(obj, obj.params, pose, Kind);
-        this.model = Kind === SackboyModel ? new SackboyModel(item) : new ProtagonistModel(item);
+        this.model = new Kind(item);
         this.object = this.model.object;
         this.Kind = Kind;
         parent.add(this.object);
         this.last = null;
         this.lastPose = pose;
+        // How strongly his lit surfaces catch emitted glow (0 when nothing emits).
+        this.glow = { value: 0 };
+        this.glowOn = false;
+        // His points set loose as particles, as the scan's are (made when first on).
+        this.flow = null;
+        this.flowGeometry = null;
+    }
+
+    setGlowCatch(on) { this.glowOn = on; }
+
+    /** Every lit material he is drawn with now catches the glow (each hooked once; a rebuild's new ones too). */
+    hookGlow() {
+        this.object.traverse((o) => {
+            if (!o.isMesh) return;
+            (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => {
+                if (m && (m.isMeshStandardMaterial || m.isMeshPhongMaterial || m.isMeshLambertMaterial)) hookGlowCatch(m, this.glow);
+            });
+        });
+    }
+
+    /** Drive the Flow on his points, re-attaching when they were remade. */
+    updateFlow(op, time) {
+        const src = op.viewPoints && op.simOn ? this.model.pointFlow?.() : null;
+        if (!src) {
+            if (this.flow) this.flow.uniforms.uSimOn.value = 0;
+            return;
+        }
+        if (!this.flow) this.flow = new ParticleFlow();
+        if (this.flowGeometry !== src.geometry) {
+            this.flow.attach(src.geometry, src.homes, src.count, false);
+            this.flowGeometry = src.geometry;
+        }
+        this.flow.hook(src.material, false);
+        this.flow.update(op, time, src.unit);
     }
 
     item(obj, p, pose, Kind = this.Kind) {
-        const sack = Kind === SackboyModel;
+        const { make, modelId } = MODEL_KINDS.get(Kind);
         // A model made without a pose takes its lib's default stance.
-        const base = pose ? null : (sack ? makeSackboyItem(obj.id, {}, 'stand') : makeModelItem(obj.id, {}, 'stand'));
+        const base = pose ? null : make(obj.id, {}, 'stand');
         return {
             id: obj.id,
             kind: 'model',
-            modelId: sack ? 'sackboy' : 'protagonist',
+            modelId,
             op: { ...p },
             pose: pose || base.pose,
         };
@@ -184,6 +305,9 @@ class ModelAdapter {
             musicTime: f.time,
         });
         m.setOpacity(this.vis ?? 1);
+        this.hookGlow();
+        this.glow.value = this.glowOn ? Math.max(0, op.glowCatch ?? 1) : 0;
+        this.updateFlow(op, f.time);
     }
 
     reset() { this.model.reset?.(); }
@@ -270,8 +394,8 @@ class WindowAdapter {
     get open() { return !this.hidden && this.model.open; }
 
     update(dt, f) {
-        this.model.update(f.music, f.time, { take: f.take, hold: f.holdWindow === this });
-        // The picture follows the window as drawn now (size over time included).
+        this.model.update(f.music, f.time, { hold: f.holdWindow === this });
+        // The picture follows the window as laid out now (its transform included).
         const op = this.last || {};
         this.screen.sync(this.model.corners || op.corners, this.hidden ? { ...op, screenOn: false } : op);
         this.screen.update(f.time, f.playing, f.exporting);
@@ -319,6 +443,8 @@ class TextAdapter {
                 hideBehindScan: false,
             };
         }
+        // The scan's mesh and its textures, for text laid onto it.
+        if (f?.scanSurface) q = { ...q, surface: f.scanSurface };
         this.text.sync(q);
         this.model.op = q;
         this.object.userData.objectId = obj.id;
@@ -335,6 +461,17 @@ class TextAdapter {
     setScanDepth(tex, size) { this.text.setScanDepth(tex, size); }
 
     dispose() { this.text.dispose(); }
+}
+
+/**
+ * An Image: a picture (PNG, JPEG, WebP, or an animated GIF) on a patch,
+ * placed, lit, blended and roughened exactly as text is (it is text's
+ * patch, with the picture drawn on it in place of letters).
+ */
+class ImageAdapter extends TextAdapter {
+    sync(obj, p, f) {
+        super.sync(obj, { ...p, text: '', textMode: 'plain', picture: loadPicture(p.image) || null, pictureTime: f?.time ?? 0 }, f);
+    }
 }
 
 // ---- A spline's point -------------------------------------------------------------------
@@ -448,9 +585,12 @@ export function makeAdapter(obj, parent, ctx) {
         case 'curve': return new RecordAdapter(obj, parent);
         case 'protagonist': return new ModelAdapter(obj, parent, ProtagonistModel);
         case 'sackboy': return new ModelAdapter(obj, parent, SackboyModel);
+        case 'cat': return new ModelAdapter(obj, parent, CatModel);
         case 'prop': return new PropAdapter(obj, parent, ctx.library);
+        case 'shape': return new ShapeAdapter(obj, parent);
         case 'window': return new WindowAdapter(obj, parent);
         case 'text': return new TextAdapter(obj, parent);
+        case 'image': return new ImageAdapter(obj, parent);
         case 'splinePoint': return new SplinePointAdapter(obj, parent);
         case 'equation':
         case 'spline':

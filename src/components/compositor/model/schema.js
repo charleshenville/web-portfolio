@@ -20,9 +20,17 @@ import {
     MODEL_DEFAULTS, BODY_FIELDS, COLOUR_FIELDS, FINISH_FIELDS, TEXTURE_FIELDS,
 } from '../../../lib/protagonist/poser';
 import { SACKBOY_DEFAULTS } from '../../../lib/scanAssets/sackboy';
+import {
+    CAT_DEFAULTS, CAT_ANIMS, CAT_TEXTURE_FIELDS,
+} from '../../../lib/scanAssets/headphoneCat/model';
+import {
+    CAT_SHAPE_GROUPS, CAT_MORPHS, CAT_EYES, CAT_MOUTHS,
+} from '../../../lib/scanAssets/headphoneCat/rig';
 import { PROP_DEFAULTS } from '../../../lib/scanAssets/props';
 import { FONTS, TEXT_BLENDS } from '../engine/textObject';
 import { WINDOW_DEFAULTS } from '../../../lib/scanAssets/windows';
+import { WISP_DEFAULTS } from '../engine/wisps';
+import { SIM_DEFAULTS } from '../engine/particleFlow';
 import { QT_GROUPS, QT_DEFAULTS } from '../../quadtree/fxParams';
 import {
     BLOB_DEFAULTS, LABEL_TEXTS, LABEL_PLACES, LABEL_TOKENS,
@@ -30,6 +38,7 @@ import {
 import { GLYPH_FONTS, GLYPH_WEIGHTS } from '../../quadtree/fonts';
 import { SPLINE_DEGREES, SPLINE_ENDS, SPLINE_SPACING } from './spline';
 import { MANIFOLD_FEATURES, MAX_KEYPOINTS } from './acoustics';
+import { MESH_SOURCES, MESH_PART_SOURCES } from './meshEdits';
 
 // The colour grade's parameters (the track editor's, which this replaces).
 const GRADE_PARAMS = [
@@ -82,7 +91,106 @@ const SCREEN_GROUP = (hint) => ({
 
 const VISIBLE = bool('visible', 'Visible', true);
 const LAYER = select('depthLayer', 'Layer', [['front', 'In front of footage'], ['behind', 'Behind footage']], 'front');
+
+// Wisps: ribbons streaming off a cloud's points (engine/wisps.js), for scan
+// points and point clouds alike. Distances are in the cloud's own units
+// (metres, for a scan); speeds are those a second.
+const wisping = (p) => !!p.wispOn;
+// Flow: the points themselves set loose as particles (engine/particleFlow.js).
+const simming = (p) => !!p.simOn;
+const releasing = (p) => simming(p) && p.simMode === 'once';
+const SIM_GROUPS = [
+    {
+        title: 'Flow',
+        hint: 'The points move as particles: splashed off, then carried by the flow and drift. Continuous: each leaves and re-forms. Release: they let go from a time and flow away.',
+        params: [
+            bool('simOn', 'On', false),
+            select('simMode', 'Kind', [['loop', 'Continuous (leave and re-form)'], ['once', 'Release (dissolve)']], 'loop', { when: simming }),
+            num('simAmount', 'Amount', 0, 1, 0.01, 1, { when: simming }),
+            num('simStart', 'Release at (s)', 0, 600, 0.01, 0, { when: releasing }),
+            num('simSpread', 'Release over (s)', 0, 60, 0.01, 2, { when: releasing }),
+            select('simOrder', 'Release order', [['random', 'Random'], ['top', 'Top first'], ['bottom', 'Bottom first']], 'random', { when: releasing }),
+            num('simLife', 'Life (s)', 0.05, 20, 0.01, 4, { when: simming }),
+            bool('simFadeOut', 'Fade out at the end', true, { when: releasing }),
+        ],
+    },
+    {
+        title: 'Flow forces',
+        when: simming,
+        hint: 'Flow swirls the particles, drift pushes them one way, splash throws each off in its own direction, inertia is how long they take to give in to the flow, and gather draws neighbours into strands.',
+        params: [
+            num('simFlow', 'Flow', 0, 4, 0.01, 0.4),
+            num('simScale', 'Flow scale', 0.02, 10, 0.01, 0.6),
+            num('simChange', 'Flow change', 0, 5, 0.01, 0.3),
+            num('simDrift', 'Drift', 0, 4, 0.01, 0.2),
+            select('simDriftDir', 'Drift toward', [['up', 'Up'], ['down', 'Down'], ['right', '+X'], ['left', '−X'], ['toward', '+Z'], ['away', '−Z']], 'up'),
+            num('simSplash', 'Splash', 0, 6, 0.01, 0.5),
+            num('simInertia', 'Inertia (s)', 0.01, 5, 0.01, 0.4),
+            num('simGather', 'Gather', 0, 1, 0.01, 0),
+            num('simGatherSize', 'Strand size', 0.01, 2, 0.01, 0.15, { link: false, when: (p) => p.simGather > 0 }),
+        ],
+    },
+];
+
+const WISP_GROUPS = [
+    {
+        title: 'Wisps',
+        hint: 'Ribbons that stream off the points. Strands stay rooted and sway; streams break away and are reborn.',
+        params: [
+            bool('wispOn', 'On', false),
+            select('wispStyle', 'Kind', [['strands', 'Strands (rooted)'], ['streams', 'Streams (break away)']], 'strands', { when: wisping }),
+            num('wispCount', 'Ribbons', 100, 100000, 100, 6000, { link: false, when: wisping }),
+            num('wispDetail', 'Segments', 4, 64, 1, 24, { link: false, when: wisping }),
+            num('wispFrom', 'Emit from height', 0, 1, 0.01, 0, { link: false, when: wisping }),
+            num('wispTo', 'Emit to height', 0, 1, 0.01, 1, { link: false, when: wisping }),
+            num('wispLength', 'Length (s of travel)', 0, 10, 0.01, 1.2, { when: wisping }),
+            num('wispLife', 'Life (s)', 0.1, 20, 0.01, 3, { when: (p) => wisping(p) && p.wispStyle === 'streams' }),
+            num('wispWidth', 'Width (px)', 0.05, 8, 0.05, 0.8, { when: wisping }),
+            num('wispTaper', 'Taper', 0, 1, 0.01, 0.8, { when: wisping }),
+            select('wispColorMode', 'Colour', [['points', 'From the points'], ['solid', 'Solid']], 'points', { when: wisping }),
+            color('wispColor', 'Solid', '#ffffff', { when: (p) => wisping(p) && p.wispColorMode === 'solid' }),
+            num('wispBright', 'Brightness', 0, 4, 0.01, 1, { when: wisping }),
+            num('wispOpacity', 'Opacity', 0, 1, 0.01, 0.5, { when: wisping }),
+            select('wispBlend', 'Blend', [['add', 'Add (glows)'], ['normal', 'Normal']], 'add', { when: wisping }),
+        ],
+    },
+    {
+        title: 'Wisp motion',
+        when: wisping,
+        hint: 'Flow swirls them, drift carries them one way, splash flings each off in its own direction, and gather bundles them into strands.',
+        params: [
+            num('wispFlow', 'Flow', 0, 4, 0.01, 0.35),
+            num('wispFlowScale', 'Flow scale', 0.02, 10, 0.01, 0.6),
+            num('wispEvolve', 'Flow change', 0, 5, 0.01, 0.3),
+            num('wispDrift', 'Drift', 0, 4, 0.01, 0.2),
+            select('wispDriftDir', 'Drift toward', [['up', 'Up'], ['down', 'Down'], ['right', '+X'], ['left', '−X'], ['toward', '+Z'], ['away', '−Z']], 'up'),
+            num('wispSplash', 'Splash', 0, 6, 0.01, 0),
+            num('wispSplashDecay', 'Splash fades (s)', 0.01, 5, 0.01, 0.3, { when: (p) => p.wispSplash > 0 }),
+            num('wispGather', 'Gather', 0, 1, 0.01, 0.5),
+            num('wispGatherSize', 'Strand size', 0.01, 2, 0.01, 0.15, { link: false, when: (p) => p.wispGather > 0 }),
+        ],
+    },
+];
 const OPACITY = num('opacity', 'Opacity', 0, 1, 0.01, 1);
+
+// Emission: a cloud's points light what is near them (engine/emission.js),
+// gathered into a few light sources. Reach is in the scene's units.
+const emitting = (p) => !!p.emitOn;
+const EMIT_GROUP = {
+    title: 'Emission',
+    collapsed: true,
+    hint: 'The points light meshes, props, models and shapes near them. On hidden surfaces, the glow lands on the footage where the scan mesh and stand-in shapes are, shown or not, as shadows do.',
+    params: [
+        bool('emitOn', 'Emits light', false),
+        num('emitIntensity', 'Intensity', 0, 20, 0.01, 1, { when: emitting }),
+        num('emitReach', 'Reach', 0.01, 20, 0.01, 1.5, { when: emitting }),
+        num('emitFalloff', 'Falloff', 0, 4, 0.01, 2, { when: emitting }),
+        select('emitColorMode', 'Light colour', [['points', 'From the points'], ['solid', 'Solid']], 'points', { when: emitting }),
+        color('emitColor', 'Solid', '#ffd9a0', { when: (p) => emitting(p) && p.emitColorMode === 'solid' }),
+        num('emitLights', 'Light sources', 1, 8, 1, 4, { link: false, when: emitting }),
+        bool('emitOnHidden', 'Glow on hidden surfaces', true, { when: emitting }),
+    ],
+};
 
 const transform = (range = 10, step = 0.005) => ({
     title: 'Transform',
@@ -99,14 +207,15 @@ const transform = (range = 10, step = 0.005) => ({
 
 const fromFields = (fields, extra = {}) => fields.map(([key, label, min, max, step]) => num(key, label, min, max, step, undefined, extra));
 
-// Nod, as the protagonist and Sackboy share it.
+// Nod, as the protagonist, Sackboy and the cat share it.
 const NOD = {
     title: 'Head nod',
     collapsed: true,
     params: [
         bool('nodOn', 'Nod', false),
         select('nodMode', 'Timing', [['bpm', 'Tempo'], ['kick', 'Kicks']], 'bpm', { when: (p) => p.nodOn }),
-        num('bpm', 'BPM', 30, 240, 0.1, 96, { when: (p) => p.nodOn && p.nodMode === 'bpm', link: false }),
+        // Unset, it is the project's tempo (model/tempo.js).
+        num('bpm', 'BPM', 30, 240, 0.001, null, { tempo: true, when: (p) => p.nodOn && p.nodMode === 'bpm', link: false }),
         num('nodEvery', 'Every N', 1, 8, 1, 1, { when: (p) => p.nodOn, link: false }),
         num('nodDepth', 'Depth', 0, 40, 0.5, 12, { when: (p) => p.nodOn }),
         num('nodSharpness', 'Snap', 0.5, 6, 0.05, 1.6, { when: (p) => p.nodOn && p.nodMode === 'bpm' }),
@@ -136,9 +245,16 @@ const VIEWS = (pointMax, sizeMax) => ({
         num('pointSize', 'Point size', 0.001, sizeMax, 0.0005, 0.014, { when: (p) => p.viewPoints }),
         OPACITY,
         bool('castShadow', 'Casts a shadow', true),
+        // Emitted glow on his lit surfaces as the scan's surface catches it, on top of the lights.
+        num('glowCatch', 'Catch glow', 0, 4, 0.01, 1, { when: (p) => p.viewTextured }),
         LAYER,
     ],
 });
+
+// A model's points can flow as the scan's do (engine/particleFlow.js), shown when he is drawn as points.
+const MODEL_FLOW = SIM_GROUPS.map((g) => ({ ...g, when: (p) => !!p.viewPoints && (!g.when || g.when(p)) }));
+// Their nod's tempo is the project's until given its own.
+const MODEL_EXTRA_DEFAULTS = { ...SIM_DEFAULTS, glowCatch: 1, bpm: null };
 
 // A Manifold's axes, as it starts: time across, loudness up, brightness in depth.
 const MANIFOLD_AXIS_DEFAULTS = { axisX: 'time', axisY: 'loudness', axisZ: 'centroid' };
@@ -217,6 +333,20 @@ const SPIN_GROUP = {
     ],
 };
 
+// ---- Shapes ---------------------------------------------------------------------
+
+export const SHAPE_KINDS = [
+    ['box', 'Cube'], ['sphere', 'Sphere'], ['cylinder', 'Cylinder'], ['cone', 'Cone'], ['capsule', 'Capsule'],
+    ['torus', 'Torus'], ['plane', 'Plane'], ['tetra', 'Tetrahedron'], ['octa', 'Octahedron'],
+    ['dodeca', 'Dodecahedron'], ['icosa', 'Icosahedron'],
+];
+/** The ones the Add menu offers directly (the rest are a choice in the Shape menu). */
+export const SHAPE_MENU = ['box', 'sphere', 'cylinder', 'cone', 'capsule', 'torus', 'plane'];
+export const SHAPE_ROLES = [['solid', 'A real object (visible)'], ['occluder', 'An invisible stand-in (hides what’s behind)']];
+const POLYHEDRA = ['tetra', 'octa', 'dodeca', 'icosa'];
+const shapeIs = (...kinds) => (p) => kinds.includes(p.shape);
+const shapeSolid = (p) => p.role !== 'occluder';
+
 /** The groups that say how a curve is drawn; `v` is its parameter's name (t or u). */
 function curveLookGroups(v) {
     return [
@@ -273,6 +403,7 @@ function curveLookGroups(v) {
                 num('seriesStagger', 'Grow stagger (s)', 0, 5, 0.01, 0, { when: growing }),
             ],
         },
+        EMIT_GROUP,
         {
             title: 'Growth',
             params: [
@@ -286,6 +417,37 @@ function curveLookGroups(v) {
         },
     ];
 }
+
+// Text and images laid onto the scan: shrunk onto its mesh, and painted
+// into its texture (shaded by the scan's own picture of the surface there).
+const onScan = (p) => p.space !== 'frame' && !p.faceCamera;
+const ON_SCAN_DEFAULTS = {
+    wrapOn: false,
+    wrapAmount: 1,
+    wrapLift: 0.2,
+    wrapReach: 0.5,
+    wrapDetail: 24,
+    paintOn: false,
+    paintAmount: 1,
+    paintLight: 1.6,
+    paintTint: 0.3,
+};
+const ON_SCAN_GROUP = {
+    title: 'On the scan',
+    when: onScan,
+    hint: 'Shrink: each point of it moves onto the nearest surface of the scan\u2019s mesh, so it follows the wall or ground it is on. Paint: shaded by the scan\u2019s own texture where it lies, so the surface\u2019s light and grain come through it, as on paint, instead of it glowing over the shot.',
+    params: [
+        bool('wrapOn', 'Shrink to the mesh', false),
+        num('wrapAmount', 'How far', 0, 1, 0.01, 1, { when: (p) => p.wrapOn }),
+        num('wrapLift', 'Lift (cm)', 0, 5, 0.01, 0.2, { when: (p) => p.wrapOn }),
+        num('wrapReach', 'Reach', 0.01, 3, 0.01, 0.5, { link: false, when: (p) => p.wrapOn || p.paintOn }),
+        num('wrapDetail', 'Detail', 2, 96, 1, 24, { link: false, when: (p) => p.wrapOn || p.paintOn }),
+        bool('paintOn', 'Paint into the scan texture', false),
+        num('paintAmount', 'Amount', 0, 1, 0.01, 1, { when: (p) => p.paintOn }),
+        num('paintLight', 'Brightness', 0, 4, 0.01, 1.6, { when: (p) => p.paintOn }),
+        num('paintTint', 'Takes its colour', 0, 1, 0.01, 0.3, { when: (p) => p.paintOn }),
+    ],
+};
 
 export const OBJECT_TYPES = {
     // ---- A take's own scene --------------------------------------------------
@@ -375,16 +537,19 @@ export const OBJECT_TYPES = {
             visible: false, depthLayer: 'front', colorMode: 'scan', color: '#f2f0e6', size: 1.6, opacity: 1,
             density: 0.6, attenuate: true, react: 0, scatter: 0.002, freqLow: 0, freqHigh: 1,
             pulseMode: 'radial', pulseX: 0, pulseY: 0, pulseZ: 0, pulseDir: 'up', pulsePlane: null, pulseLine: null,
+            ...SIM_DEFAULTS,
+            ...WISP_DEFAULTS,
         },
         groups: [
             {
                 title: 'Points',
+                hint: 'Density 1 is every point the scan was published with; above 1, more are sampled from the scan mesh itself (every part, with its edits), up to 8 times as many.',
                 params: [
                     VISIBLE,
                     select('colorMode', 'Colour', [['scan', 'Scan'], ['solid', 'Solid']], 'scan'),
                     color('color', 'Solid', '#f2f0e6', { when: (p) => p.colorMode === 'solid' }),
                     num('size', 'Size', 0.1, 8, 0.1, 1.6),
-                    num('density', 'Density', 0.01, 1, 0.01, 0.6),
+                    num('density', 'Density', 0.01, 8, 0.01, 0.6),
                     OPACITY,
                     bool('attenuate', 'Perspective size', true),
                     LAYER,
@@ -405,6 +570,9 @@ export const OBJECT_TYPES = {
                 ],
             },
             { title: 'Pulse shape', custom: 'pulseShape', when: (p) => p.pulseMode === 'plane' || p.pulseMode === 'line' },
+            EMIT_GROUP,
+            ...SIM_GROUPS,
+            ...WISP_GROUPS,
         ],
     },
 
@@ -412,15 +580,27 @@ export const OBJECT_TYPES = {
         label: 'Scan mesh',
         category: 'scene',
         unique: true,
-        defaults: { visible: false, depthLayer: 'front', shading: 'matte', color: '#2b4bdf', opacity: 1 },
+        defaults: {
+            visible: false, depthLayer: 'front', shading: 'matte', color: '#2b4bdf', opacity: 1, meshSource: 'shared',
+            occludeSource: 'drawn', shadowSource: 'drawn', glowSource: 'drawn',
+        },
         groups: [{
             title: 'Mesh',
             params: [
                 VISIBLE,
+                select('meshSource', 'Geometry', MESH_SOURCES, 'shared'),
                 select('shading', 'Shading', [['textured', 'Scan'], ['matte', 'Matte'], ['shaded', 'Shaded'], ['normal', 'Normal']], 'matte'),
                 color('color', 'Colour', '#2b4bdf', { when: (p) => p.shading === 'matte' || p.shading === 'shaded' }),
                 OPACITY,
                 LAYER,
+            ],
+        }, {
+            title: 'Versions',
+            hint: 'Which version of the mesh each part uses: one with its holes filled can hide what\u2019s behind it, or catch shadows and glow, while what\u2019s drawn is the scan as it was. Hiding also counts for windows and text that hide behind the scan.',
+            params: [
+                select('occludeSource', 'Hides what\u2019s behind', MESH_PART_SOURCES, 'drawn'),
+                select('shadowSource', 'Catches shadows', MESH_PART_SOURCES, 'drawn'),
+                select('glowSource', 'Catches glow', MESH_PART_SOURCES, 'drawn'),
             ],
         }, {
             title: 'Edit mesh',
@@ -517,7 +697,7 @@ export const OBJECT_TYPES = {
         label: 'Point cloud',
         category: 'placed',
         gizmo: 'transform',
-        defaults: { ...OBJECT_DEFAULTS, visible: true, opacity: 1, depthLayer: 'front', assetId: 'sphere' },
+        defaults: { ...OBJECT_DEFAULTS, visible: true, opacity: 1, depthLayer: 'front', assetId: 'sphere', ...SIM_DEFAULTS, ...WISP_DEFAULTS },
         groups: [
             {
                 title: 'Source',
@@ -535,6 +715,7 @@ export const OBJECT_TYPES = {
                     num('radius', 'Radius', 0.05, 20, 0.01, undefined, { link: false, when: (p) => p.assetId === 'sphere' }),
                     num('jitter', 'Jitter', 0, 1, 0.001, undefined, { link: false, when: (p) => p.assetId === 'sphere' }),
                     num('pointSize', 'Dot size', 0.0005, 0.05, 0.0005, undefined, { link: false }),
+                    select('dotShape', 'Dot shape', POINT_SHAPES, 'tetra'),
                     num('maxPoints', 'Max dots', 1000, 150000, 1000, undefined, { link: false, when: (p) => p.assetId !== 'sphere' }),
                 ],
             },
@@ -560,6 +741,9 @@ export const OBJECT_TYPES = {
                     num('originZ', 'Origin Z', -20, 20, 0.01, 0),
                 ],
             },
+            EMIT_GROUP,
+            ...SIM_GROUPS,
+            ...WISP_GROUPS,
             transform(),
         ],
     },
@@ -596,10 +780,11 @@ export const OBJECT_TYPES = {
         label: 'Protagonist',
         category: 'placed',
         gizmo: 'transform',
-        defaults: { ...MODEL_DEFAULTS, visible: true, depthLayer: 'front' },
+        defaults: { ...MODEL_DEFAULTS, ...MODEL_EXTRA_DEFAULTS, visible: true, depthLayer: 'front' },
         groups: [
             { ...transform(10, 0.005), params: [...transform(10, 0.005).params, VISIBLE] },
             VIEWS(150000, 0.05),
+            ...MODEL_FLOW,
             { title: 'Pose', custom: 'pose' },
             {
                 title: 'Body',
@@ -648,7 +833,7 @@ export const OBJECT_TYPES = {
         label: 'Sackboy',
         category: 'placed',
         gizmo: 'transform',
-        defaults: { ...SACKBOY_DEFAULTS, visible: true },
+        defaults: { ...SACKBOY_DEFAULTS, ...MODEL_EXTRA_DEFAULTS, visible: true },
         groups: [
             {
                 ...transform(10, 0.005),
@@ -662,6 +847,7 @@ export const OBJECT_TYPES = {
                     num('wireAngle', 'Crease angle', 1, 90, 1, 25, { when: (p) => p.viewWire && p.wireMode === 'feature', link: false }),
                 ],
             },
+            ...MODEL_FLOW,
             { title: 'Pose', custom: 'pose' },
             {
                 title: 'Body',
@@ -682,6 +868,110 @@ export const OBJECT_TYPES = {
                 hint: 'Link Opens to a band controller to lip-sync.',
                 params: [num('mouthDepth', 'Opens (°)', 0, 45, 0.5, 18)],
             },
+        ],
+    },
+
+    // The headphone cat (lib/scanAssets/headphoneCat): rigged like Sackboy,
+    // with a face of shape keys. Every expression amount, the look and the
+    // nod are linkable; his shape rebuilds him, so it is not.
+    cat: {
+        label: 'Headphone cat',
+        category: 'placed',
+        gizmo: 'transform',
+        defaults: { ...CAT_DEFAULTS, ...MODEL_EXTRA_DEFAULTS, visible: true },
+        groups: [
+            {
+                ...transform(10, 0.005),
+                params: [...transform(10, 0.005).params, num('height', 'Height (m)', 0.05, 2.5, 0.005, 0.35), VISIBLE],
+            },
+            {
+                ...VIEWS(150000, 0.02),
+                params: [
+                    ...VIEWS(150000, 0.02).params,
+                    select('wireMode', 'Wire edges', [['all', 'All'], ['feature', 'Creases']], 'all', { when: (p) => p.viewWire }),
+                    num('wireAngle', 'Crease angle', 1, 90, 1, 25, { when: (p) => p.viewWire && p.wireMode === 'feature', link: false }),
+                ],
+            },
+            ...MODEL_FLOW,
+            {
+                title: 'Face',
+                hint: 'Presets set the base; each shape key below adds to it, and can be linked to a controller.',
+                params: [
+                    select('eyes', 'Eyes', Object.entries(CAT_EYES).map(([id, e]) => [id, e.name]), 'neutral'),
+                    select('mouth', 'Mouth', Object.entries(CAT_MOUTHS).map(([id, e]) => [id, e.name]), 'cat'),
+                    num('blush', 'Blush', 0, 1, 0.01, 1),
+                    bool('blinkOn', 'Blink', false),
+                    num('blinkEvery', 'Every (s)', 0.5, 15, 0.1, 3.5, { when: (p) => p.blinkOn }),
+                    num('faceEase', 'Ease (s)', 0, 1, 0.01, 0.07),
+                ],
+            },
+            {
+                title: 'Shape keys',
+                collapsed: true,
+                params: CAT_MORPHS.filter((n) => n !== 'blush').map((n) => num(`sk_${n}`, n.replace('_', ' '), 0, 1, 0.01, 0)),
+            },
+            { title: 'Pose', custom: 'pose' },
+            {
+                title: 'Motion',
+                params: [
+                    select('anim', 'Clip', CAT_ANIMS, 'Idle'),
+                    num('animSpeed', 'Speed', 0, 4, 0.01, 1),
+                    num('animFade', 'Fade (s)', 0, 2, 0.01, 0.3, { link: false }),
+                    num('hipDrop', 'Sink hips', 0, 1, 0.01, 0),
+                    num('breathe', 'Breathing', 0, 2, 0.01, 0),
+                ],
+            },
+            {
+                title: 'Look',
+                collapsed: true,
+                hint: 'On top of the pose and clip, like the nod. Link Pitch to an LFO for a nod of your own.',
+                params: [
+                    num('headPitch', 'Pitch (°)', -60, 60, 0.5, 0),
+                    num('headYaw', 'Turn (°)', -90, 90, 0.5, 0),
+                    num('headRoll', 'Tilt (°)', -60, 60, 0.5, 0),
+                    num('earL', 'Left ear (°)', -60, 60, 0.5, 0),
+                    num('earR', 'Right ear (°)', -60, 60, 0.5, 0),
+                    num('tailWag', 'Tail wag (°)', 0, 60, 0.5, 0),
+                    num('tailRate', 'Wag rate (Hz)', 0.1, 8, 0.01, 1.5, { when: (p) => p.tailWag > 0 }),
+                ],
+            },
+            NOD,
+            {
+                title: 'Colours & parts',
+                collapsed: true,
+                params: [
+                    bool('headphones', 'Headphones', true),
+                    bool('glasses', 'Glasses', true),
+                    ...[['furColor', 'Fur'], ['inkColor', 'Eyes & mouth'], ['blushColor', 'Blush'], ['tongueColor', 'Tongue'],
+                        ['shellColor', 'Headphones'], ['padColor', 'Cushions'], ['frameColor', 'Glasses']]
+                        .map(([key, label]) => color(key, label, CAT_DEFAULTS[key], { link: false })),
+                ],
+            },
+            {
+                title: 'Noise texture',
+                collapsed: true,
+                params: [
+                    bool('texOn', 'Noise', false),
+                    select('texParts', 'On', [['fur', 'Fur'], ['all', 'Fur, headphones & glasses']], 'fur', { when: (p) => p.texOn }),
+                    // Strength and tile size are uniforms; the rest remake the texture, so are not linkable.
+                    ...CAT_TEXTURE_FIELDS.map(([key, label, min, max, step]) => num(key, label, min, max, step, CAT_DEFAULTS[key], {
+                        when: (p) => p.texOn, ...(key === 'texRepeat' ? {} : { link: false }),
+                    })),
+                    bool('texDither', 'Dither', CAT_DEFAULTS.texDither, { link: false, when: (p) => p.texOn }),
+                ],
+            },
+            ...CAT_SHAPE_GROUPS.map(([title, fields]) => ({
+                title: `Shape: ${title.toLowerCase()}`,
+                collapsed: true,
+                params: [
+                    ...(title === 'Head' ? [num('detail', 'Poly detail', 1, 5, 1, CAT_DEFAULTS.detail, { link: false }), bool('flat', 'Faceted', false, { link: false })] : []),
+                    ...fields.map(([key, label, a, b, step]) => {
+                        if (a === 'bool') return bool(key, label, CAT_DEFAULTS[key], { link: false });
+                        if (Array.isArray(a)) return select(key, label, a[1], CAT_DEFAULTS[key]);
+                        return num(key, label, a, b, step, CAT_DEFAULTS[key], { link: false });
+                    }),
+                ],
+            })),
         ],
     },
 
@@ -713,6 +1003,81 @@ export const OBJECT_TYPES = {
         ],
     },
 
+    // A simple solid (engine/shapeObject.js): a real object, or an invisible
+    // stand-in that hides what is behind it as the scan does, for where the
+    // scan's mesh is wrong or missing. Its sizes are linkable like anything
+    // else: the geometry is rebuilt when they change, which is cheap for these.
+    shape: {
+        label: 'Shape',
+        category: 'placed',
+        gizmo: 'transform',
+        defaults: { visible: true },
+        groups: [
+            {
+                title: 'Shape',
+                params: [
+                    select('shape', 'Shape', SHAPE_KINDS, 'box'),
+                    select('role', 'Acts as', SHAPE_ROLES, 'solid'),
+                    VISIBLE,
+                ],
+            },
+            {
+                title: 'Size',
+                hint: 'In the scene’s units, before Scale. Link any of these to a controller to animate the shape.',
+                params: [
+                    num('width', 'Width', 0, 10, 0.001, 0.5, { when: shapeIs('box', 'plane') }),
+                    num('height', 'Height', 0, 10, 0.001, 0.5, { when: shapeIs('box', 'plane', 'cylinder', 'cone', 'capsule') }),
+                    num('depth', 'Depth', 0, 10, 0.001, 0.5, { when: shapeIs('box') }),
+                    num('radius', 'Radius', 0, 5, 0.001, 0.25, { when: shapeIs('sphere', 'cone', 'capsule', 'torus', ...POLYHEDRA) }),
+                    num('radiusTop', 'Top radius', 0, 5, 0.001, 0.25, { when: shapeIs('cylinder') }),
+                    num('radiusBottom', 'Bottom radius', 0, 5, 0.001, 0.25, { when: shapeIs('cylinder') }),
+                    num('tube', 'Tube radius', 0, 2, 0.001, 0.08, { when: shapeIs('torus') }),
+                    num('arc', 'Sweep (°)', 0, 360, 0.5, 360, { when: shapeIs('sphere', 'cylinder', 'cone', 'torus') }),
+                    num('arcV', 'Down to (°)', 0, 180, 0.5, 180, { when: shapeIs('sphere') }),
+                    bool('openEnded', 'Open ends', false, { when: shapeIs('cylinder', 'cone') }),
+                    num('segments', 'Segments', 3, 128, 1, 32, { when: shapeIs('sphere', 'cylinder', 'cone', 'capsule', 'torus') }),
+                    num('rings', 'Rings', 1, 64, 1, 16, { when: shapeIs('sphere', 'capsule', 'torus') }),
+                    num('divisions', 'Divisions', 1, 64, 1, 1, { when: shapeIs('box', 'plane') }),
+                    num('detail', 'Subdivide', 0, 5, 1, 0, { when: shapeIs(...POLYHEDRA) }),
+                ],
+            },
+            {
+                ...transform(10, 0.005),
+                hint: 'Stretch scales along the shape’s own axes (the gizmo’s axis handles set it); Scale scales it all.',
+                params: [
+                    ...transform(10, 0.005).params,
+                    num('stretchX', 'Stretch X', 0.01, 10, 0.001, 1),
+                    num('stretchY', 'Stretch Y', 0.01, 10, 0.001, 1),
+                    num('stretchZ', 'Stretch Z', 0.01, 10, 0.001, 1),
+                ],
+            },
+            {
+                title: 'Look',
+                when: shapeSolid,
+                params: [
+                    select('shading', 'Shading', [['lit', 'Lit by the sun'], ['flat', 'Flat colour'], ['normal', 'Normals']], 'lit'),
+                    color('color', 'Colour', '#d8d8d8', { when: (p) => p.shading !== 'normal' }),
+                    num('roughness', 'Roughness', 0, 1, 0.01, 0.6, { when: (p) => p.shading === 'lit' }),
+                    bool('wireframe', 'Wireframe', false),
+                    OPACITY,
+                    bool('castShadow', 'Casts a shadow', true),
+                    bool('receiveShadow', 'Takes shadows', true, { when: (p) => p.shading === 'lit' }),
+                    LAYER,
+                ],
+            },
+            {
+                title: 'Stand-in',
+                when: (p) => !shapeSolid(p),
+                hint: 'Draws nothing, but nothing behind it shows through, just as with the scan. Put it where the scan’s mesh is wrong or missing. Windows and text that hide behind the scan hide behind it too.',
+                params: [
+                    bool('catchShadows', 'Catches shadows', false),
+                    bool('windowCut', 'Cut by windows that cut the scan', true),
+                    bool('showGuide', 'Outline while editing', true, { link: false }),
+                ],
+            },
+        ],
+    },
+
     window: {
         label: 'Window',
         category: 'placed',
@@ -732,6 +1097,24 @@ export const OBJECT_TYPES = {
         },
         groups: [
             { title: 'Corners', custom: 'windowCorners' },
+            {
+                title: 'Transform',
+                hint: 'From the window as its corners are drawn. It grows from, and turns about, its anchor; link any of these to a controller to animate it.',
+                params: [
+                    select('sizeAnchor', 'Grows from', [
+                        ['centre', 'Centre'], ['top', 'Top'], ['bottom', 'Bottom'], ['left', 'Left'], ['right', 'Right'],
+                        ['topLeft', 'Top left'], ['topRight', 'Top right'], ['bottomLeft', 'Bottom left'], ['bottomRight', 'Bottom right'],
+                    ], 'centre'),
+                    num('winScale', 'Scale', 0, 3, 0.01, 1),
+                    num('winW', 'Width', 0, 3, 0.01, 1),
+                    num('winH', 'Height', 0, 3, 0.01, 1),
+                    num('winX', 'Slide across', -2, 2, 0.01, 0),
+                    num('winY', 'Slide up', -2, 2, 0.01, 0),
+                    num('winRoll', 'Rotate (°)', -180, 180, 0.5, 0),
+                    num('winTilt', 'Tilt (°)', -90, 90, 0.5, 0),
+                    num('winTurn', 'Turn (°)', -90, 90, 0.5, 0),
+                ],
+            },
             SCREEN_GROUP('Plays a video across the window, the way a prop screen does.'),
             {
                 title: 'Window',
@@ -741,6 +1124,9 @@ export const OBJECT_TYPES = {
                     bool('cut', 'Cut out the footage', true),
                     num('cutOpacity', 'Cut opacity', 0, 1, 0.01, 1, { when: (p) => p.cut }),
                     bool('cutScanMesh', 'Cut through the scan mesh', false),
+                    bool('punchPoints', 'Punch out scan points', false),
+                    num('punchFront', 'Punch in front', 0, 5, 0.001, 0.05, { when: (p) => p.punchPoints }),
+                    num('punchBack', 'Punch behind', 0, 5, 0.001, 0.05, { when: (p) => p.punchPoints }),
                     num('feather', 'Feather', 0, 0.5, 0.005, 0.02),
                     bool('hideBehindScan', 'Hide behind the scan', false),
                     select('fxStage', 'Applies to', [['footage', 'The footage'], ['all', 'Everything (3D too)']], 'footage'),
@@ -794,22 +1180,6 @@ export const OBJECT_TYPES = {
                 collapsed: true,
                 when: (p) => !!p.qt_on && (!g.when || g.when(p)),
             })),
-            {
-                title: 'Size over time',
-                collapsed: true,
-                params: [
-                    bool('sizeOn', 'Animate', false),
-                    select('sizeClock', 'Clock', [['take', 'Footage'], ['music', 'Timeline']], 'take', { when: (p) => p.sizeOn }),
-                    num('sizeFrom', 'Start (s)', 0, 120, 0.01, 0, { when: (p) => p.sizeOn }),
-                    num('sizeTo', 'End (s)', 0, 120, 0.01, 2, { when: (p) => p.sizeOn }),
-                    num('startW', 'Start width', 0, 3, 0.01, 0, { when: (p) => p.sizeOn }),
-                    num('startH', 'Start height', 0, 3, 0.01, 0, { when: (p) => p.sizeOn }),
-                    num('endW', 'End width', 0, 3, 0.01, 1, { when: (p) => p.sizeOn }),
-                    num('endH', 'End height', 0, 3, 0.01, 1, { when: (p) => p.sizeOn }),
-                    select('sizeEase', 'Ease', [['linear', 'Linear'], ['in', 'In'], ['out', 'Out'], ['inOut', 'In-out']], 'inOut', { when: (p) => p.sizeOn }),
-                    select('sizeAnchor', 'Anchor', [['centre', 'Centre'], ['top', 'Top'], ['bottom', 'Bottom'], ['left', 'Left'], ['right', 'Right']], 'centre', { when: (p) => p.sizeOn }),
-                ],
-            },
         ],
     },
 
@@ -857,6 +1227,7 @@ export const OBJECT_TYPES = {
             mottle: 0,
             wear: 0,
             noiseDetail: 24,
+            ...ON_SCAN_DEFAULTS,
         },
         groups: [
             {
@@ -927,6 +1298,7 @@ export const OBJECT_TYPES = {
                     LAYER,
                 ],
             },
+            ON_SCAN_GROUP,
         ],
     },
 
@@ -1269,11 +1641,11 @@ export const OBJECT_TYPES = {
 // from it here (all but where the corners are and how big it is, which the
 // boxes decide), so a window feature added there shows here too.
 
-const BLOB_WINDOW_SKIP_GROUPS = new Set(['Corners', 'Size over time']);
+const BLOB_WINDOW_SKIP_GROUPS = new Set(['Corners', 'Transform']);
 // Set by the boxes, or only for windows placed by hand.
 // (A Blob Tracker's windows always work on what is behind the effect: the
 // picture the effects before it left, 3D and all, so not `fxStage`.)
-const BLOB_WINDOW_SKIP_KEYS = new Set(['visible', 'outline', 'qt_space', 'qt_planeRes', 'fxStage']);
+const BLOB_WINDOW_SKIP_KEYS = new Set(['visible', 'outline', 'qt_space', 'qt_planeRes', 'fxStage', 'punchPoints', 'punchFront', 'punchBack']);
 const spawning = (p) => !!p.spawnWindows;
 const blobWindowGroups = () => OBJECT_TYPES.window.groups
     // A screen is a video decoder per window: not for one in every box.
@@ -1384,6 +1756,56 @@ OBJECT_TYPES.blobs = {
     ],
 };
 
+// An Image: a picture (PNG, JPEG, WebP, or an animated GIF) on a patch that
+// is placed, lit and blended as text is (the same patch, drawn by the same
+// engine; see ImageAdapter). Animated GIFs play on the timeline's clock.
+{
+    const T = OBJECT_TYPES.text;
+    const TEXT_ONLY = new Set(['textMode', 'text', 'fontFamily', 'fontCustom', 'fontSize', 'weight', 'italic', 'color',
+        'outline', 'outlineColor', 'align', 'valign', 'letterSpacing', 'lineHeight']);
+    const defaults = Object.fromEntries(Object.entries(T.defaults).filter(([k]) => !TEXT_ONLY.has(k)));
+    OBJECT_TYPES.image = {
+        label: 'Image',
+        category: 'placed',
+        gizmo: 'corners',
+        defaults: {
+            ...defaults,
+            corners: [[-0.5, 0.5, 0], [0.5, 0.5, 0], [0.5, -0.5, 0], [-0.5, -0.5, 0]],
+            frameH: 0.3,
+            frameW: 0.3,
+            padding: 0,
+            image: null,
+            fit: 'contain',
+            smoothing: 'smooth',
+            imgSpeed: 1,
+            imgOffset: 0,
+            imgLoop: true,
+        },
+        groups: [
+            ...T.groups.filter((g) => g.title === 'Placement' || g.title === 'Corners'),
+            {
+                title: 'Image',
+                custom: 'imageSource',
+                hint: 'PNG, JPEG, WebP or GIF. An animated GIF plays on the timeline: speed and start set which frame shows when.',
+                params: [
+                    select('fit', 'Fit', [['contain', 'Contain'], ['cover', 'Cover'], ['stretch', 'Stretch']], 'contain'),
+                    select('smoothing', 'Pixels', [['smooth', 'Smooth'], ['crisp', 'Crisp (pixel art)']], 'smooth', { link: false }),
+                    num('imgSpeed', 'Speed', 0, 4, 0.01, 1),
+                    num('imgOffset', 'Start (s)', 0, 60, 0.01, 0),
+                    bool('imgLoop', 'Loop', true),
+                    OPACITY,
+                    select('blend', 'Blend', TEXT_BLENDS, 'normal'),
+                    VISIBLE,
+                ],
+            },
+            ...T.groups.filter((g) => ['Surface', 'Box', 'Light & shadow', 'On the scan'].includes(g.title)),
+        ],
+    };
+}
+
+/** Objects drawn on a patch by their corners (or in the frame): text and images. */
+export const isPatchType = (type) => type === 'text' || type === 'image';
+
 // A spline's defining point, as the spline's child (made and removed with
 // its points, see model/splineLabels.js): a marker where the point is and a
 // label beside it, both placed from the point. The label is a Text's.
@@ -1444,7 +1866,7 @@ OBJECT_TYPES.blobs = {
 
 /** What the Add menu offers, by section. */
 export const ADDABLE = {
-    placed: ['cloud', 'curve', 'equation', 'spline', 'manifold', 'protagonist', 'sackboy', 'prop', 'window', 'text'],
+    placed: ['cloud', 'curve', 'equation', 'spline', 'manifold', 'protagonist', 'sackboy', 'cat', 'prop', 'shape', 'window', 'text', 'image'],
     camera: ['camera'],
     effect: ['glow', 'haze', 'grade', 'quadtree', 'pixelsort', 'blobs'],
 };

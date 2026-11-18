@@ -15,6 +15,7 @@ import {
     CONTROLLER_TYPES, controllerTrace, kickTimes, logicCuts, isCut,
 } from '../model/controllers';
 import { useComp, useTick } from './context';
+import { projectTempo, withTempo } from '../model/tempo';
 import styles from '../compositor.module.css';
 
 const HEAD_W = 132;
@@ -37,11 +38,18 @@ const fmtT = (s) => {
 const TRACE_RATE = 60; // samples a second of an audio controller's signal
 
 /** An audio or LFO controller's signal across its lane. */
-function TraceSvg({ ctrl, seconds, width, height, analysis }) {
+function TraceSvg({
+    ctrl, seconds, width, height, analysis, controllers,
+}) {
+    // An Expression reads the controllers it combines, so it is redrawn as they change.
+    const reads = ctrl.type === 'expr' ? controllers : null;
+    // A tempo LFO with no tempo of its own runs at the project's.
+    const tempo = projectTempo(useComp().project);
     const { line, area, hits } = useMemo(() => {
         if (!analysis?.music && (ctrl.type === 'kick' || ctrl.type === 'band')) return { line: '', area: '', hits: [] };
         const n = Math.max(2, Math.min(40000, Math.ceil(seconds * TRACE_RATE)));
-        const vals = controllerTrace(ctrl, 0, seconds, n, analysis);
+        const lookup = (id) => reads?.find((c) => c.id === id);
+        const vals = controllerTrace(ctrl, 0, seconds, n, withTempo(analysis, tempo), lookup);
         const pts = [];
         for (let i = 0; i < n; i++) pts.push(`${((i / (n - 1)) * seconds).toFixed(3)},${(1 - vals[i]).toFixed(4)}`);
         const l = pts.join(' ');
@@ -50,7 +58,7 @@ function TraceSvg({ ctrl, seconds, width, height, analysis }) {
             area: `0,1 ${l} ${seconds},1`,
             hits: ctrl.type === 'kick' && analysis?.music ? kickTimes(ctrl, analysis.music).filter((t) => t <= seconds) : [],
         };
-    }, [ctrl, seconds, analysis]);
+    }, [ctrl, seconds, analysis, reads, tempo]);
     return (
         <svg className={styles.trace} width={width} height={height} viewBox={`0 -0.06 ${seconds} 1.1`} preserveAspectRatio="none">
             <polygon points={area} fill={ctrl.color} fillOpacity="0.3" />
@@ -461,7 +469,7 @@ export default function Timeline() {
                 </>
             );
         } else {
-            body = <TraceSvg ctrl={ctrl} seconds={width / pps} width={width} height={40} analysis={comp.analysis} />;
+            body = <TraceSvg ctrl={ctrl} seconds={width / pps} width={width} height={40} analysis={comp.analysis} controllers={project.controllers} />;
         }
         return (
             <div key={ctrl.id} className={styles.lane}>
