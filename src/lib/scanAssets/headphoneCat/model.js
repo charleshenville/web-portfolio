@@ -23,7 +23,7 @@ import { SackboyModel } from '../sackboy';
 import { hullTexture, HULL_TEXTURE } from '../../protagonist/rig';
 import { mulberry32 } from '../../protagonist/random';
 import {
-    buildCatRig, makeCatMaterials, applyCatLook, CAT_SHAPE_DEFAULTS, CAT_COLOUR_DEFAULTS, CAT_MORPHS, CAT_EYES, CAT_MOUTHS,
+    buildCatRig, makeCatMaterials, applyCatLook, paintCatFace, CAT_SHAPE_DEFAULTS, CAT_COLOUR_DEFAULTS, CAT_MORPHS, CAT_EYES, CAT_MOUTHS,
 } from './rig';
 
 const D2R = Math.PI / 180;
@@ -52,6 +52,8 @@ export const CAT_JOINTS = [
     ['tail', 'Tail', ['tail_1', 'tail_2', 'tail_3']],
 ];
 const JOINT_IDS = CAT_JOINTS.map(([id]) => id);
+// His top half: what a preset that leaves his legs alone sets.
+const UPPER = ['spine', 'chest', 'neck', 'head', 'earL', 'earR', 'armL', 'handL', 'armR', 'handR'];
 export const CAT_JOINT_MENU = CAT_JOINTS.map(([id, label]) => [id, label]);
 
 /** The animation clips, by the names rig.js gives them. */
@@ -115,7 +117,62 @@ export const CAT_POSES = {
             return { pose: p, op: { hipDrop: 0.55, anim: 'none' } };
         },
     },
+    // The next two are his top half only (`only`), so he sulks or types
+    // standing or sitting, whatever his legs and tail are doing.
+    sulk: {
+        name: 'Sulk',
+        only: UPPER,
+        make: () => {
+            const p = zero();
+            // Hunched over, head hung, ears drooping.
+            p.spine = [5, 0, 0];
+            p.chest = [8, 0, 0];
+            p.neck = [10, 0, 0];
+            p.head = [20, 0, 0];
+            sym(p, 'ear', [0, 0, 30]);
+            // Arms lifted out level and swung round to the front, paws turned
+            // up and in: his arms are short of his face, so his face comes down
+            // into them.
+            sym(p, 'arm', [-20, -85, 58]);
+            sym(p, 'hand', [-35, -30, 0]);
+            return { pose: p, op: {} };
+        },
+    },
+    work: {
+        name: 'Type',
+        only: UPPER,
+        make: () => {
+            const p = zero();
+            // Leaning in to the screen, paws out in front over the keys.
+            p.chest = [6, 0, 0];
+            p.neck = [6, 0, 0];
+            p.head = [10, 0, 0];
+            sym(p, 'arm', [10, -84, 52]);
+            sym(p, 'hand', [30, -15, 0]);
+            return { pose: p, op: {} };
+        },
+        // Paws flopping up and down on the keys, not quite in step. `rate`
+        // taps a second for each paw, `depth` degrees from the keys up.
+        move: (t, rate, depth) => {
+            const tap = (ph) => {
+                const s = Math.sin(TAU * rate * t + ph) + 0.35 * Math.sin(TAU * rate * 1.73 * t + ph * 2.1);
+                return Math.max(0, s) / 1.35;
+            };
+            const l = tap(0);
+            const r = tap(Math.PI * 0.9);
+            return {
+                handL: [-depth * l, 0, 0],
+                handR: [-depth * r, 0, 0],
+                // His arms are short, so the forearm lifts too, or the tap barely shows.
+                armL: [-depth * 0.5 * l, 0, 0],
+                armR: [-depth * 0.5 * r, 0, 0],
+            };
+        },
+    },
 };
+
+/** What the pose blend can start or end on: his own (edited) pose, or a preset. */
+export const CAT_BLEND_MENU = [['own', 'Edited pose'], ...Object.entries(CAT_POSES).map(([id, p]) => [id, p.name])];
 
 // Every shape key is its own parameter, `sk_<name>`, added to the presets'.
 export const CAT_KEY_PARAMS = CAT_MORPHS.map((n) => `sk_${n}`);
@@ -154,12 +211,24 @@ export const CAT_DEFAULTS = {
     hipDrop: 0,
     breathe: 0,
 
+    // Two poses and how far from the first to the second (link Mix to a
+    // controller to move between them). A preset that moves (Type) moves
+    // as much as it is mixed in.
+    poseBlend: false,
+    poseFrom: 'own',
+    poseTo: 'work',
+    poseMix: 0,
+    typeRate: 4, // taps a second, each paw
+    typeDepth: 25, // degrees a paw lifts off the keys
+
     // Look and the small motions, on top of pose and clip (degrees).
     headPitch: 0,
     headYaw: 0,
     headRoll: 0,
     earL: 0,
     earR: 0,
+    earSpacing: 0, // ear spread added, as a share of his head's half-width
+    earHeight: 0, // how far the tips rise, as a share of the ears' length
     tailWag: 0,
     tailRate: 1.5, // Hz
 
@@ -186,6 +255,11 @@ export const CAT_DEFAULTS = {
     blinkOn: false,
     blinkEvery: 3.5,
     faceEase: 0.07, // seconds to settle on a new expression (0 = at once)
+    // How the face is drawn: 'layers', thin shapes standing just off his head
+    // (their shape keys move them), or 'paint', painted into his fur's
+    // colour as texels, `facePixels` across.
+    faceMode: 'layers',
+    facePixels: '2048',
     ...Object.fromEntries(CAT_KEY_PARAMS.map((k) => [k, 0])),
 
     headphones: true,
@@ -276,6 +350,48 @@ if (catNoiseOn > 0.5) {
     material.needsUpdate = true;
 }
 
+/**
+ * Paint the face into a material's colour: the painted texture `u.map` holds
+ * how much ink, blush and tongue show (red, green, blue, premultiplied), laid
+ * flat over his head looking down -Z (the catFace attribute: the head's x and
+ * height, and how much it faces forward), within `u.box`. Their colours and
+ * roughness mix in over the fur's, after the noise (which never marks the
+ * face). Chains onto whatever the material already does before it compiles.
+ */
+function addFacePaint(material, u) {
+    const prev = material.onBeforeCompile;
+    const prevKey = material.customProgramCacheKey;
+    material.onBeforeCompile = (shader, renderer) => {
+        prev?.call(material, shader, renderer);
+        Object.assign(shader.uniforms, {
+            catFaceMap: u.map, catFaceBox: u.box, catFaceOn: u.on, catInk: u.ink, catBlush: u.blush, catTongue: u.tongue, catFaceRough: u.rough,
+        });
+        shader.vertexShader = shader.vertexShader
+            .replace('#include <common>', '#include <common>\nattribute vec3 catFace;\nvarying vec3 vCatFace;')
+            .replace('#include <begin_vertex>', '#include <begin_vertex>\nvCatFace = catFace;');
+        shader.fragmentShader = shader.fragmentShader
+            .replace('#include <common>', `#include <common>
+uniform sampler2D catFaceMap;
+uniform vec4 catFaceBox;
+uniform float catFaceOn;
+uniform vec3 catInk;
+uniform vec3 catBlush;
+uniform vec3 catTongue;
+uniform vec3 catFaceRough;
+varying vec3 vCatFace;`)
+            .replace('#include <color_fragment>', `#include <color_fragment>
+vec2 catFaceUv = (vCatFace.xy - catFaceBox.xy) / catFaceBox.zw;
+vec4 catFaceW = texture2D(catFaceMap, clamp(catFaceUv, 0.0, 1.0));
+vec2 catFaceIn = step(vec2(0.0), catFaceUv) * step(catFaceUv, vec2(1.0));
+catFaceW *= catFaceOn * catFaceIn.x * catFaceIn.y * clamp(vCatFace.z * 8.0, 0.0, 1.0);
+diffuseColor.rgb = diffuseColor.rgb * (1.0 - catFaceW.a) + catInk * catFaceW.r + catBlush * catFaceW.g + catTongue * catFaceW.b;`)
+            .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+roughnessFactor = roughnessFactor * (1.0 - catFaceW.a) + dot(catFaceW.rgb, catFaceRough);`);
+    };
+    material.customProgramCacheKey = () => `${prevKey ? prevKey.call(material) : ''}|catFace`;
+    material.needsUpdate = true;
+}
+
 export class CatModel extends SackboyModel {
     get needsEnv() { return false; }
 
@@ -298,6 +414,17 @@ export class CatModel extends SackboyModel {
         this.noise = { map: { value: null }, scale: { value: 1 }, fur: { value: 0 }, rest: { value: 0 } };
         addNoise(this.M.fur, this.noise, this.noise.fur);
         ['shell', 'pad', 'frame'].forEach((k) => addNoise(this.M[k], this.noise, this.noise.rest));
+        // The painted face, on the fur (only his head reaches it). Colours by reference, so they follow the look.
+        this.facePaint = {
+            map: { value: null },
+            box: { value: new THREE.Vector4(0, 0, 1, 1) },
+            on: { value: 0 },
+            ink: { value: this.M.ink.color },
+            blush: { value: this.M.blush.color },
+            tongue: { value: this.M.tongue.color },
+            rough: { value: new THREE.Vector3(this.M.ink.roughness, this.M.blush.roughness, this.M.tongue.roughness) },
+        };
+        addFacePaint(this.M.fur, this.facePaint);
         this.materials = Object.values(this.M);
         this.materials.forEach((m) => { m.userData.baseTransparent = false; });
         this.op = { ...CAT_DEFAULTS, ...this.item.op };
@@ -534,7 +661,44 @@ export class CatModel extends SackboyModel {
         this.rig.headphones.visible = !!op.headphones;
         this.rig.glasses.visible = !!op.glasses;
         this.applyNoise();
+        this.applyFaceMode();
         this.applyView();
+    }
+
+    /** Layers or paint: which draws the face. */
+    applyFaceMode() {
+        const paint = this.op.faceMode === 'paint';
+        ['ink', 'blush', 'tongue'].forEach((k) => { this.M[k].visible = !paint; });
+        this.facePaint.on.value = paint ? 1 : 0;
+        if (!paint) this.paintKey = null;
+    }
+
+    /** Repaint the face for shape-key weights `w` when they, the shape or the size changed. */
+    paintFace(w) {
+        const rig = this.rig;
+        const px = Math.max(256, Math.min(4096, Number(this.op.facePixels) || 2048));
+        const box = rig.face.box;
+        const width = px; const height = Math.max(64, Math.round((px * box.h) / box.w));
+        const key = `${width}x${height}|${Array.from(w, (v) => v.toFixed(4)).join(',')}`;
+        if (key === this.paintKey && this.paintRig === rig) return;
+        this.paintKey = key;
+        this.paintRig = rig;
+        if (!this.faceCanvas || this.faceCanvas.width !== width || this.faceCanvas.height !== height) {
+            this.faceTex?.dispose();
+            this.faceCanvas = document.createElement('canvas');
+            this.faceCanvas.width = width;
+            this.faceCanvas.height = height;
+            const t = new THREE.CanvasTexture(this.faceCanvas);
+            // Weights, not colours: no colour space, and premultiplied so their edges filter clean.
+            t.premultiplyAlpha = true;
+            t.anisotropy = 8;
+            t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+            this.faceTex = t;
+            this.facePaint.map.value = t;
+        }
+        paintCatFace(this.faceCanvas, rig.face, w);
+        this.facePaint.box.value.set(box.x0, box.y0, box.w, box.h);
+        this.faceTex.needsUpdate = true;
     }
 
     applyNoise() {
@@ -591,6 +755,39 @@ export class CatModel extends SackboyModel {
             if (b > 0) CAT_MORPHS.forEach((n, i) => { if (n.startsWith('eye')) w[i] *= 1 - b; });
         }
         return w;
+    }
+
+    /**
+     * The two poses being blended, as whole poses (a preset of his top half
+     * takes the rest from his edited pose), how far between them, and the
+     * motion now of whichever moves, scaled by how much of it is mixed in.
+     * Null when he isn't blending.
+     */
+    blendedPoses(op) {
+        if (!op.poseBlend) return null;
+        const own = this.pose;
+        this.presetPoses = this.presetPoses || {};
+        const whole = (id) => {
+            const preset = CAT_POSES[id];
+            if (!preset) return own;
+            if (!this.presetPoses[id]) this.presetPoses[id] = preset.make().pose;
+            const made = this.presetPoses[id];
+            const out = preset.only ? { ...own } : { ...made };
+            (preset.only || []).forEach((j) => { out[j] = made[j]; });
+            return out;
+        };
+        const mix = Math.max(0, Math.min(1, Number.isFinite(op.poseMix) ? op.poseMix : 0));
+        const move = {};
+        [[op.poseFrom, 1 - mix], [op.poseTo, mix]].forEach(([id, w]) => {
+            const m = w > 0 ? CAT_POSES[id]?.move : null;
+            if (!m) return;
+            Object.entries(m(this.clock, Math.max(0, op.typeRate ?? 4), (op.typeDepth ?? 25) * w)).forEach(([j, a]) => {
+                const cur = move[j] || [0, 0, 0];
+                move[j] = [cur[0] + a[0], cur[1] + a[1], cur[2] + a[2]];
+            });
+        });
+        const full = (p) => Object.fromEntries(JOINT_IDS.map((j) => [j, p[j] || [0, 0, 0]]));
+        return { from: full(whole(op.poseFrom)), to: full(whole(op.poseTo)), mix, move };
     }
 
     /** Sample clip `name` at `t` into `out` (bone -> { q, p }). */
@@ -688,14 +885,44 @@ export class CatModel extends SackboyModel {
         };
         rig.bones.forEach(blendInto);
         const R = new THREE.Quaternion();
+        const Rb = new THREE.Quaternion();
         const e = new THREE.Euler();
+        const fromDeg = (q, a) => q.setFromEuler(e.set(a[0] * D2R, a[1] * D2R, a[2] * D2R, 'XYZ'));
+        const blend = this.blendedPoses(op);
         CAT_JOINTS.forEach(([j]) => {
             const list = this.jointBones[j];
-            const a = this.pose[j] || [0, 0, 0];
-            R.setFromEuler(e.set(a[0] * D2R, a[1] * D2R, a[2] * D2R, 'XYZ'));
+            if (blend) {
+                // Turned from one pose's angle to the other's the short way round.
+                fromDeg(R, blend.from[j]).slerp(fromDeg(Rb, blend.to[j]), blend.mix);
+                const m = blend.move[j];
+                if (m) R.multiply(fromDeg(Rb, m));
+            } else {
+                fromDeg(R, this.pose[j] || [0, 0, 0]);
+            }
             if (offs[j]) R.multiply(offs[j]);
             list.forEach((bone) => bone.quaternion.multiply(R));
         });
+        // Ear spacing and height, without rebuilding him (so his size stays):
+        // apart or together they slide over his head, staying on its
+        // surface; raised, they stretch from their roots, which stay sunk in
+        // his head; lowered, they sink into it.
+        const E = rig.ears;
+        if (E) {
+            const x1 = E.halfW * Math.max(0.05, Math.min(0.95, E.x / E.halfW + (op.earSpacing || 0)));
+            const lift = op.earHeight || 0;
+            const len = E.root + E.tip;
+            const sy = lift > 0 ? 1 + lift : 1;
+            const sink = lift < 0 ? lift * len : 0;
+            [['L', 1], ['R', -1]].forEach(([sd, s]) => {
+                const bone = this.bonesByName[`ear_${sd}`];
+                if (!bone) return;
+                bone.position.x += s * (x1 - E.x);
+                bone.position.y += E.top(x1) - E.top(E.x) + sink;
+                bone.scale.set(1, sy, 1);
+                // Stretched about its bone, the root would sink further: up the ear's own axis by as much.
+                if (sy !== 1) bone.position.add(new THREE.Vector3(0, E.root * (sy - 1), 0).applyQuaternion(bone.quaternion));
+            });
+        }
         // The tail wags along its length, each joint a little later.
         if (op.tailWag) {
             ['tail_1', 'tail_2', 'tail_3'].forEach((n, i) => {
@@ -712,6 +939,7 @@ export class CatModel extends SackboyModel {
         const ease = op.faceEase > 0 ? Math.min(1, dt / op.faceEase) : 1;
         for (let i = 0; i < inf.length; i++) inf[i] += (want[i] - inf[i]) * (this.faceSet ? ease : 1);
         this.faceSet = true;
+        if (op.faceMode === 'paint' && op.viewTextured) this.paintFace(inf);
 
         this.scene.updateMatrixWorld(true);
         if (op.viewWire || op.viewPoints) this.skinVertices();
@@ -730,6 +958,7 @@ export class CatModel extends SackboyModel {
         if (this.ready) {
             this.teardown();
             this.materials.forEach((m) => m.dispose());
+            this.faceTex?.dispose();
         }
         this.object.removeFromParent();
     }

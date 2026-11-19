@@ -30,6 +30,7 @@ export const CAT_SHAPE_DEFAULTS = {
     eyeX: 0.39, eyeY: -0.21, eyeSize: 0.8, eyeWeight: 1.02,
     mouthY: -0.41, mouthSize: 1.71, mouthWeight: 1, tongueSize: 1, tongueY: 0, tongueOutline: false, outlineWeight: 1,
     blushX: 0.5, blushY: -0.34, blushSize: 1,
+    faceLift: 0.003, faceGap: 0.0005,
     glassesStyle: 'round', glassesW: 1.5, glassesH: 1.45, glassesX: 0, glassesY: 0.06, frameThick: 1.27,
     hpSize: 1.11, bandThick: 1.63,
 };
@@ -58,6 +59,7 @@ export const CAT_SHAPE_GROUPS = [
     ['Mouth & tongue', [['mouthY', 'Mouth height', -0.85, -0.15, 0.01], ['mouthSize', 'Mouth size', 0.5, 2.5, 0.01], ['mouthWeight', 'Mouth thickness', 0.4, 3, 0.01],
         ['tongueSize', 'Tongue size', 0.5, 1.6, 0.01], ['tongueY', 'Tongue offset', -1, 1, 0.01], ['tongueOutline', 'Tongue outline', 'bool'], ['outlineWeight', 'Outline thickness', 0.4, 3, 0.01]]],
     ['Blush', [['blushX', 'Spacing', 0.2, 0.78, 0.01], ['blushY', 'Height', -0.85, -0.1, 0.01], ['blushSize', 'Size', 0.4, 2, 0.01]]],
+    ['Face layers', [['faceLift', 'Lift off the head', 0, 0.02, 0.0005], ['faceGap', 'Gap between layers', 0, 0.005, 0.0001]]],
     ['Glasses', [['glassesStyle', 'Style', ['choice', [['rect', 'Rectangular'], ['round', 'Round']]]],
         ['glassesW', 'Lens width', 0.6, 1.5, 0.01], ['glassesH', 'Lens height', 0.6, 1.6, 0.01], ['glassesX', 'Spread', -0.12, 0.12, 0.005], ['glassesY', 'Height', -0.25, 0.25, 0.005],
         ['frameThick', 'Frame thickness', 0.5, 2.5, 0.01]]],
@@ -293,7 +295,7 @@ export function buildCatRig(P, M) {
     };
 
     const parts = [];
-    const add = (name, geo, m, wf, morphs) => { if (geo.attributes.uv) geo.deleteAttribute('uv'); parts.push({ name, geo, m, wf, morphs }); };
+    const add = (name, geo, m, wf, morphs, face = false) => { if (geo.attributes.uv) geo.deleteAttribute('uv'); parts.push({ name, geo, m, wf, morphs, face }); };
 
     // Head: a superellipsoid.
     const hg = new THREE.SphereGeometry(1, DT.head[L][0], DT.head[L][1]);
@@ -305,7 +307,7 @@ export function buildCatRig(P, M) {
             const nn = hN(x * s, y * s, z * s); p.setXYZ(i, x * s, y * s + CY, z * s); n.setXYZ(i, nn.x, nn.y, nn.z);
         }
     }
-    add('head', hg, 'fur', rigid('head'));
+    add('head', hg, 'fur', rigid('head'), null, true);
     // Where the face decals sit: on the real (faceted) mesh when it is coarse.
     let surf = zA;
     if (L <= 2) {
@@ -344,7 +346,14 @@ export function buildCatRig(P, M) {
     const tip = new THREE.SphereGeometry(tr * 0.65, DT.tip[L][0], DT.tip[L][1]); const te = tailCurve.getPointAt(1); tip.translate(te.x, te.y, te.z);
     add('tail_tip', tip, 'fur', rigid('tail_3'));
 
-    // Face.
+    // Face. Its layers stand off the head by faceLift, each a faceGap above the
+    // one under it: blush, the blep's tongue, the ink, the open mouth's tongue,
+    // its outline. (Painted, the order is kept and the heights are not.) What
+    // a shape key grows from nothing (tongue, outline, blush) starts as a dot
+    // on top (the open mouth's height, so opening never passes through the
+    // ink), never inside his head, so half grown it can't cut out through his
+    // cheek.
+    const lay = (rank) => P.faceLift + P.faceGap * rank;
     const fsc = (P.headW + P.headH) / 2; const EY = P.eyeY * HB; const EX = P.eyeX * A; const MY = P.mouthY * HB;
     const e_ = fsc * P.eyeSize; const ew = 0.016 * P.eyeWeight * fsc;
     const features = [];
@@ -354,7 +363,7 @@ export function buildCatRig(P, M) {
         const k = `eye${sd}_`; const q = (a) => a * e_;
         features.push({
             m: 'ink',
-            base: { shape: lineS(cx - q(0.075), EY, cx + q(0.075), EY, ew, q(0.002)), off: 0.005 },
+            base: { shape: lineS(cx - q(0.075), EY, cx + q(0.075), EY, ew, q(0.002)), off: lay(2) },
             targets: {
                 [`${k}open`]: ellS(cx, EY + q(0.004), q(0.03), q(0.04)),
                 [`${k}happy`]: lineS(cx - q(0.068), EY - q(0.012), cx + q(0.068), EY - q(0.012), ew * 0.94, q(0.034)),
@@ -371,7 +380,7 @@ export function buildCatRig(P, M) {
     const omega = ribbon([...Array(NP)].map((_, i) => { const t = i / (NP - 1); return [m_(-0.032 + 0.064 * t), MY - m_(0.012) * Math.abs(Math.sin(2 * Math.PI * t))]; }), mw);
     features.push({
         m: 'ink',
-        base: { shape: omega, off: 0.005 },
+        base: { shape: omega, off: lay(2) },
         targets: {
             mouth_smile: lineS(m_(-0.042), MY + m_(0.01), m_(0.042), MY + m_(0.01), mw * 1.1, m_(-0.026)),
             mouth_frown: lineS(m_(-0.036), MY - m_(0.018), m_(0.036), MY - m_(0.018), mw * 1.1, m_(0.02)),
@@ -382,10 +391,10 @@ export function buildCatRig(P, M) {
     const ts = ms * P.tongueSize; const ty = P.tongueY * 0.02 * ms;
     features.push({
         m: 'tongue',
-        base: { shape: dotS(0, MY - m_(0.02)), off: -0.03 },
+        base: { shape: dotS(0, MY - m_(0.02)), off: lay(3) },
         targets: {
-            mouth_open: { shape: ellS(0, MY - m_(0.029) + ty, 0.03 * ts, 0.016 * ts, 0.012 * ts), off: 0.008 },
-            mouth_blep: { shape: ellS(0, MY - m_(0.022) + ty, 0.015 * ts, 0.006 * ts, 0.016 * ts), off: 0.004 },
+            mouth_open: { shape: ellS(0, MY - m_(0.029) + ty, 0.03 * ts, 0.016 * ts, 0.012 * ts), off: lay(3) },
+            mouth_blep: { shape: ellS(0, MY - m_(0.022) + ty, 0.015 * ts, 0.006 * ts, 0.016 * ts), off: lay(1) },
         },
     });
     if (P.tongueOutline) {
@@ -393,22 +402,22 @@ export function buildCatRig(P, M) {
         const arc = (cx, cy, rx, dn) => ribbon([...Array(NP)].map((_, i) => { const t = i / (NP - 1); return [cx - rx * Math.cos(Math.PI * t), cy - dn * Math.sin(Math.PI * t)]; }), ow);
         features.push({
             m: 'ink',
-            base: { shape: dotS(0, MY - m_(0.02)), off: -0.03 },
+            base: { shape: dotS(0, MY - m_(0.02)), off: lay(4) },
             targets: {
-                mouth_open: { shape: arc(0, MY - m_(0.029) + ty, 0.03 * ts, 0.012 * ts), off: 0.009 },
-                mouth_blep: { shape: arc(0, MY - m_(0.022) + ty, 0.015 * ts, 0.016 * ts), off: 0.005 },
+                mouth_open: { shape: arc(0, MY - m_(0.029) + ty, 0.03 * ts, 0.012 * ts), off: lay(4) },
+                mouth_blep: { shape: arc(0, MY - m_(0.022) + ty, 0.015 * ts, 0.016 * ts), off: lay(2) },
             },
         });
     }
     const bs = fsc * P.blushSize; const BX = P.blushX * A; const BY = P.blushY * HB;
-    for (const s of [1, -1]) features.push({ m: 'blush', base: { shape: dotS(s * BX, BY), off: -0.03 }, targets: { blush: { shape: ellS(s * BX, BY, 0.042 * bs, 0.017 * bs), off: 0.003 } } });
+    for (const s of [1, -1]) features.push({ m: 'blush', base: { shape: dotS(s * BX, BY), off: lay(0) }, targets: { blush: { shape: ellS(s * BX, BY, 0.042 * bs, 0.017 * bs), off: lay(0) } } });
 
     const offB = DT.off[L];
     const shapeVerts = ({ shape, off }) => {
         const out = [];
         for (let i = 0; i < NP; i++) {
             const a = shape.A[i]; const b = shape.B[i]; const m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-            for (const [x, y] of [a, m, b]) out.push(x, CY + y, surf(x, y) + off + (off > 0 ? offB : 0));
+            for (const [x, y] of [a, m, b]) out.push(x, CY + y, surf(x, y) + off + (off >= 0 ? offB : 0));
         }
         return out;
     };
@@ -432,6 +441,10 @@ export function buildCatRig(P, M) {
     // Merge into one skinned mesh, a group per material.
     const matOrder = ['fur', 'ink', 'blush', 'tongue'];
     const pos = []; const nor = []; const si = []; const sw = []; const ind = []; const groups = []; const morphPlace = [];
+    // Where each vertex lands on the painted face: the head's own x and height
+    // (the decals' footprint, looking down -Z), and how much it faces forward
+    // (none off the head).
+    const fc = [];
     let vc = 0; const tmp = new V3();
     matOrder.forEach((mk, mi) => {
         const start = ind.length;
@@ -439,6 +452,7 @@ export function buildCatRig(P, M) {
             const g = pt.geo; const p = g.attributes.position; const n = g.attributes.normal; const base = vc;
             for (let i = 0; i < p.count; i++) {
                 tmp.fromBufferAttribute(p, i); pos.push(tmp.x, tmp.y, tmp.z); nor.push(n.getX(i), n.getY(i), n.getZ(i));
+                if (pt.face) fc.push(tmp.x, tmp.y - CY, n.getZ(i)); else fc.push(0, 0, -1);
                 for (const [b, w] of norm4(pt.wf(tmp, i))) { si.push(b); sw.push(w); }
             }
             if (g.index) for (let i = 0; i < g.index.count; i++) ind.push(base + g.index.getX(i));
@@ -453,6 +467,7 @@ export function buildCatRig(P, M) {
     geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
     geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4));
     geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4));
+    geo.setAttribute('catFace', new THREE.Float32BufferAttribute(fc, 3));
     geo.setIndex(ind);
     groups.forEach(([s, c, m]) => geo.addGroup(s, c, m));
     geo.morphTargetsRelative = true;
@@ -566,5 +581,82 @@ export function buildCatRig(P, M) {
     const hpBox = new THREE.Box3().setFromObject(headphones);
     const height = Math.max(box.max.y, hpBox.isEmpty() ? 0 : hpBox.max.y);
 
-    return { model, mesh, geo, bones, bone, skeleton, headphones, glasses, height, hipsY };
+    // Where the ears sit, for moving them on the head without rebuilding
+    // (the model's ear spacing and height): the head's top at a distance
+    // out from the middle, and how far each ear's root and tip are below and
+    // above its bone (its root is sunk 0.045 x size into the head).
+    const earTop = (x) => CY + HB * Math.pow(Math.max(0.03, 1 - Math.abs(x / A) ** NE - Math.abs(earZ / C) ** NE), 1 / NE);
+    const ears = {
+        x: earX, halfW: A, top: earTop,
+        root: 0.045 * es - 0.02,
+        tip: 0.26 * es * Math.cos((P.earTilt * Math.PI) / 180) - 0.045 * es + 0.02,
+    };
+
+    // The face as flat shapes, for painting it on (paintCatFace): every
+    // feature's base and shape keys with their heights, and the box they
+    // can reach, in the head's x and height.
+    const faceFeatures = features.map((f) => ({
+        m: f.m,
+        base: f.base,
+        targets: Object.entries(f.targets).map(([name, t]) => ({ k: CAT_MORPHS.indexOf(name), ...(t.shape ? t : { shape: t, off: f.base.off }) })),
+    }));
+    const fb = [Infinity, Infinity, -Infinity, -Infinity];
+    faceFeatures.forEach((f) => [f.base, ...f.targets].forEach(({ shape }) => [...shape.A, ...shape.B].forEach(([x, y]) => {
+        fb[0] = Math.min(fb[0], x); fb[1] = Math.min(fb[1], y); fb[2] = Math.max(fb[2], x); fb[3] = Math.max(fb[3], y);
+    })));
+    const pad = 0.04 * Math.max(fb[2] - fb[0], fb[3] - fb[1]);
+    const face = { features: faceFeatures, box: { x0: fb[0] - pad, y0: fb[1] - pad, w: fb[2] - fb[0] + 2 * pad, h: fb[3] - fb[1] + 2 * pad } };
+
+    return { model, mesh, geo, bones, bone, skeleton, headphones, glasses, height, hipsY, ears, face };
+}
+
+/**
+ * Paint the face for shape-key weights `w` (CAT_MORPHS' order) into
+ * `canvas`, over `face.box` (top row its top): each feature blended from its
+ * base toward its shape keys as the mesh blends them, lowest first. Each
+ * layer is drawn in a pure channel - ink red, blush green, tongue blue - so
+ * the pixels hold how much of each shows (the shader colours them, so a
+ * colour change needs no repaint).
+ */
+export function paintCatFace(canvas, face, w) {
+    const g = canvas.getContext('2d');
+    const { x0, y0, w: bw, h: bh } = face.box;
+    const sx = canvas.width / bw; const sy = canvas.height / bh;
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.globalCompositeOperation = 'source-over';
+    g.clearRect(0, 0, canvas.width, canvas.height);
+    g.setTransform(sx, 0, 0, -sy, -x0 * sx, (y0 + bh) * sy);
+    const fill = { ink: '#ff0000', blush: '#00ff00', tongue: '#0000ff' };
+    const layers = face.features.map((f) => {
+        const A = f.base.shape.A.map((p) => [...p]); const B = f.base.shape.B.map((p) => [...p]);
+        let off = f.base.off;
+        for (const t of f.targets) {
+            const k = w[t.k] || 0;
+            if (!k) continue;
+            off += k * (t.off - f.base.off);
+            for (let i = 0; i < A.length; i++) {
+                A[i][0] += k * (t.shape.A[i][0] - f.base.shape.A[i][0]); A[i][1] += k * (t.shape.A[i][1] - f.base.shape.A[i][1]);
+                B[i][0] += k * (t.shape.B[i][0] - f.base.shape.B[i][0]); B[i][1] += k * (t.shape.B[i][1] - f.base.shape.B[i][1]);
+            }
+        }
+        return { m: f.m, A, B, off };
+    }).sort((a, b) => a.off - b.off);
+    for (const { m, A, B } of layers) {
+        // The strip's quads as one path, each wound the same way, so they
+        // fill as their union with no seams between them.
+        g.beginPath();
+        for (let i = 0; i < A.length - 1; i++) {
+            const q = [A[i], A[i + 1], B[i + 1], B[i]];
+            let area = 0;
+            for (let j = 0; j < 4; j++) { const a = q[j]; const b = q[(j + 1) % 4]; area += a[0] * b[1] - b[0] * a[1]; }
+            if (Math.abs(area) < 1e-14) continue;
+            if (area < 0) q.reverse();
+            g.moveTo(q[0][0], q[0][1]);
+            for (let j = 1; j < 4; j++) g.lineTo(q[j][0], q[j][1]);
+            g.closePath();
+        }
+        g.fillStyle = fill[m];
+        g.fill('nonzero');
+    }
+    g.setTransform(1, 0, 0, 1, 0, 0);
 }

@@ -14,7 +14,7 @@ import React, {
 import { Link, useNavigate } from 'react-router-dom';
 import {
     Play, Pause, SkipBack, Eye, Orbit, Pencil, PanelRight, Undo2, Redo2, Save, FolderOpen,
-    Download, Upload, FilePlus, Move3d, Rotate3d, Scale3d, Volume2, VolumeX, Repeat,
+    Download, Upload, FilePlus, Move3d, Rotate3d, Scale3d, Volume2, VolumeX, Repeat, Copy, Trash2,
 } from 'lucide-react';
 import { Film } from './ui/icons';
 import Engine, { cameraPoseAt } from './engine/Engine';
@@ -24,7 +24,7 @@ import {
     mixProject, analyse, importFile, probe, mediaUrl, decodeUrl,
 } from './engine/media';
 import {
-    createProject, ensureTakeScene, addStageScene, takeMedia, makeObject, newId, pruneScenes, removeScenes as dropScenes, migrateSuns,
+    createProject, ensureTakeScene, addStageScene, takeMedia, makeObject, newId, pruneScenes, removeScenes as dropScenes, migrateSuns, migrateProjectOverlays,
 } from './model/project';
 import { makeController, isCut } from './model/controllers';
 import { makeVariable, splineSymbol, isSplineObject } from './model/globals';
@@ -40,7 +40,7 @@ import {
 } from './model/timeline';
 import { OBJECT_TYPES, SHAPE_KINDS, defaultParams, isPatchType } from './model/schema';
 import {
-    listProjects, openProject, saveProject, downloadProject, readProjectFile,
+    listProjects, openProject, saveProject, downloadProject, readProjectFile, copyProject, deleteProject,
 } from './model/storage';
 import {
     loadLibrary, saveLibrary, downloadLibrary, patchAsset, DEFAULT_SCREEN,
@@ -223,8 +223,10 @@ export default function Compositor() {
         setRev((r) => r + 1);
     }, []);
 
-    // A project open before the Sun's softness became centimetres converts once, as a file would on opening.
-    useEffect(() => { apply((p) => migrateSuns(p), true); }, [apply]);
+    // A project open before the Sun's softness became centimetres (or before
+    // the points and wireframe had their own Placement and pulse) converts
+    // once, as a file would on opening.
+    useEffect(() => { apply((p) => migrateProjectOverlays(migrateSuns(p)), true); }, [apply]);
 
     // ---- Engine ---------------------------------------------------------------------
 
@@ -1339,6 +1341,35 @@ export default function Compositor() {
         }
     }, [replaceProject]);
 
+    // Copying and deleting saved projects, from the Open dialog. Deleting asks
+    // once more (the row's bin turns into a Delete button) and moves the file
+    // to compositor-projects/.trash/. The open project can be deleted too: it
+    // stays open, as unsaved work, so saving it puts it back.
+    const [deleting, setDeleting] = useState(null); // project name awaiting confirmation
+    const copySaved = useCallback(async (name) => {
+        try {
+            const copy = await copyProject(name);
+            setStatus(`Copied ${name} to ${copy}`);
+        } catch (e) {
+            setStatus(e.message);
+        }
+        listProjects().then(setRepoProjects);
+    }, []);
+    const deleteSaved = useCallback(async (name) => {
+        setDeleting(null);
+        try {
+            const to = await deleteProject(name);
+            if ((projRef.current.name || 'Untitled') === name) {
+                savedRef.current = null;
+                setRev((r) => r + 1);
+            }
+            setStatus(`Deleted ${name} (moved to ${to})`);
+        } catch (e) {
+            setStatus(e.message);
+        }
+        listProjects().then(setRepoProjects);
+    }, []);
+
     const openFile = useCallback(async (file) => {
         try {
             replaceProject(await readProjectFile(file));
@@ -1480,7 +1511,7 @@ export default function Compositor() {
         propModel: (id) => engineRef.current?.adapterOf(id)?.adapter?.model || null,
         rig: (sceneId) => engineRef.current?.rig(sceneId) || null,
         stageEl: engineRef.current?.stage || null,
-        pulsePreset: (sceneId, kind, which) => engineRef.current?.pulsePreset(sceneId, kind, which) || null,
+        pulsePreset: (sceneId, kind, which, type) => engineRef.current?.pulsePreset(sceneId, kind, which, type) || null,
         roto,
         setRoto,
         meshEdit,
@@ -1591,7 +1622,7 @@ export default function Compositor() {
                     {isDirty() && <span className={styles.dirty} title="Unsaved changes">●</span>}
                     <div className={styles.barGroup}>
                         <button type="button" className={styles.btn} title="New project" onClick={newProject}><FilePlus size={14} /></button>
-                        <button type="button" className={styles.btn} title="Open…" onClick={() => { listProjects().then(setRepoProjects); setDialog('open'); }}><FolderOpen size={14} /></button>
+                        <button type="button" className={styles.btn} title="Open…" onClick={() => { listProjects().then(setRepoProjects); setDeleting(null); setDialog('open'); }}><FolderOpen size={14} /></button>
                         <button type="button" className={styles.btn} title={repoProjects === null ? 'Save (download)' : 'Save to compositor-projects/ (⌘S)'} onClick={save}><Save size={14} /></button>
                         <button type="button" className={styles.btn} title="Download project file" onClick={() => downloadProject(withUi(projRef.current))}><Download size={14} /></button>
                         <button type="button" className={styles.btn} title="Undo (⌘Z)" disabled={!history.current.past.length} onClick={undo}><Undo2 size={14} /></button>
@@ -1690,10 +1721,23 @@ export default function Compositor() {
                         {repoProjects === null && <p className={styles.hint}>No dev server here, so only files can be opened.</p>}
                         {repoProjects?.length === 0 && <p className={styles.hint}>Nothing saved in compositor-projects/ yet.</p>}
                         {(repoProjects || []).map((p) => (
-                            <button key={p.name} type="button" className={styles.listItem} onClick={() => { setDialog(null); guard(`open ${p.name}`, () => open(p.name)); }}>
-                                <span className={styles.olName}>{p.name}</span>
-                                <span className={styles.olTag}>{new Date(p.updated).toLocaleString()}</span>
-                            </button>
+                            <div key={p.name} className={styles.projectRow}>
+                                <button type="button" className={styles.listItem} onClick={() => { setDialog(null); guard(`open ${p.name}`, () => open(p.name)); }}>
+                                    <span className={styles.olName}>{p.name}</span>
+                                    <span className={styles.olTag}>{new Date(p.updated).toLocaleString()}</span>
+                                </button>
+                                {deleting === p.name ? (
+                                    <>
+                                        <button type="button" className={`${styles.btn} ${styles.danger}`} onClick={() => deleteSaved(p.name)}>Delete</button>
+                                        <button type="button" className={styles.btn} onClick={() => setDeleting(null)}>Keep</button>
+                                    </>
+                                ) : (
+                                    <>
+                                        <button type="button" className={styles.olToggle} title="Make a copy" onClick={() => copySaved(p.name)}><Copy size={13} /></button>
+                                        <button type="button" className={styles.olToggle} title="Delete…" onClick={() => setDeleting(p.name)}><Trash2 size={13} /></button>
+                                    </>
+                                )}
+                            </div>
                         ))}
                         <div className={styles.wideRow} style={{ marginTop: 10 }}>
                             <button type="button" className={styles.btn} onClick={() => projectFileRef.current.click()}><Upload size={13} /> Open a file…</button>

@@ -450,7 +450,7 @@ export function SplineEditor({ obj }) {
             </div>
             {dupe && <p className={`${styles.hint} ${styles.warn}`}>{sym} is taken. Pick another symbol.</p>}
             <ParamRow
-                def={{ key: 'edit', label: 'Edit in viewport', type: 'bool', link: false }}
+                def={{ key: 'edit', label: 'Edit in viewport', type: 'bool' }}
                 value={editing}
                 onChange={(v) => { comp.setCornerOn(v ? obj.id : null); comp.setCornerHandle(ALL_POINTS); }}
             />

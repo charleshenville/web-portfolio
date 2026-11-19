@@ -16,7 +16,7 @@
 
 import * as THREE from 'three';
 import { cutByWindows, LAYER } from '../../../lib/scanAssets/windows';
-import { makeGlowCatcher } from './emission';
+import { makeGlowCatcher, catchOnce, CATCH_BIT } from './emission';
 
 const D2R = Math.PI / 180;
 
@@ -96,9 +96,11 @@ export default class ShapeAdapter {
         this.group.add(this.occ);
 
         // Its shadow catcher, as the scan's: shadows on an invisible surface.
-        const catcher = () => new THREE.ShadowMaterial({
+        // Either face, as its depth and glow: a plane laid face down still catches.
+        const catcher = () => catchOnce(new THREE.ShadowMaterial({
             transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4,
-        });
+            side: THREE.DoubleSide,
+        }), CATCH_BIT.shadow);
         this.catchMats = { plain: catcher(), cut: catcher() };
         cutByWindows(this.catchMats.cut);
         this.catcher = new THREE.Mesh(this.geometry, this.catchMats.plain);

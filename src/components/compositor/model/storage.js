@@ -36,6 +36,20 @@ export async function saveProject(name, project) {
     return (await r.json()).path;
 }
 
+/** Copy a saved project beside it. Resolves to the copy's name, or throws. */
+export async function copyProject(name) {
+    const r = await fetch(`${ROUTE}/${encodeURIComponent(name)}?copy`, { method: 'POST' });
+    if (!r.ok) throw new Error(`could not copy ${name} (${r.status})`);
+    return (await r.json()).name;
+}
+
+/** Delete a saved project (into compositor-projects/.trash/). Resolves to where it went, or throws. */
+export async function deleteProject(name) {
+    const r = await fetch(`${ROUTE}/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    if (!r.ok) throw new Error(`could not delete ${name} (${r.status})`);
+    return (await r.json()).path;
+}
+
 export function downloadProject(project) {
     const blob = new Blob([serializeProject(project)], { type: 'application/json' });
     const a = document.createElement('a');

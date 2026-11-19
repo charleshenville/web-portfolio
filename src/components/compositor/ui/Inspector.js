@@ -121,7 +121,10 @@ function PoseEditor({ obj }) {
     const applyPreset = (id) => comp.updateObject(obj.id, (o) => {
         if (own) {
             const made = presets[id].make();
-            return { ...o, params: { ...o.params, ...made.op }, extra: { ...o.extra, pose: made.pose } };
+            // A preset of his top half leaves the rest of his pose as it was.
+            const only = presets[id].only;
+            const pose = only ? { ...(o.extra?.pose || {}), ...Object.fromEntries(only.map((j) => [j, made.pose[j]])) } : made.pose;
+            return { ...o, params: { ...o.params, ...made.op }, extra: { ...o.extra, pose } };
         }
         const made = POSES[id].make(bodyDims(specOf({ ...MODEL_DEFAULTS, ...o.params }).body));
         return { ...o, params: { ...o.params, ...made.op }, extra: { ...o.extra, pose: made.pose } };
@@ -147,7 +150,7 @@ function PoseEditor({ obj }) {
             {['Pitch (X)', 'Yaw (Y)', 'Roll (Z)'].map((label, i) => (
                 <ParamRow
                     key={label}
-                    def={{ key: `j${i}`, label, type: 'number', min: -180, max: 180, step: 0.5, def: 0, link: false }}
+                    def={{ key: `j${i}`, label, type: 'number', min: -180, max: 180, step: 0.5, def: 0 }}
                     value={angles[i]}
                     onChange={setAngle(i)}
                     onCommit={comp.commit}
@@ -408,7 +411,7 @@ function PulseShape({ obj }) {
     const key = mode === 'plane' ? 'pulsePlane' : 'pulseLine';
     const editing = comp.cornerOn === obj.id;
     const place = (which) => {
-        const pts = comp.pulsePreset(obj.sceneId, mode, which);
+        const pts = comp.pulsePreset(obj.sceneId, mode, which, obj.type);
         if (pts) comp.setParam(obj.id, key, pts, true);
     };
     // A plane or line has to exist before it can pulse from it.
@@ -428,7 +431,7 @@ function PulseShape({ obj }) {
                 {presets.map(([id, label]) => <button key={id} type="button" className={styles.btn} onClick={() => place(id)}>{label}</button>)}
             </div>
             <ParamRow
-                def={{ key: 'edit', label: 'Edit in viewport', type: 'bool', link: false }}
+                def={{ key: 'edit', label: 'Edit in viewport', type: 'bool' }}
                 value={editing}
                 onChange={(v) => comp.setCornerOn(v ? obj.id : null)}
             />
@@ -474,7 +477,7 @@ function LibraryPanel({ obj }) {
                         </select>
                     </Field>
                     <ParamRow
-                        def={{ key: 'size', label: 'Size (m)', type: 'number', min: 0.02, max: 3, step: 0.005, link: false }}
+                        def={{ key: 'size', label: 'Size (m)', type: 'number', min: 0.02, max: 3, step: 0.005 }}
                         value={entry.size}
                         onChange={setEntry('size', false)}
                         onCommit={comp.saveLibraryNow}
@@ -482,7 +485,7 @@ function LibraryPanel({ obj }) {
                     {entry.category === 'screen' && (
                         <>
                             <ParamRow
-                                def={{ key: 'edit', label: 'Edit screen corners', type: 'bool', link: false }}
+                                def={{ key: 'edit', label: 'Edit screen corners', type: 'bool' }}
                                 value={editing}
                                 onChange={(v) => comp.setCornerOn(v ? obj.id : null)}
                             />
@@ -507,7 +510,7 @@ function LibraryPanel({ obj }) {
                                 </Field>
                             )}
                             <ParamRow
-                                def={{ key: 'lift', label: 'Lift off surface', type: 'number', min: 0, max: 0.05, step: 0.0001, link: false }}
+                                def={{ key: 'lift', label: 'Lift off surface', type: 'number', min: 0, max: 0.05, step: 0.0001 }}
                                 value={screen.lift}
                                 onChange={setScreen('lift', false)}
                                 onCommit={comp.saveLibraryNow}
@@ -552,7 +555,7 @@ function ScanLook({ obj }) {
                     {LOOK_FIELDS.map(([key, label, min, max, step]) => (
                         <ParamRow
                             key={key}
-                            def={{ key, label, type: 'number', min, max, step, def: LOOK_DEFAULTS[key], link: false }}
+                            def={{ key, label, type: 'number', min, max, step, def: LOOK_DEFAULTS[key] }}
                             value={look[part][key]}
                             onChange={(v) => comp.setLook(take, { [part]: { [key]: v } })}
                             onCommit={comp.saveLooksNow}
@@ -858,7 +861,7 @@ function KeyTools({ ctrl }) {
         <Group owner={ctrl.id} title="Keys">
             <p className={styles.hint}>Click the lane to add, drag to move, double-click to delete.</p>
             <ParamRow
-                def={{ key: 'v', label: 'Value', type: 'number', min: 0, max: 1, step: 0.01, link: false }}
+                def={{ key: 'v', label: 'Value', type: 'number', min: 0, max: 1, step: 0.01 }}
                 value={v}
                 onChange={setV}
             />
@@ -1045,7 +1048,7 @@ function ControllerInspector({ ctrl }) {
                     {params.map((d) => (
                         <ParamRow
                             key={d.key}
-                            def={{ ...d, link: false }}
+                            def={{ ...d }}
                             value={ctrl.params[d.key]}
                             onChange={(v) => comp.updateController(ctrl.id, (c) => ({ ...c, params: { ...c.params, [d.key]: v } }), false, `cp:${ctrl.id}:${d.key}`)}
                             onCommit={comp.commit}
@@ -1251,7 +1254,7 @@ function ClipInspector({ clip }) {
                     </>
                 )}
                 {media?.kind !== 'audio' && media?.kind !== 'stage' && (
-                    <ParamRow def={{ key: 'withAudio', label: 'Its own sound', type: 'bool', link: false }} value={clip.withAudio !== false} onChange={(v) => { set('withAudio')(v); comp.commit(); }} />
+                    <ParamRow def={{ key: 'withAudio', label: 'Its own sound', type: 'bool' }} value={clip.withAudio !== false} onChange={(v) => { set('withAudio')(v); comp.commit(); }} />
                 )}
                 {(media?.kind === 'take' || media?.kind === 'stage') && (
                     <CameraPick clip={clip} media={media} cams={cams} set={set} />
@@ -1278,7 +1281,7 @@ function TrackInspector({ track }) {
             value={params[d.key]}
             link={track.links?.[d.key]}
             onChange={(v) => comp.updateTrack(track.id, (t) => ({ ...t, params: { ...t.params, [d.key]: v } }), false, `tp:${track.id}:${d.key}`)}
-            onLink={d.link === false ? undefined : (l) => comp.setTrackLink(track.id, d.key, l)}
+            onLink={(l) => comp.setTrackLink(track.id, d.key, l)}
             onCommit={comp.commit}
         />
     );

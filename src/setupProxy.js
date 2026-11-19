@@ -154,6 +154,35 @@ function projectsRoute(req, res) {
         res.type('application/json').send(fs.readFileSync(file, 'utf8'));
         return;
     }
+    // Deleting moves the file into compositor-projects/.trash/ (the folder
+    // is not in git, so this is the only way back), stamped so it never
+    // overwrites an earlier one of the same name.
+    if (req.method === 'DELETE') {
+        if (!fs.existsSync(file)) { res.status(404).json({ error: 'no such project' }); return; }
+        const trash = path.join(PROJECTS, '.trash');
+        fs.mkdirSync(trash, { recursive: true });
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const to = path.join(trash, `${name} ${stamp}.json`);
+        fs.renameSync(file, to);
+        res.json({ ok: true, name, path: path.relative(path.join(__dirname, '..'), to) });
+        return;
+    }
+    // POST ?copy: a copy beside it, as "<name> copy" (or "copy 2", ...),
+    // with the name inside the file to match.
+    if (req.method === 'POST' && req.query && 'copy' in req.query) {
+        if (!fs.existsSync(file)) { res.status(404).json({ error: 'no such project' }); return; }
+        let data;
+        try { data = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { res.status(500).json({ error: 'unreadable project' }); return; }
+        const base = slug(`${name.slice(0, 70)} copy`);
+        let copy = base;
+        for (let i = 2; fs.existsSync(path.join(PROJECTS, `${copy}.json`)); i++) copy = `${base} ${i}`;
+        const out = path.join(PROJECTS, `${copy}.json`);
+        const tmp = `${out}.tmp`;
+        fs.writeFileSync(tmp, `${JSON.stringify({ ...data, name: copy }, null, 2)}\n`);
+        fs.renameSync(tmp, out);
+        res.json({ ok: true, name: copy, path: path.relative(path.join(__dirname, '..'), out) });
+        return;
+    }
     if (req.method !== 'PUT' && req.method !== 'POST') { res.status(405).end(); return; }
     let size = 0;
     const chunks = [];

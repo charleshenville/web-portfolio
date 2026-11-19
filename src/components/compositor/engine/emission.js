@@ -35,6 +35,31 @@ export const EMIT = {
     uEmitRD: { value: Array.from({ length: MAX_EMIT_LIGHTS }, () => new THREE.Vector2(1, 2)) }, // reach, falloff
 };
 
+/** The stencil bit each kind of catcher marks a pixel with (catchOnce). */
+export const CATCH_BIT = { shadow: 1, glow: 2 };
+
+/**
+ * Let a catcher (shadow or glow) take each pixel once. Several catch
+ * surfaces can lie over the same footage: the scan's, and a stand-in's laid
+ * over it (a ground plane over the scan's floor). Where both pass the depth
+ * test, each would darken or brighten the footage again, so it is shaded
+ * twice on one side of where they cross and once on the other: a hard-edged
+ * patch, ragged wherever depth can't tell the two apart. Instead the first
+ * catcher of a kind drawn at a pixel marks it in the stencil, and the rest
+ * of that kind leave it. The frame's stencil is cleared with its depth.
+ */
+export function catchOnce(material, bit) {
+    material.stencilWrite = true;
+    material.stencilRef = bit;
+    material.stencilFunc = THREE.NotEqualStencilFunc;
+    material.stencilFuncMask = bit;
+    material.stencilWriteMask = bit;
+    material.stencilFail = THREE.KeepStencilOp;
+    material.stencilZFail = THREE.KeepStencilOp;
+    material.stencilZPass = THREE.ReplaceStencilOp;
+    return material;
+}
+
 const CATCH_VERT = /* glsl */ `
 varying vec3 vEmitW;
 varying vec4 vWinCutClip;
@@ -105,6 +130,7 @@ export function makeGlowCatcher(geometry) {
         blendDst: THREE.OneFactor,
         extensions: { derivatives: true },
     });
+    catchOnce(m, CATCH_BIT.glow);
     const mesh = new THREE.Mesh(geometry, m);
     mesh.frustumCulled = false;
     mesh.visible = false;

@@ -16,6 +16,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { ASSET_BASE, DEFAULT_SCREEN } from './library';
 import { MOD_DEFAULTS, modulate } from './modulate';
 import { ScreenVideo } from './screenVideo';
+import { gradeMaterial, setPictureGrade } from '../pictureGrade';
 
 const D2R = Math.PI / 180;
 
@@ -49,6 +50,18 @@ export const PROP_DEFAULTS = {
     flipX: false,
     brightness: 1.4,
     screenOn: true,
+    // The screen's own colour grade (see pictureGrade.js), on the video
+    // before its brightness.
+    gradeOn: false,
+    invert: false,
+    exposure: 0,
+    contrast: 1,
+    gamma: 1,
+    saturation: 1,
+    temperature: 0,
+    tint: 0,
+    hue: 0,
+    lift: 0,
 };
 
 /** A new placed prop or screen. */
@@ -372,12 +385,13 @@ export class PropModel {
         const m = this.screenMat;
         if (m.map !== (tex || null)) { m.map = tex || null; m.needsUpdate = true; }
         m.color.setScalar(tex ? op.brightness : 0.02);
+        setPictureGrade(m, tex ? op : null);
     }
 
     buildScreen(def, fit, aspect) {
         this.dropScreenMeshes();
         if (!this.screenMat) {
-            this.screenMat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, toneMapped: false });
+            this.screenMat = gradeMaterial({ side: THREE.DoubleSide, toneMapped: false });
             this.backMat = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide });
             this.materials.push(this.screenMat, this.backMat);
             [this.screenMat, this.backMat].forEach((m) => {

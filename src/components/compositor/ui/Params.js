@@ -1,6 +1,9 @@
 // Parameter controls. Every one can be right-clicked for its link menu:
 // link it to a controller (or make a new one and link it), choose how the
-// signal maps onto it, set the range it swings over, or unlink it.
+// signal maps onto it, set the range it swings over, or unlink it. Any
+// object's, track's or variable's parameter can be linked, whatever its type
+// (model/resolve.js linkValue); rows of the editor's own (a joint being
+// posed, a library entry) have no `onLink` and only reset.
 
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -54,8 +57,37 @@ function MapGlyph({ id, color = 'currentColor' }) {
     );
 }
 
+/** One end of a link on a choice or a piece of text: an option, or words. */
+function LinkEnd({ def, value, onChange, onCommit, style }) {
+    if (def.type === 'select') {
+        return (
+            <select
+                className={styles.select}
+                style={style}
+                value={value === null || value === undefined ? '' : String(value)}
+                onChange={(e) => {
+                    const opt = def.options.find(([v]) => String(v ?? '') === e.target.value);
+                    onChange(opt ? opt[0] : e.target.value);
+                }}
+            >
+                {def.options.map(([v, label]) => <option key={String(v)} value={v === null ? '' : String(v)}>{label}</option>)}
+            </select>
+        );
+    }
+    return (
+        <input
+            className={styles.num}
+            style={{ textAlign: 'left', ...style }}
+            value={value ?? ''}
+            onChange={(e) => onChange(e.target.value)}
+            onBlur={() => onCommit?.()}
+        />
+    );
+}
+
 export function LinkMenu({ at, def, value, link, onLink, onReset, onClose }) {
     const comp = useComp();
+    const words = def.type === 'text' || def.type === 'string';
     const ref = useRef(null);
     const [pos, setPos] = useState({ left: at.x, top: at.y });
     const controllers = comp.project.controllers;
@@ -91,7 +123,8 @@ export function LinkMenu({ at, def, value, link, onLink, onReset, onClose }) {
 
     const pick = (c) => {
         const next = newLink(def, value, c.id);
-        if (isSwitch(c)) {
+        // Text on a Text controller shows its words; on a Switch, it is one piece or another.
+        if (isSwitch(c) && !(words && c.type === 'text')) {
             next.state = Math.min(1, (c.states?.length || 1) - 1);
             if (def.type === 'number') { next.from = def.min ?? 0; next.to = value; }
         }
@@ -100,12 +133,17 @@ export function LinkMenu({ at, def, value, link, onLink, onReset, onClose }) {
         // Keep the shape and range when moving a link to another controller.
         onLink(link ? { ...next, map: link.map, from: link.from ?? next.from, to: link.to ?? next.to } : next);
     };
-    const linkable = def.link !== false && def.type !== 'select';
+    const linkable = !!onLink;
 
     return createPortal(
         <div ref={ref} className={styles.menu} style={pos} data-menu="" onContextMenu={(e) => e.preventDefault()}>
             <div className={styles.menuTitle}>{def.label}</div>
-            {!linkable && <div className={styles.empty}>This one rebuilds geometry when it changes, so it can&apos;t follow a controller.</div>}
+            {!linkable && <div className={styles.empty}>This belongs to the editor, not to anything in the scene, so there&apos;s nothing here for a controller to drive.</div>}
+            {linkable && def.rebuilds && def.type === 'number' && (
+                <div className={styles.empty}>
+                    Changing this rebuilds it. Linked, it moves in steps of {def.step}, so it rebuilds only as it crosses one (on a Switch, only at its cuts).
+                </div>
+            )}
             {linkable && (
                 <>
                     <div className={styles.menuTitle}>Link to controller</div>
@@ -156,8 +194,13 @@ export function LinkMenu({ at, def, value, link, onLink, onReset, onClose }) {
                     <div className={styles.menuSep} />
                     {isSwitch(ctrl) ? (
                         <>
-                            <div className={styles.menuTitle}>On when the switch is</div>
+                            <div className={styles.menuTitle}>{words && ctrl.type === 'text' ? 'Show its words, or be On when it is' : 'On when the switch is'}</div>
                             <div className={styles.menuGrid}>
+                                {words && ctrl.type === 'text' && (
+                                    <button type="button" className={`${styles.menuItem} ${!Number.isInteger(link.state) ? styles.menuItemOn : ''}`} onClick={() => onLink({ ...link, state: null })}>
+                                        Its words
+                                    </button>
+                                )}
                                 {ctrl.states.map((s, i) => (
                                     <button key={s + i} type="button" className={`${styles.menuItem} ${link.state === i ? styles.menuItemOn : ''}`} onClick={() => onLink({ ...link, state: i })}>
                                         {s}
@@ -190,6 +233,18 @@ export function LinkMenu({ at, def, value, link, onLink, onReset, onClose }) {
                             <div className={styles.menuRange}>
                                 <span className={styles.olTag}>{isSwitch(ctrl) ? 'On' : 'To'}</span>
                                 <NumberBox value={link.to} step={def.step || 0.01} onCommit={(v) => onLink({ ...link, to: v })} />
+                            </div>
+                        </>
+                    )}
+                    {(def.type === 'select' || words) && !(words && ctrl.type === 'text' && !Number.isInteger(link.state)) && (
+                        <>
+                            <div className={styles.menuRange}>
+                                <span className={styles.olTag}>{isSwitch(ctrl) ? 'Off' : 'From'}</span>
+                                <LinkEnd def={def} value={link.from} onChange={(v) => onLink({ ...link, from: v })} />
+                            </div>
+                            <div className={styles.menuRange}>
+                                <span className={styles.olTag}>{isSwitch(ctrl) ? 'On' : 'To'}</span>
+                                <LinkEnd def={def} value={link.to} onChange={(v) => onLink({ ...link, to: v })} />
                             </div>
                         </>
                     )}
@@ -279,6 +334,22 @@ export function ParamRow({ def, value, link, onChange, onLink, onCommit }) {
                 <ColorPicker value={value || '#000000'} onChange={onChange} onCommit={() => onCommit?.()} title={def.label} />
             </span>
         );
+    } else if ((def.type === 'select' || def.type === 'text' || def.type === 'string') && linked) {
+        // While linked, the controller picks between the link's two ends and
+        // the parameter's own value is unused, so edit those here (as for a colour).
+        const sw = isSwitch(ctrl);
+        const showsWords = ctrl.type === 'text' && def.type !== 'select' && !Number.isInteger(link.state);
+        const end = { flex: 1, minWidth: 0, gridColumn: 'auto' };
+        control = showsWords ? (
+            <span className={styles.olTag} style={{ gridColumn: '2 / 4' }}>Shows {ctrl.name}&apos;s words</span>
+        ) : (
+            <span style={{ gridColumn: '2 / 4', display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                <span className={styles.olTag}>{sw ? 'Off' : 'From'}</span>
+                <LinkEnd def={def} value={link.from} style={end} onCommit={onCommit} onChange={(v) => { onLink({ ...link, from: v }); if (def.type === 'select') onCommit?.(); }} />
+                <span className={styles.olTag}>{sw ? 'On' : 'To'}</span>
+                <LinkEnd def={def} value={link.to} style={end} onCommit={onCommit} onChange={(v) => { onLink({ ...link, to: v }); if (def.type === 'select') onCommit?.(); }} />
+            </span>
+        );
     } else if (def.type === 'text') {
         control = (
             <textarea
@@ -359,7 +430,7 @@ export function ParamRow({ def, value, link, onChange, onLink, onCommit }) {
                     def={def}
                     value={value}
                     link={linked ? link : null}
-                    onLink={(l) => { onLink(l); onCommit?.(); }}
+                    onLink={onLink ? (l) => { onLink(l); onCommit?.(); } : undefined}
                     onReset={() => { reset(); onCommit?.(); }}
                     onClose={() => setMenu(null)}
                 />

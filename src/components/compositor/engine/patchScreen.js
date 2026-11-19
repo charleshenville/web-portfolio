@@ -9,6 +9,7 @@ import * as THREE from 'three';
 import { ScreenVideo } from '../../../lib/scanAssets/screenVideo';
 import { patchGeometry, fitPicture, quadAspect } from '../../../lib/scanAssets/props';
 import { screenMaterial, screenDepthMaterial, LAYER } from '../../../lib/scanAssets/windows';
+import { setGradeUniforms } from '../../../lib/pictureGrade';
 
 const SEGS = 6;
 
@@ -84,6 +85,7 @@ export default class PatchScreen {
         u.tVideo.value = tex;
         u.brightness.value = op.brightness ?? 1.4;
         u.saturation.value = op.videoSaturation ?? 1;
+        setGradeUniforms(u, op);
         u.feather.value = op.feather ?? 0;
         this.op = op;
     }

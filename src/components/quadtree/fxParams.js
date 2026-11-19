@@ -16,7 +16,7 @@ const num = (key, label, min, max, step, extra = {}) => ({
 const bool = (key, label, extra = {}) => ({ key: P + key, skey: key, label, type: 'bool', def: DEFAULTS[key], ...extra });
 const color = (key, label, extra = {}) => ({ key: P + key, skey: key, label, type: 'color', def: DEFAULTS[key], ...extra });
 const select = (key, label, options, extra = {}) => ({
-    key: P + key, skey: key, label, type: 'select', options, def: DEFAULTS[key], link: false, ...extra,
+    key: P + key, skey: key, label, type: 'select', options, def: DEFAULTS[key], rebuilds: true, ...extra,
 });
 const q = (k) => (p) => p[P + k];
 
@@ -45,7 +45,7 @@ export const QT_GROUPS = [
             num('rootCols', 'Root cells', 1, 32, 1),
             num('falloff', 'Falloff', 0.5, 1.5, 0.01),
             select('analysisRes', 'Analysis', [[256, '256'], [512, '512'], [1024, '1024']]),
-            num('loop', 'Loop (s)', 0.5, 60, 0.5, { link: false }),
+            num('loop', 'Loop (s)', 0.5, 60, 0.5, { rebuilds: true }),
         ],
     },
     {
@@ -54,7 +54,7 @@ export const QT_GROUPS = [
         params: [
             num('noiseScale', 'Scale', 0.2, 20, 0.05),
             num('noiseOctaves', 'Octaves', 1, 8, 1),
-            num('noiseEvolve', 'Evolve', 1, 8, 1, { link: false }),
+            num('noiseEvolve', 'Evolve', 1, 8, 1, { rebuilds: true }),
             num('noiseContrast', 'Contrast', 0.1, 4, 0.01),
             num('noiseWarp', 'Warp', 0, 3, 0.01),
             num('noiseSeed', 'Seed', 0, 999, 1),
@@ -75,16 +75,16 @@ export const QT_GROUPS = [
             num('outline', 'Outline (px)', 0, 16, 0.25, { when: notAscii }),
             select('outlineMode', 'Outline from', [['solid', 'Colour'], ['cell', 'Cell'], ['shade', 'Shade']], { when: (p) => notAscii(p) && q('outline')(p) > 0 }),
             color('outlineColor', 'Outline', { when: (p) => notAscii(p) && q('outline')(p) > 0 && q('outlineMode')(p) === 'solid' }),
-            { key: `${P}ramp`, skey: 'ramp', label: 'Characters', type: 'string', def: DEFAULTS.ramp, link: false, when: (p) => !notAscii(p) },
+            { key: `${P}ramp`, skey: 'ramp', label: 'Characters', type: 'string', def: DEFAULTS.ramp, rebuilds: true, when: (p) => !notAscii(p) },
             select('rampBy', 'Ramp by', [['brightness', 'Brightness'], ['size', 'Cell size'], ['depth', 'Cell depth']], { when: (p) => !notAscii(p) }),
             bool('rampInvert', 'Invert ramp', { when: (p) => !notAscii(p) }),
             select('glyphFont', 'Font', GLYPH_FONTS.map(([id, label]) => [id, label]), { when: (p) => !notAscii(p) }),
             {
-                key: `${P}glyphFontCustom`, skey: 'glyphFontCustom', label: 'Font name', type: 'string', def: DEFAULTS.glyphFontCustom, link: false,
+                key: `${P}glyphFontCustom`, skey: 'glyphFontCustom', label: 'Font name', type: 'string', def: DEFAULTS.glyphFontCustom, rebuilds: true,
                 when: (p) => !notAscii(p) && q('glyphFont')(p) === 'custom',
             },
             select('glyphWeight', 'Weight', GLYPH_WEIGHTS.map((w) => [w, String(w)]), { when: (p) => !notAscii(p) }),
-            bool('glyphItalic', 'Italic', { when: (p) => !notAscii(p), link: false }),
+            bool('glyphItalic', 'Italic', { when: (p) => !notAscii(p), rebuilds: true }),
             num('glyphBg', 'Cell fill', 0, 1, 0.01, { when: (p) => !notAscii(p) }),
             num('quadOpacity', 'Opacity', 0, 1, 0.01),
         ],
@@ -93,7 +93,7 @@ export const QT_GROUPS = [
         title: 'Colour',
         params: [
             select('colorSource', 'Colour from', [['seed', 'Picture'], ['gradient', 'Map'], ['depth', 'Depth']]),
-            { key: `${P}stopCount`, label: 'Colours', type: 'select', options: [[2, '2'], [3, '3'], [4, '4']], def: Math.min(MAX_STOPS, DEFAULTS.stops.length), link: false, when: (p) => q('colorSource')(p) !== 'seed' },
+            { key: `${P}stopCount`, label: 'Colours', type: 'select', options: [[2, '2'], [3, '3'], [4, '4']], def: Math.min(MAX_STOPS, DEFAULTS.stops.length), rebuilds: true, when: (p) => q('colorSource')(p) !== 'seed' },
             ...stopDefs,
             num('levels', 'Levels', 0, 16, 1),
             color('background', 'Background'),

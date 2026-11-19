@@ -2,9 +2,10 @@
 // parameter. Picked from the right-click menu on any linked control.
 //
 // A link drives its parameter between two values, `from` (signal 0) and `to`
-// (signal 1), through the map. Booleans are on wherever the mapped signal is
-// at or over a half; a Switch controller's link instead names the state it is
-// on in, and the map only decides whether that is inverted.
+// (signal 1), through the map. Booleans and text are on (or `to`) wherever
+// the mapped signal is at or over a half; a choice steps through the options
+// from `from` to `to`. A Switch controller's link instead names the state it
+// is on in, and the map only decides whether that is inverted.
 
 export const MAPS = [
     { id: 'normal', label: 'Normal', fn: (x) => x },
@@ -44,6 +45,14 @@ export function mixColor(a, b, k) {
 export function newLink(def, value, controllerId) {
     if (def.type === 'bool') return { controller: controllerId, map: 'normal', state: null };
     if (def.type === 'color') return { controller: controllerId, map: 'normal', from: value, to: '#ffffff' };
+    // A choice swings to the next option; text starts as it is on both ends.
+    if (def.type === 'select') {
+        const opts = (def.options || []).map(([v]) => v);
+        const from = opts.includes(value) ? value : (def.def ?? opts[0]);
+        const i = opts.indexOf(from);
+        return { controller: controllerId, map: 'normal', from, to: opts[(i + 1) % Math.max(1, opts.length)] ?? from };
+    }
+    if (def.type === 'text' || def.type === 'string') return { controller: controllerId, map: 'normal', from: value ?? '', to: value ?? '' };
     const lo = def.min ?? 0;
     const hi = def.max ?? 1;
     const v = Number.isFinite(value) ? value : (def.def ?? lo);

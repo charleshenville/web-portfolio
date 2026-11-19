@@ -15,6 +15,7 @@ import {
 } from '../../../lib/audioScene';
 import { LAYER, cutByWindows, punchByWindows } from '../../../lib/scanAssets/windows';
 import { takeBase } from './media';
+import { catchOnce, CATCH_BIT } from './emission';
 import Wisps from './wisps';
 import ParticleFlow from './particleFlow';
 import { fingerprint, applyEdits, weld } from '../model/meshEdits';
@@ -231,9 +232,12 @@ export class TakeRig {
         // its scan-coloured points (lib/scanAssets/takeLooks).
         this.meshLook = makeLookUniforms();
         this.pointLook = makeLookUniforms();
-        // Points and wireframe swell and slide together, in their own frame.
+        // The points (and their wisps) and the wireframe each swell and slide
+        // against the scan in a frame of their own (their Placement).
         this.overlay = new THREE.Group();
         root.add(this.overlay);
+        this.wireOverlay = new THREE.Group();
+        root.add(this.wireOverlay);
         this.load();
     }
 
@@ -386,9 +390,9 @@ export class TakeRig {
         this.root.add(this.occluder);
         cutByWindows(this.occluder.material);
 
-        this.catcher = new THREE.Mesh(g, new THREE.ShadowMaterial({
+        this.catcher = new THREE.Mesh(g, catchOnce(new THREE.ShadowMaterial({
             transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4,
-        }));
+        }), CATCH_BIT.shadow));
         this.catcher.receiveShadow = true;
         this.catcher.frustumCulled = false;
         this.catcher.visible = false;
@@ -459,7 +463,7 @@ export class TakeRig {
             this.wireEdges = topo.edges;
             this.wireBuffer = lineGeo.attributes.instanceStart.data;
             this.wireState = { base: topo.positions, dirs: null, dists: null, freqIndex: null, key: null, dirty: false, moved: null };
-            this.overlay.add(this.wire);
+            this.wireOverlay.add(this.wire);
             this.wireLevel = level;
         } catch (e) {
             this.wireLevel = null;
@@ -490,8 +494,12 @@ export class TakeRig {
         this.root.position.set(T.offsetX || 0, T.offsetY || 0, T.offsetZ || 0);
         this.root.rotation.set((T.rotX || 0) * D2R, (T.rotY || 0) * D2R, (T.rotZ || 0) * D2R);
         this.root.scale.setScalar(T.scale || 1);
-        this.overlay.scale.setScalar(T.overscale || 1);
-        this.overlay.position.set(T.overlayX || 0, T.overlayY || 0, T.overlayZ || 0);
+        const place = (node, O) => {
+            node.scale.setScalar(O?.overscale || 1);
+            node.position.set(O?.overlayX || 0, O?.overlayY || 0, O?.overlayZ || 0);
+        };
+        place(this.overlay, p.points);
+        place(this.wireOverlay, p.wire);
 
         const M = p.mesh;
         if (this.mesh) {
@@ -633,17 +641,16 @@ export class TakeRig {
         };
     }
 
-    /** Push the spectrum through the points and the wireframe. */
+    /** Push the spectrum through the points and the wireframe, each from its own pulse. */
     react(P, W, freq, live) {
-        if (!P) return;
-        const pulse = this.pulseOf(P);
-        if (this.wire && this.wireState && this.wireBuffer) {
+        if (W && this.wire && this.wireState && this.wireBuffer) {
             applyWireReactivity(this.wireState, this.wireBuffer, this.wireEdges, {
-                reactivity: W && W.visible ? W.react : 0,
-                scatter: P.scatter, freqLow: P.freqLow, freqHigh: P.freqHigh, ...pulse,
+                reactivity: W.visible ? W.react : 0,
+                scatter: W.scatter, freqLow: W.freqLow, freqHigh: W.freqHigh, ...this.pulseOf(W),
             }, freq, live);
         }
-        if (!this.cloud || !this.cloudReact) return;
+        if (!P || !this.cloud || !this.cloudReact) return;
+        const pulse = this.pulseOf(P);
         const attr = this.cloud.geometry.getAttribute('position');
         const drawn = this.cloud.geometry.drawRange.count;
         applyCloudReactivity(this.cloudReact, attr, {
@@ -708,5 +715,6 @@ export class TakeRig {
         this.mesh?.geometry.dispose();
         (this.texturedList || []).forEach((m) => { m.map?.dispose?.(); m.dispose?.(); });
         this.overlay.removeFromParent();
+        this.wireOverlay.removeFromParent();
     }
 }

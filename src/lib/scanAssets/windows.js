@@ -27,6 +27,7 @@ import { bilinear, patchGeometry } from './props';
 import { sortPixels } from '../pixelSort';
 import { createSortPool } from '../pixelSortPool';
 import { MATTE_RAMP } from './roto';
+import { gradeUniforms, GRADE_PICTURE_DECL } from '../pictureGrade';
 
 /**
  * Camera layers. 1 is the models' reflection capture. SCAN_FRONT and
@@ -263,6 +264,7 @@ export function screenMaterial() {
             cutoff: { value: 0.002 },
             feather: { value: 0.02 },
             ...matteUniforms(),
+            ...gradeUniforms(),
         },
         vertexShader: /* glsl */`
             attribute vec2 picUv;
@@ -281,9 +283,11 @@ export function screenMaterial() {
             varying vec2 vUv;
             varying vec2 vPic;
             ${EDGE}
+            ${GRADE_PICTURE_DECL}
             void main() {
                 bool inside = vPic.x >= 0.0 && vPic.x <= 1.0 && vPic.y >= 0.0 && vPic.y <= 1.0;
-                vec3 c = inside ? texture2D(tVideo, vPic).rgb * brightness : vec3(0.0);
+                // The video's own grade first, then the screen's brightness.
+                vec3 c = inside ? gradePicture(texture2D(tVideo, vPic).rgb) * brightness : vec3(0.0);
                 c = max(mix(vec3(dot(c, vec3(0.2126, 0.7152, 0.0722))), c, saturation), 0.0);
                 float a = edgeMask(vUv);
                 if (a < cutoff) discard;
@@ -843,7 +847,8 @@ export class WindowCompositor {
     constructor(renderer) {
         this.renderer = renderer;
         const opts = { type: THREE.HalfFloatType, depthBuffer: true };
-        this.behindRT = new THREE.WebGLRenderTarget(1, 1, { ...opts, samples: 4 });
+        // Stencil for the catchers, and 24-bit depth with it (Engine's fxTarget).
+        this.behindRT = new THREE.WebGLRenderTarget(1, 1, { ...opts, samples: 4, stencilBuffer: true });
         this.compRT = new THREE.WebGLRenderTarget(1, 1, { ...opts, depthBuffer: false });
         this.sortRT = new THREE.WebGLRenderTarget(1, 1, { depthBuffer: false });
         // The shapes of the windows that cut the scan mesh (MESH_CUT).

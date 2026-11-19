@@ -18,7 +18,7 @@
 // Files that point at media this machine does not have still open; the
 // missing media is flagged and can be relocated.
 
-import { defaultParams, OBJECT_TYPES } from './schema';
+import { defaultParams, OBJECT_TYPES, PULSE_KEYS } from './schema';
 import { stockControllers, makeController, CONTROLLER_TYPES, defaultsFor } from './controllers';
 import { DEFAULT_TEMPO, projectTempo } from './tempo';
 
@@ -199,6 +199,54 @@ export function migrateSuns(project) {
     return changed ? { ...project, objects } : project;
 }
 
+const OVERLAY_KEYS = ['overscale', 'overlayX', 'overlayY', 'overlayZ'];
+
+/**
+ * The points and the wireframe were swollen and slid together by their
+ * Take's Overlays, and the wireframe pulsed from the points' pulse. Each has
+ * its own of both now: older objects take what they had then (values and
+ * links), so nothing moves. The same objects back when there is nothing to do.
+ */
+export function migrateOverlays(objects) {
+    const linksOf = (o, keys) => Object.fromEntries(Object.entries(o?.links || {}).filter(([k]) => keys.includes(k)));
+    const pick = (o, keys) => Object.fromEntries(keys.filter((k) => o?.params && k in o.params).map((k) => [k, o.params[k]]));
+    let changed = false;
+    const bySceneType = (sceneId, type) => objects.find((x) => x?.sceneId === sceneId && x.type === type);
+    const out = objects.map((o) => {
+        if (!o?.params) return o;
+        if (o.type === 'take' && OVERLAY_KEYS.some((k) => k in o.params || o.links?.[k])) {
+            changed = true;
+            const params = { ...o.params };
+            OVERLAY_KEYS.forEach((k) => { delete params[k]; });
+            const links = Object.fromEntries(Object.entries(o.links || {}).filter(([k]) => !OVERLAY_KEYS.includes(k)));
+            return { ...o, params, links };
+        }
+        if (o.type !== 'scanPoints' && o.type !== 'scanWire') return o;
+        let params = o.params;
+        let links = o.links || {};
+        const take = bySceneType(o.sceneId, 'take');
+        if (!OVERLAY_KEYS.some((k) => k in params) && take) {
+            params = { ...params, ...pick(take, OVERLAY_KEYS) };
+            links = { ...links, ...linksOf(take, OVERLAY_KEYS) };
+        }
+        const points = o.type === 'scanWire' && !('pulseMode' in params) ? bySceneType(o.sceneId, 'scanPoints') : null;
+        if (points) {
+            params = { ...params, ...pick(points, PULSE_KEYS) };
+            links = { ...links, ...linksOf(points, PULSE_KEYS) };
+        }
+        if (params === o.params && links === (o.links || {})) return o;
+        changed = true;
+        return { ...o, params, links };
+    });
+    return changed ? out : objects;
+}
+
+/** `project` with its points' and wireframes' own Placement and pulse (migrateOverlays). */
+export function migrateProjectOverlays(project) {
+    const objects = migrateOverlays(project.objects);
+    return objects === project.objects ? project : { ...project, objects };
+}
+
 // A window's "Size over time" (eased from a start to an end size between two
 // times) gave way to its transform, which controllers drive.
 const OLD_SIZE_KEYS = ['sizeOn', 'sizeClock', 'sizeFrom', 'sizeTo', 'startW', 'startH', 'endW', 'endH', 'sizeEase'];
@@ -245,7 +293,7 @@ export function parseProject(text) {
     if (raw.version > PROJECT_VERSION) throw new Error(`made by a newer version (v${raw.version})`);
     const data = migrateTempo(raw);
     const base = createProject(data.name || 'Untitled');
-    const objects = (data.objects || []).filter((o) => o && OBJECT_TYPES[o.type]).map(migrateSun).map(migrateWindowSize).map((o) => ({
+    const objects = migrateOverlays((data.objects || []).filter((o) => o && OBJECT_TYPES[o.type])).map(migrateSun).map(migrateWindowSize).map((o) => ({
         ...o,
         params: { ...defaultParams(o.type), ...(o.params || {}) },
         links: o.links || {},

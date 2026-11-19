@@ -447,6 +447,8 @@ class TextAdapter {
         if (f?.scanSurface) q = { ...q, surface: f.scanSurface };
         this.text.sync(q);
         this.model.op = q;
+        // What emission reads (engine/emission.js): faded, it lights less.
+        this.op = q.emitOn ? { ...q, emitIntensity: (q.emitIntensity ?? 1) * Math.max(0, Math.min(1, q.opacity ?? 1)) } : q;
         this.object.userData.objectId = obj.id;
     }
 
@@ -459,6 +461,9 @@ class TextAdapter {
     }
 
     setScanDepth(tex, size) { this.text.setScanDepth(tex, size); }
+
+    /** Its letters as light sources, when it emits (engine/emission.js). */
+    emitPoints() { return this.text.emitPoints(); }
 
     dispose() { this.text.dispose(); }
 }

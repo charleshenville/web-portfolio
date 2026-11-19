@@ -2,7 +2,9 @@
 // applied. Pure, so the preview, the inspector's live readout and an export
 // all agree on what a linked parameter is at any time.
 
-import { controllerValue, switchAt, isSwitch } from './controllers';
+import {
+    controllerValue, switchAt, isSwitch, textAt,
+} from './controllers';
 import { applyMap, mixColor } from './maps';
 import { paramDefs, trackDefs } from './schema';
 import { projectTempo, withTempo } from './tempo';
@@ -31,22 +33,49 @@ export function makeFrame(project, t, analysis) {
     };
 }
 
+/** A select's option values. */
+const optionValues = (def) => (def.options || []).map(([v]) => v);
+
+/**
+ * What `link` makes `def` at this frame. Every kind of parameter can be
+ * linked: a number swings between `from` and `to`, a colour mixes them, and
+ * a toggle, a choice or a piece of text is one or the other (a choice also
+ * steps through the options between them as the signal rises). A Switch
+ * picks `to` in its chosen state and `from` otherwise; text linked to a
+ * Text controller shows its words.
+ */
 export function linkValue(def, link, frame) {
     const c = frame.controller(link.controller);
     if (!c) return undefined;
+    const words = def.type === 'text' || def.type === 'string';
+    if (words && c.type === 'text' && !Number.isInteger(link.state)) return textAt(c, frame.t, frame.controller);
     if (isSwitch(c) && Number.isInteger(link.state)) {
         let on = switchAt(c, frame.t, frame.controller) === link.state;
         if (link.map === 'inverted') on = !on;
         if (def.type === 'bool') return on;
-        if (def.type === 'color') return on ? link.to : link.from;
         return on ? link.to : link.from;
     }
     const x = applyMap(link.map, frame.value(c.id));
     if (def.type === 'bool') return x >= 0.5;
     if (def.type === 'color') return mixColor(link.from, link.to, x);
+    if (words) return x >= 0.5 ? link.to : link.from;
+    if (def.type === 'select') {
+        const opts = optionValues(def);
+        const a = opts.indexOf(link.from);
+        const b = opts.indexOf(link.to);
+        if (a < 0 || b < 0) return x >= 0.5 ? link.to : link.from;
+        return opts[Math.round(a + (b - a) * x)];
+    }
     const from = Number.isFinite(link.from) ? link.from : 0;
     const to = Number.isFinite(link.to) ? link.to : 1;
-    return from + (to - from) * x;
+    const v = from + (to - from) * x;
+    // What rebuilds something moves in its own steps, so a smooth signal
+    // rebuilds it only as it crosses one, not every frame.
+    if (def.rebuilds && def.step > 0) {
+        const lo = Number.isFinite(def.min) ? def.min : 0;
+        return lo + Math.round((v - lo) / def.step) * def.step;
+    }
+    return v;
 }
 
 // The keys of a set of parameters that are tempos (follow the project's when unset).
@@ -75,7 +104,7 @@ function resolveWith(owner, defs, frame) {
     const out = { ...owner.params };
     for (const key of keys) {
         const def = defs.get(key);
-        if (!def || def.link === false) continue;
+        if (!def) continue;
         const v = linkValue(def, links[key], frame);
         if (v !== undefined) out[key] = v;
     }

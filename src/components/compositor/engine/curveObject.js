@@ -702,7 +702,10 @@ export default class CurveAdapter {
         const fn = this.sampler(obj, p, f.globals);
         if (!fn) { this.ribbon.mesh.visible = false; this.dots.hide(); this.knots.hide(); this.head.hide(); this.applySpin(null); return; }
         // (Held as it is while its points are dragged.)
-        if (f.holdSpin !== obj.id) this.applySpin(isSplineObject(obj) && f.frame ? spinAt(obj, f.time, f.frame.project, f.frame.analysis) : null);
+        if (f.holdSpin !== obj.id) {
+            const q = f.frame ? spinAt(obj, f.time, f.frame.project, f.frame.analysis) : null;
+            this.applySpin(q, q && !isSplineObject(obj) ? this.curveMiddle(p, fn) : null);
+        }
         this.span = obj.type === 'manifold' ? musicSpan(p, this.splineState?.sol, f.time) : null;
         this.object.updateMatrixWorld(true);
         if (isPointsMode(p)) {
@@ -741,13 +744,38 @@ export default class CurveAdapter {
     }
 
     /**
-     * Turned by `q` ([x, y, z, w], in the scene's frame, or null for not at
-     * all) about the middle of its defining points where they are now.
+     * The middle of an equation's curve now, in its own frame: the mean of
+     * points along each copy's whole range (however much of it is drawn yet,
+     * so it doesn't wander as the curve grows), each copy where it is put.
      */
-    applySpin(q) {
+    curveMiddle(p, fn) {
+        const C = Math.min(16, this.copies(p));
+        const N = 48;
+        const out = [0, 0, 0];
+        const m = [0, 0, 0];
+        let n = 0;
+        for (let k = 0; k < C; k++) {
+            const [a, b] = copyRange(p, k);
+            const { off } = this.copyLook(p, k, this.copies(p));
+            for (let i = 0; i < N; i++) {
+                fn(a + ((b - a) * (i + 0.5)) / N, k, out);
+                if (!(Number.isFinite(out[0]) && Number.isFinite(out[1]) && Number.isFinite(out[2]))) continue;
+                m[0] += out[0] + off[0]; m[1] += out[1] + off[1]; m[2] += out[2] + off[2];
+                n++;
+            }
+        }
+        return n ? [[m[0] / n, m[1] / n, m[2] / n]] : [];
+    }
+
+    /**
+     * Turned by `q` ([x, y, z, w], in the scene's frame, or null for not at
+     * all) about the middle of `pts` (its own frame), or of its defining
+     * points where they are now.
+     */
+    applySpin(q, pts = null) {
         const sn = this.spinNode;
         if (!q) { sn.position.set(0, 0, 0); sn.quaternion.identity(); return; }
-        const pts = this.splineState?.points || [];
+        pts = pts || this.splineState?.points || [];
         const c = this.spinC.set(0, 0, 0);
         let n = 0;
         pts.forEach((pt) => {

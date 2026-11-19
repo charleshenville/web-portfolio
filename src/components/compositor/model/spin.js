@@ -57,7 +57,7 @@ function rateAt(obj, defs, t, project, analysis) {
         let v = obj.params?.[k] || 0;
         const link = obj.links?.[k];
         const def = defs.get(k);
-        if (link && def && def.link !== false) {
+        if (link && def) {
             const x = linkValue(def, link, frame);
             if (Number.isFinite(x)) v = x;
         }

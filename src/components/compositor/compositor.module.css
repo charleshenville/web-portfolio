@@ -1161,6 +1161,35 @@ button.tempoTag:hover {
     background: var(--hover);
 }
 
+/* A saved project in the Open dialog: open it, or copy or delete it. */
+.projectRow {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    border-bottom: 1px solid var(--line);
+    padding-right: 4px;
+}
+
+.projectRow .listItem {
+    flex: 1;
+    min-width: 0;
+    border-bottom: none;
+}
+
+.projectRow .olToggle {
+    width: 24px;
+    height: 24px;
+}
+
+.projectRow .olToggle:hover {
+    color: var(--fg) !important;
+}
+
+.danger {
+    color: var(--rec) !important;
+    border-color: var(--rec) !important;
+}
+
 .progress {
     height: 3px;
     background: var(--line);

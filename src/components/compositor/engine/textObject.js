@@ -9,7 +9,7 @@
 // each line typeset by MathJax (engine/latex.js).
 
 import * as THREE from 'three';
-import { patchGeometry, quadAspect } from '../../../lib/scanAssets/props';
+import { patchGeometry, quadAspect, bilinear } from '../../../lib/scanAssets/props';
 import { CMU_FONTS, registerCmuFonts } from '../../../lib/cmuFonts';
 import { texLayout, drawTex, loadTex, texFailed } from './latex';
 import { frameAt } from './pictures';
@@ -19,6 +19,47 @@ const SURF_PARTS = 8;
 const posIds = new WeakMap(); // a scan's position array -> a number, for cache keys
 let posNext = 1;
 const arrayId = (a) => { if (!posIds.has(a)) posIds.set(a, posNext++); return posIds.get(a); };
+
+const D2R = Math.PI / 180;
+
+/** The move, turn and scale a patch takes on top of its corners: its parameters and their resting values. */
+export const PATCH_MOVE = { xfMoveX: 0, xfMoveY: 0, xfMoveZ: 0, xfTurn: 0, xfTilt: 0, xfSpin: 0, xfScale: 1 };
+
+/**
+ * A patch moved, turned and scaled on top of where its corners put it, so
+ * a controller can drive it (corners themselves aren't linkable): moved
+ * along the scene's axes, turned about its own middle and axes (turn about
+ * its up, tilt about its width, spin about its facing), scaled about its
+ * middle. `{ local, off }`: `local` turns and scales it in place, `off`
+ * moves it, so the whole is off x local. Null when it is where its
+ * corners are.
+ */
+export function patchMove(c, p) {
+    if (!c || c.length < 4 || p.space === 'frame') return null;
+    const n = (k) => (Number.isFinite(p[k]) ? p[k] : PATCH_MOVE[k]);
+    if (Object.keys(PATCH_MOVE).every((k) => n(k) === PATCH_MOVE[k])) return null;
+    const V = (i) => new THREE.Vector3().fromArray(c[i]);
+    const mid = V(0).add(V(1)).add(V(2)).add(V(3)).multiplyScalar(0.25);
+    // Its own axes, as face() takes them: across its top, up its side, out of its face.
+    const x = V(1).sub(V(0));
+    const y = V(0).sub(V(3));
+    const B = new THREE.Matrix4();
+    const z = new THREE.Vector3().crossVectors(x, y);
+    if (x.lengthSq() > 1e-12 && z.lengthSq() > 1e-12) {
+        x.normalize();
+        z.normalize();
+        y.crossVectors(z, x);
+        B.makeBasis(x, y, z);
+    }
+    const k = Math.max(1e-3, n('xfScale'));
+    const local = new THREE.Matrix4().makeTranslation(mid.x, mid.y, mid.z)
+        .multiply(B)
+        .multiply(new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(n('xfTilt') * D2R, n('xfTurn') * D2R, n('xfSpin') * D2R, 'YXZ')))
+        .multiply(new THREE.Matrix4().makeScale(k, k, k))
+        .multiply(B.clone().transpose())
+        .multiply(new THREE.Matrix4().makeTranslation(-mid.x, -mid.y, -mid.z));
+    return { local, off: new THREE.Vector3(n('xfMoveX'), n('xfMoveY'), n('xfMoveZ')) };
+}
 
 // Painted into the scan: the patch shaded by the scan's own texture where
 // it lies (its atlas `vScanPart`, at `vScanUv`): the light and grain of the
@@ -251,6 +292,10 @@ export default class TextObject {
     sync(p) {
         this.op = p;
         const corners = p.corners;
+        // Moved, turned and scaled on top of its corners: placed now, as
+        // wrapping onto the scan reads where it is.
+        this.move = patchMove(corners, p);
+        if (p.space !== 'frame' && !p.faceCamera) this.unplace2D();
         // On the scan: shrunk onto it, painted into it, or both (in the scene, not turned to the camera).
         const surface = p.surface;
         const onScan = (p.wrapOn || p.paintOn) && p.space !== 'frame' && !p.faceCamera && !!surface?.mesh;
@@ -357,6 +402,57 @@ export default class TextObject {
         }
         this.object.visible = p.visible !== false && (p.opacity ?? 1) > 0.002;
         this.draw(p, quadAspect(corners));
+    }
+
+    /**
+     * Its letters as an emitter (engine/emission.js): a point on the patch
+     * for each drawn pixel of a small copy of its texture, in its colour
+     * (linear), in the mesh's frame. Worked out again only when the text is
+     * redrawn or the patch moves its corners, and kept otherwise (so the
+     * light sources found from them are kept too). Null over the frame,
+     * hidden, or with nothing drawn.
+     */
+    emitPoints() {
+        const p = this.op;
+        if (!this.mesh || !this.object.visible || p.space === 'frame' || !p.corners) return null;
+        const key = `${this.drawKey}|${this.geoKey}`;
+        if (key !== this.emitKey) {
+            this.emitKey = key;
+            this.emit = null;
+            const src = this.canvas;
+            if (!src.width || !src.height) return null;
+            const s = Math.min(1, 160 / Math.max(src.width, src.height));
+            const W = Math.max(1, Math.round(src.width * s));
+            const H = Math.max(1, Math.round(src.height * s));
+            const c = this.emitCanvas || (this.emitCanvas = document.createElement('canvas'));
+            c.width = W;
+            c.height = H;
+            const g = c.getContext('2d', { willReadFrequently: true });
+            g.clearRect(0, 0, W, H);
+            g.drawImage(src, 0, 0, W, H);
+            const d = g.getImageData(0, 0, W, H).data;
+            const pos = [];
+            const col = [];
+            const v = new THREE.Vector3();
+            const lut = this.srgbLut || (this.srgbLut = Float32Array.from({ length: 256 }, (_, i) => {
+                const c = i / 255;
+                return c < 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+            }));
+            const lin = (x) => lut[x];
+            for (let y = 0; y < H; y++) {
+                for (let x = 0; x < W; x++) {
+                    const i = (y * W + x) * 4;
+                    if (d[i + 3] < 90) continue;
+                    // The canvas's top row is the patch's top edge (v = 1).
+                    bilinear(p.corners, (x + 0.5) / W, 1 - (y + 0.5) / H, v);
+                    pos.push(v.x, v.y, v.z);
+                    col.push(lin(d[i]), lin(d[i + 1]), lin(d[i + 2]));
+                }
+            }
+            if (pos.length) this.emit = { pos: Float32Array.from(pos), col: Float32Array.from(col), count: pos.length / 3 };
+        }
+        if (!this.emit) return null;
+        return { ...this.emit, matrixWorld: this.mesh.matrixWorld };
     }
 
     draw(p, aspect) {
@@ -576,13 +672,23 @@ export default class TextObject {
         m.makeTranslation(mid.x, mid.y, mid.z)
             .multiply(new THREE.Matrix4().makeRotationFromQuaternion(q))
             .multiply(new THREE.Matrix4().makeTranslation(-mid.x, -mid.y, -mid.z));
+        // Its own move on top: turned and scaled as it faces, then moved.
+        if (this.move) m.multiply(this.move.local).premultiply(new THREE.Matrix4().makeTranslation(this.move.off.x, this.move.off.y, this.move.off.z));
         this.object.matrixAutoUpdate = false;
         this.object.matrix.copy(m);
         this.object.updateMatrixWorld(true);
     }
 
-    /** Back in the scene: the patch's corners place it again. */
+    /** Back in the scene: the patch's corners place it again, and its move (patchMove) on top. */
     unplace2D() {
+        const mv = this.move;
+        if (mv) {
+            this.object.matrixAutoUpdate = false;
+            this.object.matrix.makeTranslation(mv.off.x, mv.off.y, mv.off.z).multiply(mv.local);
+            this.object.matrix.decompose(this.object.position, this.object.quaternion, this.object.scale);
+            this.object.updateMatrixWorld(true);
+            return;
+        }
         if (this.object.matrixAutoUpdate) return;
         this.object.matrixAutoUpdate = true;
         this.object.position.set(0, 0, 0);

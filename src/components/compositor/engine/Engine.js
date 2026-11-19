@@ -93,6 +93,40 @@ const OVERLAY_ONLY = 1 << LAYER.OVERLAY;
 // shadowed directional light, which is what the patch keys on.
 export const MAX_SHADOW_MAPS = 4;
 const SHADOW_LAYER0 = 24; // object layers 24.. mark which map a caster draws into
+
+/**
+ * Where an object's shadow comes from, in the world: the box around just
+ * the parts that are shown and cast. Three's own (Box3.expandByObject)
+ * takes hidden parts too (a model's depth copies, wire and points, laid by
+ * at its origin until shown) and a skinned mesh's box from whatever pose
+ * it first stood in, so a model's map sat off to one side of him and cut
+ * his shadow short. A skinned mesh is measured in its pose now.
+ */
+const _part = new THREE.Box3();
+function casterBox(object, box) {
+    const walk = (o) => {
+        if (!o.visible) return;
+        if (o.castShadow && (o.isMesh || o.isLine || o.isPoints) && o.geometry?.getAttribute('position')) {
+            if (o.isSkinnedMesh) {
+                o.computeBoundingBox();
+                _part.copy(o.boundingBox);
+            } else {
+                const g = o.geometry;
+                const v = g.getAttribute('position').version;
+                if (!g.boundingBox || g.userData.casterBoxVersion !== v) {
+                    g.computeBoundingBox();
+                    g.userData.casterBoxVersion = v;
+                }
+                _part.copy(g.boundingBox);
+            }
+            if (!_part.isEmpty()) box.union(_part.applyMatrix4(o.matrixWorld));
+        }
+        o.children.forEach(walk);
+    };
+    object.updateWorldMatrix(true, true);
+    walk(object);
+    return box;
+}
 (() => {
     const chunk = THREE.ShaderChunk.lights_fragment_begin;
     if (chunk.includes('sunShadowAll')) return;
@@ -238,6 +272,15 @@ export default class Engine {
         const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         renderer.autoClear = false;
+        // A stencil clear clears only the bits the write mask lets through,
+        // and three leaves the mask as the last material drawn set it: after
+        // a catcher (catchOnce), its one bit. Cleared that way, the other
+        // catcher's bit would stay set into the next frame and keep it out.
+        const clear = renderer.clear.bind(renderer);
+        renderer.clear = (color = true, depth = true, stencil = true) => {
+            if (stencil) renderer.state.buffers.stencil.setMask(0xff);
+            clear(color, depth, stencil);
+        };
         renderer.outputColorSpace = THREE.SRGBColorSpace;
         renderer.shadowMap.enabled = true;
         renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -246,14 +289,26 @@ export default class Engine {
         // rendered sees its layer. The maps are refreshed by whichever pass
         // comes first, and that can see only part of the frame: with stand-in
         // shapes it is the scan on its own (renderLayer), so the maps held
-        // nothing and no shadows landed anywhere. They are drawn as the whole
-        // frame sees them instead, in front of the footage and behind it.
+        // nothing and no shadows landed anywhere. So each map is drawn on its
+        // own, through a camera that sees just that map's casters (placeSun
+        // marks them, in front of the footage or behind it, with the map's
+        // layer bit, which is also its shadow camera's mask). Seen through
+        // the frame's camera, every caster landed in every map: where maps
+        // overlapped a shadow was laid twice, darker, with each map's
+        // stair-steps along its edge, and cut off in a straight line where
+        // a map ended.
         const shadows = renderer.shadowMap;
         const drawShadows = shadows.render;
         const shadowView = new THREE.Camera();
-        shadowView.layers.set(LAYER.FRONT);
-        shadowView.layers.enable(LAYER.BEHIND);
-        shadows.render = (lights, scene) => drawShadows.call(shadows, lights, scene, shadowView);
+        shadows.render = (lights, scene) => {
+            if (!shadows.enabled || (!shadows.autoUpdate && !shadows.needsUpdate)) return;
+            lights.forEach((l) => {
+                shadowView.layers.mask = l.shadow.camera.layers.mask;
+                shadows.needsUpdate = true;
+                drawShadows.call(shadows, [l], scene, shadowView);
+            });
+            shadows.needsUpdate = false;
+        };
         renderer.domElement.style.display = 'block';
         // The canvas sits in a box exactly its size, so overlays (the roto
         // editor's) can be laid over the picture and nothing else.
@@ -320,7 +375,11 @@ export default class Engine {
         this.layerQuads = [];
 
         // Post. The composite goes into fxTarget when any effect is on.
-        const fxTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
+        // With a stencil (catchOnce), which also makes its depth 24 bits:
+        // depth alone is 16, which Firefox keeps, and at 16 bits a surface a
+        // few metres off is only told apart from one a few centimetres
+        // behind it (a stand-in laid over the scan's floor fights it in teeth).
+        const fxTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4, stencilBuffer: true });
         this.composer = new EffectComposer(renderer, fxTarget);
         // Each Glow effect gets its own passes before gamma (glow works in
         // linear light); haze and grade come after it, on display colour.
@@ -1070,11 +1129,14 @@ export default class Engine {
                 closed: obj.params.ends === 'closed',
             };
         }
-        if (obj.type === 'scanPoints' && S.rig?.cloud) {
+        // The pulse plane or line of the points or the wireframe, in that one's own frame.
+        const pulseSpace = obj.type === 'scanPoints' ? S.rig?.cloud && S.rig.overlay
+            : obj.type === 'scanWire' ? S.rig?.wire && S.rig.wireOverlay : null;
+        if (pulseSpace) {
             const key = obj.params.pulseMode === 'plane' ? 'pulsePlane' : obj.params.pulseMode === 'line' ? 'pulseLine' : null;
             const pts = key && obj.params[key];
             if (!pts) return null;
-            return { obj, kind: 'pulse', key, corners: pts, space: S.rig.overlay };
+            return { obj, kind: 'pulse', key, corners: pts, space: pulseSpace };
         }
         return null;
     }
@@ -1148,12 +1210,13 @@ export default class Engine {
     }
 
     /**
-     * A pulse plane (three points) or line (two) for the scan points of
-     * `sceneId`, set from the camera as it is now, in the points' own frame.
+     * A pulse plane (three points) or line (two) for the scan points (or,
+     * `type` 'scanWire', the wireframe) of `sceneId`, set from the camera as
+     * it is now, in that one's own frame.
      */
-    pulsePreset(sceneId, kind, which) {
+    pulsePreset(sceneId, kind, which, type = 'scanPoints') {
         const S = this.scenes.get(sceneId);
-        const sp = S?.rig?.overlay;
+        const sp = type === 'scanWire' ? S?.rig?.wireOverlay : S?.rig?.overlay;
         const cam = this.activeCamera;
         if (!sp || !cam || !S.rig.sphere) return null;
         sp.updateMatrixWorld(true);
@@ -1640,7 +1703,7 @@ export default class Engine {
             const own = a.shadowBox ? a.shadowBox() : undefined;
             const b = new THREE.Box3();
             if (own) b.copy(own);
-            else if (own === undefined) b.expandByObject(a.object);
+            else if (own === undefined) casterBox(a.object, b);
             if (!b.isEmpty()) casters.push({ id, box: b });
         });
         const box = new THREE.Box3();
@@ -1714,7 +1777,9 @@ export default class Engine {
             m.ids.forEach((id) => this.casterBits.set(id, bit));
             const extent = Math.max(c.right - c.left, c.top - c.bottom);
             let size = this.maxShadowSize;
-            if (soft > 0) while (size > 512 && soft / (extent / size) > 2.5) size /= 2;
+            // Down to 128 texels: a map fitted to one small model is a few
+            // tenths of a metre, and at 512 its radius reached seven texels.
+            if (soft > 0) while (size > 128 && soft / (extent / size) > 2.5) size /= 2;
             return { extent, size };
         });
         // At most three full-size maps' worth of memory (each 4096 map is 64 MB);
@@ -1911,6 +1976,12 @@ export default class Engine {
      * patches. So with stand-ins in `S`, the scan's own parts are drawn
      * first, then the stand-ins and everything else, against the depth the
      * scan left.
+     *
+     * The scan's shadow and glow catchers wait for the second draw, with the
+     * stand-ins' own: against the depth of both, the surface nearer the
+     * camera catches, and each pixel takes each catch once (catchOnce).
+     * Drawn first, the scan's would catch under a stand-in too, and its
+     * shadow and glow would land twice where the stand-in also catches.
      */
     renderLayer(S, cam, layer, r = this.renderer) {
         const rig = S?.rig;
@@ -1919,10 +1990,14 @@ export default class Engine {
         cam.layers.set(layer);
         if (!standIns || !rig) { r.render(this.scene, cam); return; }
         const scanBit = layer === LAYER.BEHIND ? LAYER.SCAN_BEHIND : LAYER.SCAN_FRONT;
+        const catchers = [rig.catcher, rig.glowCatcher].filter(Boolean);
+        const caught = catchers.map((o) => o.visible);
+        catchers.forEach((o) => { o.visible = false; });
         cam.layers.set(scanBit);
         r.render(this.scene, cam);
+        catchers.forEach((o, i) => { o.visible = caught[i]; });
         // Kept out of the second draw: only what the first drew.
-        const parts = rig.parts.filter((o) => o.layers.isEnabled(scanBit));
+        const parts = rig.parts.filter((o) => o.layers.isEnabled(scanBit) && !catchers.includes(o));
         const was = parts.map((o) => o.visible);
         parts.forEach((o) => { o.visible = false; });
         cam.layers.set(layer);

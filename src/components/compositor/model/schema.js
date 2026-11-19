@@ -4,8 +4,12 @@
 // A parameter definition:
 //   { key, label, type: 'number' | 'bool' | 'color' | 'select',
 //     min, max, step, def, options: [[value, label]],
-//     link: false  - cannot be linked to a controller (changing it rebuilds
-//                    geometry, so driving it every frame would stall),
+//     rebuilds: true - changing it rebuilds something (geometry, a texture,
+//                    a buffer). It can still be linked to a controller like
+//                    anything else; a linked value moves in its own steps, so
+//                    it only rebuilds when it crosses one (a Switch, only at
+//                    its cuts). Everything checks for a change before it
+//                    rebuilds, so a value held still costs nothing.
 //     when: (params) => bool - only shown when this holds }
 //
 // Every object has `visible`, which is a parameter like any other, so it can
@@ -21,13 +25,13 @@ import {
 } from '../../../lib/protagonist/poser';
 import { SACKBOY_DEFAULTS } from '../../../lib/scanAssets/sackboy';
 import {
-    CAT_DEFAULTS, CAT_ANIMS, CAT_TEXTURE_FIELDS,
+    CAT_DEFAULTS, CAT_ANIMS, CAT_TEXTURE_FIELDS, CAT_BLEND_MENU,
 } from '../../../lib/scanAssets/headphoneCat/model';
 import {
     CAT_SHAPE_GROUPS, CAT_MORPHS, CAT_EYES, CAT_MOUTHS,
 } from '../../../lib/scanAssets/headphoneCat/rig';
 import { PROP_DEFAULTS } from '../../../lib/scanAssets/props';
-import { FONTS, TEXT_BLENDS } from '../engine/textObject';
+import { FONTS, TEXT_BLENDS, PATCH_MOVE } from '../engine/textObject';
 import { WINDOW_DEFAULTS } from '../../../lib/scanAssets/windows';
 import { WISP_DEFAULTS } from '../engine/wisps';
 import { SIM_DEFAULTS } from '../engine/particleFlow';
@@ -57,8 +61,8 @@ const GRADE_PARAMS = [
 const num = (key, label, min, max, step, def, extra = {}) => ({ key, label, type: 'number', min, max, step, def, ...extra });
 const bool = (key, label, def, extra = {}) => ({ key, label, type: 'bool', def, ...extra });
 const color = (key, label, def, extra = {}) => ({ key, label, type: 'color', def, ...extra });
-const select = (key, label, options, def, extra = {}) => ({ key, label, type: 'select', options, def, link: false, ...extra });
-const text = (key, label, def, extra = {}) => ({ key, label, type: 'text', def, link: false, ...extra });
+const select = (key, label, options, def, extra = {}) => ({ key, label, type: 'select', options, def, ...extra });
+const text = (key, label, def, extra = {}) => ({ key, label, type: 'text', def, ...extra });
 
 // A grade of the picture's own, for the footage and each video track: the
 // Grade effect's, without the vignette (a picture's grade is its colour).
@@ -69,7 +73,14 @@ const PICTURE_GRADE = [
     ...GRADE_PARAMS.filter((g) => g.key !== 'vignette').map((g) => num(g.key, g.label, g.min, g.max, g.step, g.def, { when: graded })),
 ];
 const PICTURE_GRADE_DEFAULTS = Object.fromEntries(PICTURE_GRADE.map((d) => [d.key, d.def]));
-const string = (key, label, def, extra = {}) => ({ key, label, type: 'string', def, link: false, ...extra });
+// The same grade on a screen's video (a prop's, a window's), before its
+// brightness: shown while `shown(p)`, its settings once it is on.
+const SCREEN_GRADE = (shown) => PICTURE_GRADE.map((d) => ({
+    ...d,
+    label: d.key === 'gradeOn' ? 'Grade the video' : d.label,
+    when: d.key === 'gradeOn' ? shown : (p) => shown(p) && graded(p),
+}));
+const string = (key, label, def, extra = {}) => ({ key, label, type: 'string', def, ...extra });
 
 // A video across a patch, as prop screens show one.
 const SCREEN_GROUP = (hint) => ({
@@ -85,7 +96,8 @@ const SCREEN_GROUP = (hint) => ({
         num('videoSaturation', 'Saturation', 0, 3, 0.01, 1, { when: (p) => p.screenOn }),
         select('fit', 'Fit', [['cover', 'Cover'], ['contain', 'Contain'], ['stretch', 'Stretch']], 'cover', { when: (p) => p.screenOn }),
         select('rotate', 'Rotate', [[0, '0\u00b0'], [90, '90\u00b0'], [180, '180\u00b0'], [270, '270\u00b0']], 0, { when: (p) => p.screenOn }),
-        bool('flipX', 'Mirror', false, { when: (p) => p.screenOn, link: false }),
+        bool('flipX', 'Mirror', false, { when: (p) => p.screenOn, rebuilds: true }),
+        ...SCREEN_GRADE((p) => p.screenOn),
     ],
 });
 
@@ -127,7 +139,7 @@ const SIM_GROUPS = [
             num('simSplash', 'Splash', 0, 6, 0.01, 0.5),
             num('simInertia', 'Inertia (s)', 0.01, 5, 0.01, 0.4),
             num('simGather', 'Gather', 0, 1, 0.01, 0),
-            num('simGatherSize', 'Strand size', 0.01, 2, 0.01, 0.15, { link: false, when: (p) => p.simGather > 0 }),
+            num('simGatherSize', 'Strand size', 0.01, 2, 0.01, 0.15, { rebuilds: true, when: (p) => p.simGather > 0 }),
         ],
     },
 ];
@@ -139,10 +151,10 @@ const WISP_GROUPS = [
         params: [
             bool('wispOn', 'On', false),
             select('wispStyle', 'Kind', [['strands', 'Strands (rooted)'], ['streams', 'Streams (break away)']], 'strands', { when: wisping }),
-            num('wispCount', 'Ribbons', 100, 100000, 100, 6000, { link: false, when: wisping }),
-            num('wispDetail', 'Segments', 4, 64, 1, 24, { link: false, when: wisping }),
-            num('wispFrom', 'Emit from height', 0, 1, 0.01, 0, { link: false, when: wisping }),
-            num('wispTo', 'Emit to height', 0, 1, 0.01, 1, { link: false, when: wisping }),
+            num('wispCount', 'Ribbons', 100, 100000, 100, 6000, { rebuilds: true, when: wisping }),
+            num('wispDetail', 'Segments', 4, 64, 1, 24, { rebuilds: true, when: wisping }),
+            num('wispFrom', 'Emit from height', 0, 1, 0.01, 0, { rebuilds: true, when: wisping }),
+            num('wispTo', 'Emit to height', 0, 1, 0.01, 1, { rebuilds: true, when: wisping }),
             num('wispLength', 'Length (s of travel)', 0, 10, 0.01, 1.2, { when: wisping }),
             num('wispLife', 'Life (s)', 0.1, 20, 0.01, 3, { when: (p) => wisping(p) && p.wispStyle === 'streams' }),
             num('wispWidth', 'Width (px)', 0.05, 8, 0.05, 0.8, { when: wisping }),
@@ -167,7 +179,7 @@ const WISP_GROUPS = [
             num('wispSplash', 'Splash', 0, 6, 0.01, 0),
             num('wispSplashDecay', 'Splash fades (s)', 0.01, 5, 0.01, 0.3, { when: (p) => p.wispSplash > 0 }),
             num('wispGather', 'Gather', 0, 1, 0.01, 0.5),
-            num('wispGatherSize', 'Strand size', 0.01, 2, 0.01, 0.15, { link: false, when: (p) => p.wispGather > 0 }),
+            num('wispGatherSize', 'Strand size', 0.01, 2, 0.01, 0.15, { rebuilds: true, when: (p) => p.wispGather > 0 }),
         ],
     },
 ];
@@ -187,9 +199,24 @@ const EMIT_GROUP = {
         num('emitFalloff', 'Falloff', 0, 4, 0.01, 2, { when: emitting }),
         select('emitColorMode', 'Light colour', [['points', 'From the points'], ['solid', 'Solid']], 'points', { when: emitting }),
         color('emitColor', 'Solid', '#ffd9a0', { when: (p) => emitting(p) && p.emitColorMode === 'solid' }),
-        num('emitLights', 'Light sources', 1, 8, 1, 4, { link: false, when: emitting }),
+        num('emitLights', 'Light sources', 1, 8, 1, 4, { rebuilds: true, when: emitting }),
         bool('emitOnHidden', 'Glow on hidden surfaces', true, { when: emitting }),
     ],
+};
+
+// Text's emission: its letters (and its box, where that is filled) light
+// what is near them, as an emitting cloud's points do. Not over the frame,
+// where it isn't in the scene.
+const EMIT_DEFAULTS = {
+    emitOn: false, emitIntensity: 1, emitReach: 1.5, emitFalloff: 2, emitColorMode: 'points', emitColor: '#ffd9a0', emitLights: 4, emitOnHidden: true,
+};
+const TEXT_EMIT_GROUP = {
+    ...EMIT_GROUP,
+    when: (p) => p.space !== 'frame',
+    hint: 'Its letters light meshes, props, models and shapes near them, in their own colours, as if they glowed. On hidden surfaces, the glow lands on the footage where the scan mesh and stand-in shapes are, shown or not, as shadows do.',
+    params: EMIT_GROUP.params.map((d) => (d.key === 'emitColorMode'
+        ? select('emitColorMode', 'Light colour', [['points', 'From the letters'], ['solid', 'Solid']], 'points', { when: emitting })
+        : d)),
 };
 
 const transform = (range = 10, step = 0.005) => ({
@@ -215,16 +242,16 @@ const NOD = {
         bool('nodOn', 'Nod', false),
         select('nodMode', 'Timing', [['bpm', 'Tempo'], ['kick', 'Kicks']], 'bpm', { when: (p) => p.nodOn }),
         // Unset, it is the project's tempo (model/tempo.js).
-        num('bpm', 'BPM', 30, 240, 0.001, null, { tempo: true, when: (p) => p.nodOn && p.nodMode === 'bpm', link: false }),
-        num('nodEvery', 'Every N', 1, 8, 1, 1, { when: (p) => p.nodOn, link: false }),
+        num('bpm', 'BPM', 30, 240, 0.001, null, { tempo: true, when: (p) => p.nodOn && p.nodMode === 'bpm', rebuilds: true }),
+        num('nodEvery', 'Every N', 1, 8, 1, 1, { when: (p) => p.nodOn, rebuilds: true }),
         num('nodDepth', 'Depth', 0, 40, 0.5, 12, { when: (p) => p.nodOn }),
         num('nodSharpness', 'Snap', 0.5, 6, 0.05, 1.6, { when: (p) => p.nodOn && p.nodMode === 'bpm' }),
         num('nodPhase', 'Beat offset', 0, 1, 0.01, 0, { when: (p) => p.nodOn && p.nodMode === 'bpm' }),
         num('nodGroove', 'Groove', 0, 1.5, 0.01, 0.35, { when: (p) => p.nodOn }),
-        num('kickThreshold', 'Threshold', 0, 1, 0.005, 0.85, { when: (p) => p.nodOn && p.nodMode === 'kick', link: false }),
-        num('kickLow', 'Low (Hz)', 20, 300, 1, 40, { when: (p) => p.nodOn && p.nodMode === 'kick', link: false }),
-        num('kickHigh', 'High (Hz)', 40, 500, 1, 130, { when: (p) => p.nodOn && p.nodMode === 'kick', link: false }),
-        num('kickGap', 'Min gap (s)', 0.05, 1, 0.01, 0.18, { when: (p) => p.nodOn && p.nodMode === 'kick', link: false }),
+        num('kickThreshold', 'Threshold', 0, 1, 0.005, 0.85, { when: (p) => p.nodOn && p.nodMode === 'kick', rebuilds: true }),
+        num('kickLow', 'Low (Hz)', 20, 300, 1, 40, { when: (p) => p.nodOn && p.nodMode === 'kick', rebuilds: true }),
+        num('kickHigh', 'High (Hz)', 40, 500, 1, 130, { when: (p) => p.nodOn && p.nodMode === 'kick', rebuilds: true }),
+        num('kickGap', 'Min gap (s)', 0.05, 1, 0.01, 0.18, { when: (p) => p.nodOn && p.nodMode === 'kick', rebuilds: true }),
         num('nodRelease', 'Release (s)', 0.05, 1.2, 0.01, 0.3, { when: (p) => p.nodOn && p.nodMode === 'kick' }),
     ],
 };
@@ -241,7 +268,7 @@ const VIEWS = (pointMax, sizeMax) => ({
         num('wireThickness', 'Wire width', 0.0002, 0.008, 0.0001, 0.0016, { when: (p) => p.viewWire }),
         select('pointColorMode', 'Point colour', [['model', 'Model'], ['solid', 'Solid']], 'model', { when: (p) => p.viewPoints }),
         color('pointColor', 'Points', '#f2f0e6', { when: (p) => p.viewPoints }),
-        num('pointCount', 'Points', 2000, pointMax, 1000, 24000, { when: (p) => p.viewPoints, link: false }),
+        num('pointCount', 'Points', 2000, pointMax, 1000, 24000, { when: (p) => p.viewPoints, rebuilds: true }),
         num('pointSize', 'Point size', 0.001, sizeMax, 0.0005, 0.014, { when: (p) => p.viewPoints }),
         OPACITY,
         bool('castShadow', 'Casts a shadow', true),
@@ -320,12 +347,13 @@ const CURVE_LOOK_DEFAULTS = {
     posX: 0, posY: 0, posZ: 0, rotX: 0, rotY: 0, rotZ: 0, scale: 1,
 };
 
-// A spline's spin: turning about the middle of its defining points, about the
-// scene's own axes, at rates a controller can drive (model/spin.js).
+// A spline's or an equation's spin: turning about the middle of its defining
+// points (an equation's: of its curve), about the scene's own axes, at rates
+// a controller can drive (model/spin.js).
 const SPIN_DEFAULTS = { spinX: 0, spinY: 0, spinZ: 0 };
 const SPIN_GROUP = {
     title: 'Spin',
-    hint: 'Degrees a second about the scene\u2019s axes, around the points\u2019 centre. Linked rates ease rather than jump.',
+    hint: 'Degrees a second about the scene\u2019s axes, around its centre (a spline\u2019s points\u2019, an equation\u2019s curve\u2019s). Linked rates ease rather than jump.',
     params: [
         num('spinX', 'About X (\u00b0/s)', -720, 720, 0.5, 0),
         num('spinY', 'About Y (\u00b0/s)', -720, 720, 0.5, 0),
@@ -356,10 +384,10 @@ function curveLookGroups(v) {
             params: [
                 VISIBLE,
                 select('mode', 'Mode', CURVE_MODES, 'solid'),
-                num('samples', 'Resolution', 8, 4000, 1, 400, { link: false, when: solidMode }),
+                num('samples', 'Resolution', 8, 4000, 1, 400, { rebuilds: true, when: solidMode }),
                 num('thickness', 'Thickness', 0, 0.5, 0.0005, 0.02, { when: solidMode, swing: 0.02 }),
                 select('thicknessUnits', 'Thickness in', [['world', 'Scene units'], ['pixels', 'Pixels (of 1080)']], 'world', { when: solidMode }),
-                num('dotCount', 'Points', 1, 5000, 1, 240, { link: false, when: isPointsMode }),
+                num('dotCount', 'Points', 1, 5000, 1, 240, { rebuilds: true, when: isPointsMode }),
                 select('pointShape', 'Point shape', POINT_SHAPES, 'tetra', { when: isPointsMode }),
                 select('pointStyle', 'Points drawn', POINT_STYLES, 'solid', { when: isPointsMode }),
                 num('pointWire', 'Edge width (px)', 0.25, 12, 0.05, 1.5, { when: (p) => isPointsMode(p) && p.pointStyle === 'wire' }),
@@ -393,7 +421,7 @@ function curveLookGroups(v) {
             when: isSeries,
             hint: 'k is the copy number (0 first) in equations.',
             params: [
-                num('seriesCount', 'Copies', 1, 64, 1, 6, { link: false }),
+                num('seriesCount', 'Copies', 1, 64, 1, 6, { rebuilds: true }),
                 num('seriesDX', 'Step X', -5, 5, 0.001, 0),
                 num('seriesDY', 'Step Y', -5, 5, 0.001, 0.15),
                 num('seriesDZ', 'Step Z', -5, 5, 0.001, 0),
@@ -440,14 +468,53 @@ const ON_SCAN_GROUP = {
         bool('wrapOn', 'Shrink to the mesh', false),
         num('wrapAmount', 'How far', 0, 1, 0.01, 1, { when: (p) => p.wrapOn }),
         num('wrapLift', 'Lift (cm)', 0, 5, 0.01, 0.2, { when: (p) => p.wrapOn }),
-        num('wrapReach', 'Reach', 0.01, 3, 0.01, 0.5, { link: false, when: (p) => p.wrapOn || p.paintOn }),
-        num('wrapDetail', 'Detail', 2, 96, 1, 24, { link: false, when: (p) => p.wrapOn || p.paintOn }),
+        num('wrapReach', 'Reach', 0.01, 3, 0.01, 0.5, { rebuilds: true, when: (p) => p.wrapOn || p.paintOn }),
+        num('wrapDetail', 'Detail', 2, 96, 1, 24, { rebuilds: true, when: (p) => p.wrapOn || p.paintOn }),
         bool('paintOn', 'Paint into the scan texture', false),
         num('paintAmount', 'Amount', 0, 1, 0.01, 1, { when: (p) => p.paintOn }),
         num('paintLight', 'Brightness', 0, 4, 0.01, 1.6, { when: (p) => p.paintOn }),
         num('paintTint', 'Takes its colour', 0, 1, 0.01, 0.3, { when: (p) => p.paintOn }),
     ],
 };
+
+// The scan's points and its wireframe each have their own placement against
+// the scan (swollen a little, slid a little: they sit on its surface, so
+// drawn exactly there they flicker against it) and their own spectrum pulse,
+// so either can move without the other.
+const OVERLAY_DEFAULTS = { overscale: 1, overlayX: 0, overlayY: 0, overlayZ: 0 };
+const OVERLAY_GROUP = {
+    title: 'Placement',
+    collapsed: true,
+    hint: 'Against the scan: swell grows it about the scan\u2019s origin, the offsets slide it.',
+    params: [
+        num('overscale', 'Swell', 1, 1.08, 0.0005, 1),
+        num('overlayX', 'Offset X', -0.3, 0.3, 0.001, 0),
+        num('overlayY', 'Offset Y', -0.3, 0.3, 0.001, 0),
+        num('overlayZ', 'Offset Z', -0.3, 0.3, 0.001, 0),
+    ],
+};
+export const PULSE_KEYS = ['scatter', 'freqLow', 'freqHigh', 'pulseMode', 'pulseX', 'pulseY', 'pulseZ', 'pulseDir', 'pulsePlane', 'pulseLine'];
+const PULSE_DEFAULTS = {
+    scatter: 0.002, freqLow: 0, freqHigh: 1,
+    pulseMode: 'radial', pulseX: 0, pulseY: 0, pulseZ: 0, pulseDir: 'up', pulsePlane: null, pulseLine: null,
+};
+const PULSE_GROUPS = [
+    {
+        title: 'Spectrum pulse',
+        params: [
+            num('react', 'Amount', 0, 3, 0.01, 0),
+            num('scatter', 'Scatter', 0, 1, 0.001, 0.002),
+            num('freqLow', 'Freq low', 0, 1, 0.01, 0),
+            num('freqHigh', 'Freq high', 0, 1, 0.01, 1),
+            select('pulseMode', 'From', [['radial', 'Point'], ['directional', 'Direction'], ['plane', 'Plane'], ['line', 'Line']], 'radial'),
+            num('pulseX', 'Origin X', -4, 4, 0.01, 0, { when: (p) => p.pulseMode === 'radial' }),
+            num('pulseY', 'Origin Y', -4, 4, 0.01, 0, { when: (p) => p.pulseMode === 'radial' }),
+            num('pulseZ', 'Origin Z', -4, 4, 0.01, 0, { when: (p) => p.pulseMode === 'radial' }),
+            select('pulseDir', 'Direction', [['up', 'Up'], ['down', 'Down'], ['right', '+X'], ['left', '\u2212X'], ['toward', '+Z'], ['away', '\u2212Z']], 'up', { when: (p) => p.pulseMode === 'directional' }),
+        ],
+    },
+    { title: 'Pulse shape', custom: 'pulseShape', when: (p) => p.pulseMode === 'plane' || p.pulseMode === 'line' },
+];
 
 export const OBJECT_TYPES = {
     // ---- A take's own scene --------------------------------------------------
@@ -459,7 +526,6 @@ export const OBJECT_TYPES = {
         gizmo: 'offset',
         defaults: {
             offsetX: 0, offsetY: 0, offsetZ: 0, rotX: 0, rotY: 0, rotZ: 0, scale: 1,
-            overscale: 1, overlayX: 0, overlayY: 0, overlayZ: 0,
             bgColor: '#000000', mattesOn: true, mattesOverHidden: false, occlude: false,
         },
         groups: [
@@ -474,16 +540,6 @@ export const OBJECT_TYPES = {
                     num('rotY', 'Rotate Y', -15, 15, 0.1, 0),
                     num('rotZ', 'Rotate Z', -15, 15, 0.1, 0),
                     num('scale', 'Scale', 0.8, 1.25, 0.001, 1),
-                ],
-            },
-            {
-                title: 'Overlays',
-                collapsed: true,
-                params: [
-                    num('overscale', 'Swell', 1, 1.08, 0.0005, 1),
-                    num('overlayX', 'Overlay X', -0.3, 0.3, 0.001, 0),
-                    num('overlayY', 'Overlay Y', -0.3, 0.3, 0.001, 0),
-                    num('overlayZ', 'Overlay Z', -0.3, 0.3, 0.001, 0),
                 ],
             },
             {
@@ -535,8 +591,9 @@ export const OBJECT_TYPES = {
         gizmo: 'pulse',
         defaults: {
             visible: false, depthLayer: 'front', colorMode: 'scan', color: '#f2f0e6', size: 1.6, opacity: 1,
-            density: 0.6, attenuate: true, react: 0, scatter: 0.002, freqLow: 0, freqHigh: 1,
-            pulseMode: 'radial', pulseX: 0, pulseY: 0, pulseZ: 0, pulseDir: 'up', pulsePlane: null, pulseLine: null,
+            density: 0.6, attenuate: true, react: 0,
+            ...PULSE_DEFAULTS,
+            ...OVERLAY_DEFAULTS,
             ...SIM_DEFAULTS,
             ...WISP_DEFAULTS,
         },
@@ -555,21 +612,8 @@ export const OBJECT_TYPES = {
                     LAYER,
                 ],
             },
-            {
-                title: 'Spectrum pulse',
-                params: [
-                    num('react', 'Amount', 0, 3, 0.01, 0),
-                    num('scatter', 'Scatter', 0, 1, 0.001, 0.002),
-                    num('freqLow', 'Freq low', 0, 1, 0.01, 0),
-                    num('freqHigh', 'Freq high', 0, 1, 0.01, 1),
-                    select('pulseMode', 'From', [['radial', 'Point'], ['directional', 'Direction'], ['plane', 'Plane'], ['line', 'Line']], 'radial'),
-                    num('pulseX', 'Origin X', -4, 4, 0.01, 0, { when: (p) => p.pulseMode === 'radial' }),
-                    num('pulseY', 'Origin Y', -4, 4, 0.01, 0, { when: (p) => p.pulseMode === 'radial' }),
-                    num('pulseZ', 'Origin Z', -4, 4, 0.01, 0, { when: (p) => p.pulseMode === 'radial' }),
-                    select('pulseDir', 'Direction', [['up', 'Up'], ['down', 'Down'], ['right', '+X'], ['left', '−X'], ['toward', '+Z'], ['away', '−Z']], 'up', { when: (p) => p.pulseMode === 'directional' }),
-                ],
-            },
-            { title: 'Pulse shape', custom: 'pulseShape', when: (p) => p.pulseMode === 'plane' || p.pulseMode === 'line' },
+            ...PULSE_GROUPS,
+            OVERLAY_GROUP,
             EMIT_GROUP,
             ...SIM_GROUPS,
             ...WISP_GROUPS,
@@ -616,6 +660,8 @@ export const OBJECT_TYPES = {
         defaults: {
             visible: false, depthLayer: 'front', level: 'medium', color: '#e8c56a', opacity: 0.5, thickness: 0.0015, react: 0,
             glow: 0, glowSpread: 6,
+            ...PULSE_DEFAULTS,
+            ...OVERLAY_DEFAULTS,
         },
         groups: [{
             title: 'Wireframe',
@@ -625,7 +671,6 @@ export const OBJECT_TYPES = {
                 color('color', 'Colour', '#e8c56a'),
                 num('thickness', 'Thickness', 0.0002, 0.012, 0.0002, 0.0015),
                 num('opacity', 'Opacity', 0, 1, 0.01, 0.5),
-                num('react', 'Spectrum pulse', 0, 3, 0.01, 0),
                 LAYER,
             ],
         }, {
@@ -634,7 +679,9 @@ export const OBJECT_TYPES = {
                 num('glow', 'Glow', 0, 4, 0.01, 0),
                 num('glowSpread', 'Glow spread', 1, 30, 0.1, 6, { when: (p) => p.glow > 0 }),
             ],
-        }],
+        },
+        ...PULSE_GROUPS,
+        OVERLAY_GROUP],
     },
 
     sun: {
@@ -711,22 +758,22 @@ export const OBJECT_TYPES = {
             {
                 title: 'Geometry',
                 params: [
-                    num('samples', 'Points', 1000, 300000, 1000, undefined, { link: false, when: (p) => p.assetId === 'sphere' }),
-                    num('radius', 'Radius', 0.05, 20, 0.01, undefined, { link: false, when: (p) => p.assetId === 'sphere' }),
-                    num('jitter', 'Jitter', 0, 1, 0.001, undefined, { link: false, when: (p) => p.assetId === 'sphere' }),
-                    num('pointSize', 'Dot size', 0.0005, 0.05, 0.0005, undefined, { link: false }),
+                    num('samples', 'Points', 1000, 300000, 1000, undefined, { rebuilds: true, when: (p) => p.assetId === 'sphere' }),
+                    num('radius', 'Radius', 0.05, 20, 0.01, undefined, { rebuilds: true, when: (p) => p.assetId === 'sphere' }),
+                    num('jitter', 'Jitter', 0, 1, 0.001, undefined, { rebuilds: true, when: (p) => p.assetId === 'sphere' }),
+                    num('pointSize', 'Dot size', 0.0005, 0.05, 0.0005, undefined, { rebuilds: true }),
                     select('dotShape', 'Dot shape', POINT_SHAPES, 'tetra'),
-                    num('maxPoints', 'Max dots', 1000, 150000, 1000, undefined, { link: false, when: (p) => p.assetId !== 'sphere' }),
+                    num('maxPoints', 'Max dots', 1000, 150000, 1000, undefined, { rebuilds: true, when: (p) => p.assetId !== 'sphere' }),
                 ],
             },
             {
                 title: 'Sphere colour',
                 collapsed: true,
                 params: [
-                    color('sphereColorA', 'Colour A', '#e87d7d', { when: (p) => p.assetId === 'sphere', link: false }),
-                    color('sphereColorB', 'Colour B', '#e8c27d', { when: (p) => p.assetId === 'sphere', link: false }),
-                    num('sphereGradient', 'Depth → height', 0, 1, 0.01, 0, { when: (p) => p.assetId === 'sphere', link: false }),
-                    num('sphereHueShift', 'Hue shift', 0, 1, 0.01, 0, { when: (p) => p.assetId === 'sphere', link: false }),
+                    color('sphereColorA', 'Colour A', '#e87d7d', { when: (p) => p.assetId === 'sphere', rebuilds: true }),
+                    color('sphereColorB', 'Colour B', '#e8c27d', { when: (p) => p.assetId === 'sphere', rebuilds: true }),
+                    num('sphereGradient', 'Depth → height', 0, 1, 0.01, 0, { when: (p) => p.assetId === 'sphere', rebuilds: true }),
+                    num('sphereHueShift', 'Hue shift', 0, 1, 0.01, 0, { when: (p) => p.assetId === 'sphere', rebuilds: true }),
                 ],
             },
             {
@@ -763,8 +810,8 @@ export const OBJECT_TYPES = {
                     OPACITY,
                     LAYER,
                     num('curveScale', 'Size', 0.05, 24, 0.01, 8),
-                    num('dotCount', 'Dots', 10, 3000, 10, 240, { link: false }),
-                    num('dotSize', 'Dot size', 0.002, 0.2, 0.001, 0.045, { link: false }),
+                    num('dotCount', 'Dots', 10, 3000, 10, 240, { rebuilds: true }),
+                    num('dotSize', 'Dot size', 0.002, 0.2, 0.001, 0.045, { rebuilds: true }),
                     num('jitter', 'Jitter', 0, 1, 0.005, 0.05),
                     num('flowSpeed', 'Flow', 0, 2, 0.01, 0.15),
                     color('startColor', 'Start colour', '#ff3b3b'),
@@ -796,7 +843,7 @@ export const OBJECT_TYPES = {
                     num('footForward', 'Feet fwd', -0.3, 0.9, 0.005, 0.38, { when: (p) => p.plantFeet }),
                     num('footSpread', 'Feet apart', -0.1, 0.35, 0.005, 0.07, { when: (p) => p.plantFeet }),
                     num('breathe', 'Breathing', 0, 2, 0.01, 0.6),
-                    ...fromFields(BODY_FIELDS, { link: false }),
+                    ...fromFields(BODY_FIELDS, { rebuilds: true }),
                 ],
             },
             NOD,
@@ -813,7 +860,7 @@ export const OBJECT_TYPES = {
             {
                 title: 'Colours & parts',
                 collapsed: true,
-                params: COLOUR_FIELDS.map(([key, label]) => color(key, label, MODEL_DEFAULTS[key], { link: false })),
+                params: COLOUR_FIELDS.map(([key, label]) => color(key, label, MODEL_DEFAULTS[key], { rebuilds: true })),
                 custom: 'parts',
             },
             {
@@ -822,8 +869,8 @@ export const OBJECT_TYPES = {
                 params: [
                     ...fromFields(FINISH_FIELDS),
                     select('reflectSource', 'Reflects', [['scan', 'The scan'], ['sky', 'Sky']], 'scan'),
-                    ...fromFields(TEXTURE_FIELDS, { link: false }),
-                    bool('texDither', 'Dither', MODEL_DEFAULTS.texDither, { link: false }),
+                    ...fromFields(TEXTURE_FIELDS, { rebuilds: true }),
+                    bool('texDither', 'Dither', MODEL_DEFAULTS.texDither, { rebuilds: true }),
                 ],
             },
         ],
@@ -844,7 +891,7 @@ export const OBJECT_TYPES = {
                 params: [
                     ...VIEWS(150000, 0.02).params,
                     select('wireMode', 'Wire edges', [['all', 'All'], ['feature', 'Creases']], 'all', { when: (p) => p.viewWire }),
-                    num('wireAngle', 'Crease angle', 1, 90, 1, 25, { when: (p) => p.viewWire && p.wireMode === 'feature', link: false }),
+                    num('wireAngle', 'Crease angle', 1, 90, 1, 25, { when: (p) => p.viewWire && p.wireMode === 'feature', rebuilds: true }),
                 ],
             },
             ...MODEL_FLOW,
@@ -872,8 +919,8 @@ export const OBJECT_TYPES = {
     },
 
     // The headphone cat (lib/scanAssets/headphoneCat): rigged like Sackboy,
-    // with a face of shape keys. Every expression amount, the look and the
-    // nod are linkable; his shape rebuilds him, so it is not.
+    // with a face of shape keys. Everything is linkable; his shape rebuilds
+    // him, so a linked shape value moves in steps and rebuilds as it crosses one.
     cat: {
         label: 'Headphone cat',
         category: 'placed',
@@ -889,13 +936,13 @@ export const OBJECT_TYPES = {
                 params: [
                     ...VIEWS(150000, 0.02).params,
                     select('wireMode', 'Wire edges', [['all', 'All'], ['feature', 'Creases']], 'all', { when: (p) => p.viewWire }),
-                    num('wireAngle', 'Crease angle', 1, 90, 1, 25, { when: (p) => p.viewWire && p.wireMode === 'feature', link: false }),
+                    num('wireAngle', 'Crease angle', 1, 90, 1, 25, { when: (p) => p.viewWire && p.wireMode === 'feature', rebuilds: true }),
                 ],
             },
             ...MODEL_FLOW,
             {
                 title: 'Face',
-                hint: 'Presets set the base; each shape key below adds to it, and can be linked to a controller.',
+                hint: 'Presets set the base; each shape key below adds to it, and can be linked to a controller. Layers stand just off his head (Shape: face layers sets how far); painted, the face is texels in his fur, with nothing standing off it.',
                 params: [
                     select('eyes', 'Eyes', Object.entries(CAT_EYES).map(([id, e]) => [id, e.name]), 'neutral'),
                     select('mouth', 'Mouth', Object.entries(CAT_MOUTHS).map(([id, e]) => [id, e.name]), 'cat'),
@@ -903,6 +950,8 @@ export const OBJECT_TYPES = {
                     bool('blinkOn', 'Blink', false),
                     num('blinkEvery', 'Every (s)', 0.5, 15, 0.1, 3.5, { when: (p) => p.blinkOn }),
                     num('faceEase', 'Ease (s)', 0, 1, 0.01, 0.07),
+                    select('faceMode', 'Drawn as', [['layers', 'Layers on his head'], ['paint', 'Painted on']], 'layers'),
+                    select('facePixels', 'Paint pixels', [['1024', '1024'], ['2048', '2048'], ['4096', '4096']], '2048', { when: (p) => p.faceMode === 'paint' }),
                 ],
             },
             {
@@ -912,11 +961,23 @@ export const OBJECT_TYPES = {
             },
             { title: 'Pose', custom: 'pose' },
             {
+                title: 'Pose blend',
+                hint: 'From one pose to another: Mix 0 is the first, 1 the second. Link Mix to a controller to move between them. Sulk and Type set his top half only.',
+                params: [
+                    bool('poseBlend', 'Blend poses', false),
+                    select('poseFrom', 'From', CAT_BLEND_MENU, 'own', { when: (p) => p.poseBlend }),
+                    select('poseTo', 'To', CAT_BLEND_MENU, 'work', { when: (p) => p.poseBlend }),
+                    num('poseMix', 'Mix', 0, 1, 0.01, 0, { when: (p) => p.poseBlend }),
+                    num('typeRate', 'Taps / s', 0, 12, 0.1, 4, { when: (p) => p.poseBlend && (p.poseFrom === 'work' || p.poseTo === 'work') }),
+                    num('typeDepth', 'Tap height (°)', 0, 60, 0.5, 25, { when: (p) => p.poseBlend && (p.poseFrom === 'work' || p.poseTo === 'work') }),
+                ],
+            },
+            {
                 title: 'Motion',
                 params: [
                     select('anim', 'Clip', CAT_ANIMS, 'Idle'),
                     num('animSpeed', 'Speed', 0, 4, 0.01, 1),
-                    num('animFade', 'Fade (s)', 0, 2, 0.01, 0.3, { link: false }),
+                    num('animFade', 'Fade (s)', 0, 2, 0.01, 0.3, { rebuilds: true }),
                     num('hipDrop', 'Sink hips', 0, 1, 0.01, 0),
                     num('breathe', 'Breathing', 0, 2, 0.01, 0),
                 ],
@@ -924,13 +985,15 @@ export const OBJECT_TYPES = {
             {
                 title: 'Look',
                 collapsed: true,
-                hint: 'On top of the pose and clip, like the nod. Link Pitch to an LFO for a nod of your own.',
+                hint: 'On top of the pose and clip, like the nod. Link Pitch to an LFO for a nod of your own. Ear spacing slides his ears apart or together over his head; ear height stretches them taller (or sinks them, below 0). Neither rebuilds him or changes his size.',
                 params: [
                     num('headPitch', 'Pitch (°)', -60, 60, 0.5, 0),
                     num('headYaw', 'Turn (°)', -90, 90, 0.5, 0),
                     num('headRoll', 'Tilt (°)', -60, 60, 0.5, 0),
                     num('earL', 'Left ear (°)', -60, 60, 0.5, 0),
                     num('earR', 'Right ear (°)', -60, 60, 0.5, 0),
+                    num('earSpacing', 'Ear spacing', -0.3, 0.4, 0.005, 0),
+                    num('earHeight', 'Ear height', -0.8, 1.5, 0.01, 0),
                     num('tailWag', 'Tail wag (°)', 0, 60, 0.5, 0),
                     num('tailRate', 'Wag rate (Hz)', 0.1, 8, 0.01, 1.5, { when: (p) => p.tailWag > 0 }),
                 ],
@@ -944,7 +1007,7 @@ export const OBJECT_TYPES = {
                     bool('glasses', 'Glasses', true),
                     ...[['furColor', 'Fur'], ['inkColor', 'Eyes & mouth'], ['blushColor', 'Blush'], ['tongueColor', 'Tongue'],
                         ['shellColor', 'Headphones'], ['padColor', 'Cushions'], ['frameColor', 'Glasses']]
-                        .map(([key, label]) => color(key, label, CAT_DEFAULTS[key], { link: false })),
+                        .map(([key, label]) => color(key, label, CAT_DEFAULTS[key], { rebuilds: true })),
                 ],
             },
             {
@@ -953,22 +1016,22 @@ export const OBJECT_TYPES = {
                 params: [
                     bool('texOn', 'Noise', false),
                     select('texParts', 'On', [['fur', 'Fur'], ['all', 'Fur, headphones & glasses']], 'fur', { when: (p) => p.texOn }),
-                    // Strength and tile size are uniforms; the rest remake the texture, so are not linkable.
+                    // Strength and tile size are uniforms; the rest remake the texture.
                     ...CAT_TEXTURE_FIELDS.map(([key, label, min, max, step]) => num(key, label, min, max, step, CAT_DEFAULTS[key], {
-                        when: (p) => p.texOn, ...(key === 'texRepeat' ? {} : { link: false }),
+                        when: (p) => p.texOn, ...(key === 'texRepeat' ? {} : { rebuilds: true }),
                     })),
-                    bool('texDither', 'Dither', CAT_DEFAULTS.texDither, { link: false, when: (p) => p.texOn }),
+                    bool('texDither', 'Dither', CAT_DEFAULTS.texDither, { rebuilds: true, when: (p) => p.texOn }),
                 ],
             },
             ...CAT_SHAPE_GROUPS.map(([title, fields]) => ({
                 title: `Shape: ${title.toLowerCase()}`,
                 collapsed: true,
                 params: [
-                    ...(title === 'Head' ? [num('detail', 'Poly detail', 1, 5, 1, CAT_DEFAULTS.detail, { link: false }), bool('flat', 'Faceted', false, { link: false })] : []),
+                    ...(title === 'Head' ? [num('detail', 'Poly detail', 1, 5, 1, CAT_DEFAULTS.detail, { rebuilds: true }), bool('flat', 'Faceted', false, { rebuilds: true })] : []),
                     ...fields.map(([key, label, a, b, step]) => {
-                        if (a === 'bool') return bool(key, label, CAT_DEFAULTS[key], { link: false });
+                        if (a === 'bool') return bool(key, label, CAT_DEFAULTS[key], { rebuilds: true });
                         if (Array.isArray(a)) return select(key, label, a[1], CAT_DEFAULTS[key]);
-                        return num(key, label, a, b, step, CAT_DEFAULTS[key], { link: false });
+                        return num(key, label, a, b, step, CAT_DEFAULTS[key], { rebuilds: true });
                     }),
                 ],
             })),
@@ -997,7 +1060,8 @@ export const OBJECT_TYPES = {
                     num('brightness', 'Brightness', 0, 4, 0.01, 1.4),
                     select('fit', 'Fit', [[null, 'Default'], ['cover', 'Cover'], ['contain', 'Contain'], ['stretch', 'Stretch']], null),
                     select('rotate', 'Rotate', [[0, '0°'], [90, '90°'], [180, '180°'], [270, '270°']], 0),
-                    bool('flipX', 'Mirror', false, { link: false }),
+                    bool('flipX', 'Mirror', false, { rebuilds: true }),
+                    ...SCREEN_GRADE(() => true),
                 ],
             },
         ],
@@ -1072,7 +1136,7 @@ export const OBJECT_TYPES = {
                 params: [
                     bool('catchShadows', 'Catches shadows', false),
                     bool('windowCut', 'Cut by windows that cut the scan', true),
-                    bool('showGuide', 'Outline while editing', true, { link: false }),
+                    bool('showGuide', 'Outline while editing', true, { rebuilds: true }),
                 ],
             },
         ],
@@ -1088,6 +1152,7 @@ export const OBJECT_TYPES = {
             hueMod: { ...WINDOW_DEFAULTS.hueMod, source: 'off' },
             sortMod: { ...WINDOW_DEFAULTS.sortMod, source: 'off' },
             screenOn: false, video: null, videoOffset: 0, videoRate: 1, brightness: 1.4, videoSaturation: 1, fit: 'cover', rotate: 0, flipX: false,
+            ...PICTURE_GRADE_DEFAULTS,
             hideBehindScan: false,
             ...QT_DEFAULTS,
             qt_on: false,
@@ -1155,7 +1220,7 @@ export const OBJECT_TYPES = {
                     num('segmentMaxLength', 'Seg max px', 0, 2000, 10, 0, { when: (p) => p.sortOn }),
                     bool('reverse', 'Reverse', false, { when: (p) => p.sortOn }),
                     num('rgbShift', 'RGB shift', 0, 64, 1, 0, { when: (p) => p.sortOn }),
-                    num('sortScale', 'Resolution', 0.1, 1, 0.05, 0.5, { when: (p) => p.sortOn, link: false }),
+                    num('sortScale', 'Resolution', 0.1, 1, 0.05, 0.5, { when: (p) => p.sortOn, rebuilds: true }),
                     num('sortMix', 'Mix', 0, 1, 0.01, 1, { when: (p) => p.sortOn }),
                 ],
             },
@@ -1170,8 +1235,8 @@ export const OBJECT_TYPES = {
                     bool('qt_on', 'On', false),
                     num('qt_mix', 'Mix', 0, 1, 0.01, 1, { when: (p) => p.qt_on }),
                     select('qt_space', 'Lay out on', [['plane', 'Window plane'], ['screen', 'Screen']], 'screen', { when: (p) => p.qt_on }),
-                    num('qt_planeRes', 'Plane size (px)', 128, 2048, 32, 768, { link: false, when: (p) => p.qt_on && p.qt_space === 'plane' }),
-                    bool('qt_preview', 'Show in preview', true, { when: (p) => p.qt_on, link: false }),
+                    num('qt_planeRes', 'Plane size (px)', 128, 2048, 32, 768, { rebuilds: true, when: (p) => p.qt_on && p.qt_space === 'plane' }),
+                    bool('qt_preview', 'Show in preview', true, { when: (p) => p.qt_on, rebuilds: true }),
                 ],
             },
             ...QT_GROUPS.map((g) => ({
@@ -1197,6 +1262,7 @@ export const OBJECT_TYPES = {
             frameW: 0.5,
             frameH: 0.12,
             frameRot: 0,
+            ...PATCH_MOVE,
             textMode: 'plain',
             text: 'Text',
             fontFamily: 'grotesk',
@@ -1228,6 +1294,7 @@ export const OBJECT_TYPES = {
             wear: 0,
             noiseDetail: 24,
             ...ON_SCAN_DEFAULTS,
+            ...EMIT_DEFAULTS,
         },
         groups: [
             {
@@ -1240,10 +1307,24 @@ export const OBJECT_TYPES = {
                     num('frameW', 'Width', 0.01, 2, 0.001, 0.5, { when: (p) => p.space === 'frame' }),
                     num('frameH', 'Height', 0.01, 2, 0.001, 0.12, { when: (p) => p.space === 'frame' }),
                     num('frameRot', 'Rotate', -180, 180, 0.5, 0, { when: (p) => p.space === 'frame' }),
-                    bool('faceCamera', 'Face the camera', false, { link: false, when: (p) => p.space !== 'frame' }),
+                    bool('faceCamera', 'Face the camera', false, { rebuilds: true, when: (p) => p.space !== 'frame' }),
                 ],
             },
             { title: 'Corners', custom: 'windowCorners', when: (p) => p.space !== 'frame' },
+            {
+                title: 'Move',
+                when: (p) => p.space !== 'frame',
+                hint: 'On top of where its corners put it, so a controller can move it: moved along the scene\u2019s axes (metres), turned about its own middle (turn about its up, tilt about its width, spin about its face), and scaled. Its corners stay as they are.',
+                params: [
+                    num('xfMoveX', 'Move X', -20, 20, 0.001, 0),
+                    num('xfMoveY', 'Move Y', -20, 20, 0.001, 0),
+                    num('xfMoveZ', 'Move Z', -20, 20, 0.001, 0),
+                    num('xfTurn', 'Turn (\u00b0)', -180, 180, 0.5, 0),
+                    num('xfTilt', 'Tilt (\u00b0)', -180, 180, 0.5, 0),
+                    num('xfSpin', 'Spin (\u00b0)', -180, 180, 0.5, 0),
+                    num('xfScale', 'Scale', 0.01, 10, 0.01, 1),
+                ],
+            },
             {
                 title: 'Text',
                 custom: 'textDynamic',
@@ -1254,10 +1335,10 @@ export const OBJECT_TYPES = {
                     string('fontCustom', 'Font name', '', { when: (p) => p.textMode !== 'latex' && p.fontFamily === 'custom' }),
                     num('fontSize', 'Size', 0.02, 1.5, 0.005, 0.5),
                     select('weight', 'Weight', [100, 200, 300, 400, 500, 600, 700, 800, 900].map((w) => [w, String(w)]), 600, { when: (p) => p.textMode !== 'latex' }),
-                    bool('italic', 'Italic', false, { link: false, when: (p) => p.textMode !== 'latex' }),
+                    bool('italic', 'Italic', false, { rebuilds: true, when: (p) => p.textMode !== 'latex' }),
                     color('color', 'Colour', '#ffffff'),
-                    num('outline', 'Outline', 0, 0.3, 0.005, 0, { link: false }),
-                    color('outlineColor', 'Outline colour', '#000000', { link: false, when: (p) => p.outline > 0 }),
+                    num('outline', 'Outline', 0, 0.3, 0.005, 0, { rebuilds: true }),
+                    color('outlineColor', 'Outline colour', '#000000', { rebuilds: true, when: (p) => p.outline > 0 }),
                     OPACITY,
                     select('blend', 'Blend', TEXT_BLENDS, 'normal'),
                     select('align', 'Align', [['left', 'Left'], ['center', 'Centre'], ['right', 'Right']], 'center'),
@@ -1286,7 +1367,7 @@ export const OBJECT_TYPES = {
                     color('bgColor', 'Fill', '#000000'),
                     num('bgOpacity', 'Fill opacity', 0, 1, 0.01, 0),
                     num('padding', 'Padding', 0, 0.4, 0.005, 0.05),
-                    num('resolution', 'Min sharpness (px)', 128, 2048, 32, 512, { link: false }),
+                    num('resolution', 'Min sharpness (px)', 128, 2048, 32, 512, { rebuilds: true }),
                 ],
             },
             {
@@ -1298,6 +1379,7 @@ export const OBJECT_TYPES = {
                     LAYER,
                 ],
             },
+            TEXT_EMIT_GROUP,
             ON_SCAN_GROUP,
         ],
     },
@@ -1308,6 +1390,7 @@ export const OBJECT_TYPES = {
         gizmo: 'transform',
         defaults: {
             ...CURVE_LOOK_DEFAULTS,
+            ...SPIN_DEFAULTS,
             fx: 'cos(t)',
             fy: 'sin(t)',
             fz: '0',
@@ -1326,6 +1409,7 @@ export const OBJECT_TYPES = {
             },
             { title: 'Variables', custom: 'usedVariables' },
             ...curveLookGroups('t'),
+            SPIN_GROUP,
             transform(),
         ],
     },
@@ -1400,15 +1484,15 @@ export const OBJECT_TYPES = {
                         ['value', 'Name and its value now: P\u2080 = (1.57, 0.00, 1.00)'],
                         ['name', 'Name: P\u2080'],
                     ], 'point', { when: (p) => p.labels }),
-                    num('labelDigits', 'Decimals', 0, 10, 1, 2, { link: false, when: (p) => p.labels && p.labelShow === 'value' }),
+                    num('labelDigits', 'Decimals', 0, 10, 1, 2, { rebuilds: true, when: (p) => p.labels && p.labelShow === 'value' }),
                     select('labelFrame', 'Values in', [
                         ['local', 'The spline\u2019s own frame (as its points are written)'],
                         ['world', 'The scene\u2019s frame (placed, turned, scaled and spun)'],
                     ], 'local', { when: (p) => p.labels && p.labelShow === 'value' }),
                     num('labelSize', 'New label size', 0.005, 2, 0.001, 0.1, { when: (p) => p.labels }),
                     color('labelColor', 'New label colour', '#ffffff', { when: (p) => p.labels }),
-                    num('labelOutline', 'Label outline', 0, 0.3, 0.005, 0, { link: false, when: (p) => p.labels }),
-                    color('labelOutlineColor', 'Outline colour', '#000000', { link: false, when: (p) => p.labels && p.labelOutline > 0 }),
+                    num('labelOutline', 'Label outline', 0, 0.3, 0.005, 0, { rebuilds: true, when: (p) => p.labels }),
+                    color('labelOutlineColor', 'Outline colour', '#000000', { rebuilds: true, when: (p) => p.labels && p.labelOutline > 0 }),
                 ],
             },
             { title: 'Variables', custom: 'usedVariables' },
@@ -1471,7 +1555,7 @@ export const OBJECT_TYPES = {
                 hint: 'Keypoints are kept with the project; generate again after changing the sound. M(u) is the curve.',
                 params: [
                     select('timing', 'Shown', [['music', 'Comes in with the music'], ['static', 'A static graph']], 'music'),
-                    num('timeOffset', 'Sound starts at (s)', -600, 600, 0.01, 0, { link: false, when: (p) => p.timing !== 'static' }),
+                    num('timeOffset', 'Sound starts at (s)', -600, 600, 0.01, 0, { rebuilds: true, when: (p) => p.timing !== 'static' }),
                     num('trail', 'Trail (s)', 0, 600, 0.1, 0, { when: (p) => p.timing !== 'static' }),
                     bool('headOn', 'Marker at now', true, { when: (p) => p.timing !== 'static' }),
                     select('headShape', 'Its shape', POINT_SHAPES, 'sphere', { when: (p) => p.timing !== 'static' && p.headOn }),
@@ -1483,11 +1567,11 @@ export const OBJECT_TYPES = {
                 title: 'Keypoints',
                 hint: 'To at 0 means the end. Window smooths the path.',
                 params: [
-                    num('keypoints', 'Keypoints', 2, MAX_KEYPOINTS, 1, 96, { link: false }),
-                    num('timeFrom', 'From (s)', 0, 3600, 0.01, 0, { link: false }),
-                    num('timeTo', 'To (s)', 0, 3600, 0.01, 0, { link: false }),
-                    num('window', 'Window (× spacing)', 0.1, 8, 0.05, 1, { link: false }),
-                    bool('autoGen', 'Generate again as settings change', true, { link: false }),
+                    num('keypoints', 'Keypoints', 2, MAX_KEYPOINTS, 1, 96, { rebuilds: true }),
+                    num('timeFrom', 'From (s)', 0, 3600, 0.01, 0, { rebuilds: true }),
+                    num('timeTo', 'To (s)', 0, 3600, 0.01, 0, { rebuilds: true }),
+                    num('window', 'Window (× spacing)', 0.1, 8, 0.05, 1, { rebuilds: true }),
+                    bool('autoGen', 'Generate again as settings change', true, { rebuilds: true }),
                 ],
             },
             {
@@ -1495,10 +1579,10 @@ export const OBJECT_TYPES = {
                 hint: 'Each axis fits ± its size (negative flips). Delay reads the feature that much earlier.',
                 params: ['X', 'Y', 'Z'].flatMap((A) => [
                     select(`axis${A}`, A, MANIFOLD_FEATURES, MANIFOLD_AXIS_DEFAULTS[`axis${A}`]),
-                    num(`axis${A}Low`, `${A} band from (Hz)`, 20, 20000, 1, 2000, { link: false, when: (p) => p[`axis${A}`] === 'band' }),
-                    num(`axis${A}High`, `${A} band to (Hz)`, 20, 20000, 1, 5000, { link: false, when: (p) => p[`axis${A}`] === 'band' }),
-                    num(`axis${A}Lag`, `${A} delay (s)`, 0, 30, 0.01, 0, { link: false, when: (p) => p[`axis${A}`] !== 'time' }),
-                    num(`axis${A}Size`, `${A} size`, -10, 10, 0.01, 1, { link: false }),
+                    num(`axis${A}Low`, `${A} band from (Hz)`, 20, 20000, 1, 2000, { rebuilds: true, when: (p) => p[`axis${A}`] === 'band' }),
+                    num(`axis${A}High`, `${A} band to (Hz)`, 20, 20000, 1, 5000, { rebuilds: true, when: (p) => p[`axis${A}`] === 'band' }),
+                    num(`axis${A}Lag`, `${A} delay (s)`, 0, 30, 0.01, 0, { rebuilds: true, when: (p) => p[`axis${A}`] !== 'time' }),
+                    num(`axis${A}Size`, `${A} size`, -10, 10, 0.01, 1, { rebuilds: true }),
                 ]),
             },
             {
@@ -1572,7 +1656,7 @@ export const OBJECT_TYPES = {
                 title: 'Quad tree',
                 custom: 'quadTree',
                 hint: 'The picture is the seed.',
-                params: [VISIBLE, num('qt_mix', 'Mix', 0, 1, 0.01, 1), bool('qt_preview', 'Show in preview', true, { link: false })],
+                params: [VISIBLE, num('qt_mix', 'Mix', 0, 1, 0.01, 1), bool('qt_preview', 'Show in preview', true, { rebuilds: true })],
             },
             ...QT_GROUPS,
         ],
@@ -1612,8 +1696,8 @@ export const OBJECT_TYPES = {
                     num('segmentMaxLength', 'Seg max px', 0, 2000, 10, 0),
                     bool('reverse', 'Reverse', false),
                     num('rgbShift', 'RGB shift', 0, 64, 1, 0),
-                    num('sortScale', 'Resolution', 0.1, 1, 0.05, 0.5, { link: false }),
-                    bool('preview', 'Show in preview', true, { link: false }),
+                    num('sortScale', 'Resolution', 0.1, 1, 0.05, 0.5, { rebuilds: true }),
+                    bool('preview', 'Show in preview', true, { rebuilds: true }),
                 ],
             },
         ],
@@ -1683,7 +1767,7 @@ OBJECT_TYPES.blobs = {
             title: 'Blob tracker',
             custom: 'effectTarget',
             hint: 'Sees only the effects above it. The preview can trail; exports track every frame.',
-            params: [VISIBLE, bool('preview', 'Show in preview', true, { link: false })],
+            params: [VISIBLE, bool('preview', 'Show in preview', true, { rebuilds: true })],
         },
         {
             title: 'Detection',
@@ -1692,7 +1776,7 @@ OBJECT_TYPES.blobs = {
                 bool('invert', 'Track dark', BLOB_DEFAULTS.invert),
                 num('minArea', 'Min size', 1, 120, 1, BLOB_DEFAULTS.minArea),
                 num('maxSize', 'Max size (% of frame)', 0.1, 100, 0.1, BLOB_DEFAULTS.maxSize),
-                num('maxBoxes', 'Max boxes', 1, 30, 1, BLOB_DEFAULTS.maxBoxes, { link: false }),
+                num('maxBoxes', 'Max boxes', 1, 30, 1, BLOB_DEFAULTS.maxBoxes, { rebuilds: true }),
                 num('smoothing', 'Smoothing', 0, 0.95, 0.01, BLOB_DEFAULTS.smoothing),
             ],
         },
@@ -1782,14 +1866,14 @@ OBJECT_TYPES.blobs = {
             imgLoop: true,
         },
         groups: [
-            ...T.groups.filter((g) => g.title === 'Placement' || g.title === 'Corners'),
+            ...T.groups.filter((g) => ['Placement', 'Corners', 'Move'].includes(g.title)),
             {
                 title: 'Image',
                 custom: 'imageSource',
                 hint: 'PNG, JPEG, WebP or GIF. An animated GIF plays on the timeline: speed and start set which frame shows when.',
                 params: [
                     select('fit', 'Fit', [['contain', 'Contain'], ['cover', 'Cover'], ['stretch', 'Stretch']], 'contain'),
-                    select('smoothing', 'Pixels', [['smooth', 'Smooth'], ['crisp', 'Crisp (pixel art)']], 'smooth', { link: false }),
+                    select('smoothing', 'Pixels', [['smooth', 'Smooth'], ['crisp', 'Crisp (pixel art)']], 'smooth', { rebuilds: true }),
                     num('imgSpeed', 'Speed', 0, 4, 0.01, 1),
                     num('imgOffset', 'Start (s)', 0, 60, 0.01, 0),
                     bool('imgLoop', 'Loop', true),
@@ -1846,7 +1930,7 @@ export const isPatchType = (type) => type === 'text' || type === 'image';
                 title: 'Marker',
                 collapsed: true,
                 params: [
-                    bool('markerOwn', 'A look of its own', false, { link: false }),
+                    bool('markerOwn', 'A look of its own', false, { rebuilds: true }),
                     select('markerShape', 'Shape', POINT_SHAPES, 'octa', { when: (p) => p.markerOwn }),
                     select('markerStyle', 'Drawn', POINT_STYLES, 'solid', { when: (p) => p.markerOwn }),
                     num('markerWire', 'Edge width (px)', 0.25, 12, 0.05, 1.5, { when: (p) => p.markerOwn && p.markerStyle === 'wire' }),
@@ -1857,7 +1941,7 @@ export const isPatchType = (type) => type === 'text' || type === 'image';
             {
                 title: 'Label',
                 hint: 'Corners are measured from the point.',
-                params: [bool('faceCamera', 'Face the camera', true, { link: false })],
+                params: [bool('faceCamera', 'Face the camera', true, { rebuilds: true })],
             },
             ...T.groups.filter((g) => g.title !== 'Placement').map((g) => (g.title === 'Corners' ? { ...g, title: 'Label corners' } : g)),
         ],
@@ -1880,7 +1964,7 @@ export const TRACK_PARAMS = [
 ];
 export const AUDIO_TRACK_PARAMS = [
     bool('visible', 'Audible', true),
-    num('gain', 'Gain', 0, 2, 0.01, 1, { link: false }),
+    num('gain', 'Gain', 0, 2, 0.01, 1, { rebuilds: true }),
 ];
 
 /** Every parameter definition of a type, flattened, by key. */
